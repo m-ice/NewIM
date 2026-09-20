@@ -1,0 +1,7 @@
+# Project-local Codex configuration. Loaded only for trusted repositories.
+[agents]
+enabled = true
+max_concurrent_threads_per_session = 8
+interrupt_message = true
+
+# Keep model choice at the user/session layer so this repository does not become stale.

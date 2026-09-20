@@ -1,0 +1,28 @@
+name: agent-engineering-validate
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, edited]
+  push:
+    branches: [main]
+permissions:
+  contents: read
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    strategy:
+      matrix:
+        python-version: ['3.11', '3.12']
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+      - run: python3 -B scripts/validate.py
+      - run: python3 -B -m unittest discover -s tests/control -v
+      - name: Check PR task scopes
+        if: github.event_name == 'pull_request'
+        run: python3 -B scripts/check_scope.py --event "$GITHUB_EVENT_PATH"

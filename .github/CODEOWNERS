@@ -1,0 +1,8 @@
+* @newim-maintainers
+/specs/ @newim-architecture @newim-protocol
+/infra/db/ @newim-data
+/.codex/ @newim-maintainers
+/tasks/ @newim-maintainers
+/scripts/ @newim-maintainers
+/tests/control/ @newim-maintainers
+/.github/ @newim-maintainers

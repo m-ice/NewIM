@@ -1,0 +1,10 @@
+{
+  "phase": "product-core",
+  "tasks": [
+    "NIM-PROD-001",
+    "NIM-MED-001",
+    "NIM-PUSH-001",
+    "NIM-SEC-001"
+  ],
+  "parallelism_rule": "Only parallelize tasks with satisfied dependencies and non-overlapping write scopes unless a frozen contract explicitly allows it."
+}

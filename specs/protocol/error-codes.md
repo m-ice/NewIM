@@ -1,0 +1,16 @@
+# Error code registry
+
+Initial stable names:
+
+- AUTH_TOKEN_EXPIRED
+- AUTH_KICKED
+- RATE_LIMITED
+- BLOCKED
+- MESSAGE_TOO_LARGE
+- MESSAGE_PERMISSION_DENIED
+- UNMATCHED_MESSAGE_LIMIT
+- CONVERSATION_NOT_FOUND
+- SYNC_CURSOR_EXPIRED
+- SERVER_TEMPORARY_UNAVAILABLE
+
+Clients branch on code, never on localized message text.

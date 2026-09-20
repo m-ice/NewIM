@@ -1,0 +1,8 @@
+{
+  "phase": "sync",
+  "tasks": [
+    "NIM-SYN-001",
+    "NIM-SYN-002"
+  ],
+  "parallelism_rule": "Only parallelize tasks with satisfied dependencies and non-overlapping write scopes unless a frozen contract explicitly allows it."
+}

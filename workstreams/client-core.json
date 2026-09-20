@@ -1,0 +1,9 @@
+{
+  "phase": "client-core",
+  "tasks": [
+    "NIM-SDK-001",
+    "NIM-SDK-002",
+    "NIM-SDK-003"
+  ],
+  "parallelism_rule": "Only parallelize tasks with satisfied dependencies and non-overlapping write scopes unless a frozen contract explicitly allows it."
+}

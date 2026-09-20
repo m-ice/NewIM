@@ -1,0 +1,7 @@
+{
+  "phase": "protocol",
+  "tasks": [
+    "NIM-PRT-001"
+  ],
+  "parallelism_rule": "Only parallelize tasks with satisfied dependencies and non-overlapping write scopes unless a frozen contract explicitly allows it."
+}
