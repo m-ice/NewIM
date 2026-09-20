@@ -1,9 +1,0 @@
-{
-  "phase": "server-core",
-  "tasks": [
-    "NIM-DAT-001",
-    "NIM-SRV-001",
-    "NIM-SRV-002"
-  ],
-  "parallelism_rule": "Only parallelize tasks with satisfied dependencies and non-overlapping write scopes unless a frozen contract explicitly allows it."
-}

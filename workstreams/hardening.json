@@ -1,9 +1,0 @@
-{
-  "phase": "hardening",
-  "tasks": [
-    "NIM-OBS-001",
-    "NIM-QA-001",
-    "NIM-PERF-001"
-  ],
-  "parallelism_rule": "Only parallelize tasks with satisfied dependencies and non-overlapping write scopes unless a frozen contract explicitly allows it."
-}

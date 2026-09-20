@@ -1,9 +1,0 @@
-{
-  "phase": "foundation",
-  "tasks": [
-    "NIM-CTL-001",
-    "NIM-FND-001",
-    "NIM-FND-002"
-  ],
-  "parallelism_rule": "Only parallelize tasks with satisfied dependencies and non-overlapping write scopes unless a frozen contract explicitly allows it."
-}
