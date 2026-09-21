@@ -230,3 +230,25 @@ func TestEncodedSizePrecedesMalformedPayload(t *testing.T) {
 	_, e := p.EncodeSend(s)
 	c.Code(t, e, "MESSAGE_TOO_LARGE")
 }
+
+func TestWireEscapingKeepsSizeAndShapePriority(t *testing.T) {
+	for _, char := range []string{"<", ">", "&", "\u2028", "\u2029"} {
+		s := c.Request(`{}`)
+		s.ClientMsgID = strings.Repeat(char, 11500)
+		_, e := p.EncodeSend(s)
+		c.Code(t, e, "PROTOCOL_INVALID_MESSAGE")
+		a := c.Ack()
+		a.ClientMsgID = strings.Repeat(char, 800)
+		_, e = p.EncodeServerFrame(p.ServerFrame{Ack: &a})
+		c.Code(t, e, "PROTOCOL_INVALID_MESSAGE")
+	}
+}
+
+func TestPublicIdentifierEscapesStayValidJSON(t *testing.T) {
+	for _, value := range []string{"a\"", "a\\", "a\n", "a\r", "a\t", "a\b", "a\f", "a\x00", "a\x1f"} {
+		s := c.Request(`{}`)
+		s.ClientMsgID = value
+		_, e := p.EncodeSend(s)
+		c.Code(t, e, "PROTOCOL_INVALID_MESSAGE")
+	}
+}

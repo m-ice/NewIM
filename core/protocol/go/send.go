@@ -307,6 +307,49 @@ func wrap(version uint32, kind string, body []byte) []byte {
 	return []byte(`{"protocolVersion":` + strconv.FormatUint(uint64(version), 10) + `,"kind":"` + kind + `","body":` + string(body) + `}`)
 }
 
+// Match JSON wire escaping rather than HTML/script escaping, including invalid public
+// identifiers, so size-versus-shape errors agree with the Rust encoder.
+func quotedWireString(out []byte, value string) []byte {
+	out = append(out, '"')
+	const hex = "0123456789abcdef"
+	for i := 0; i < len(value); i++ {
+		ch := value[i]
+		switch ch {
+		case '"', '\\':
+			out = append(out, '\\', ch)
+		case '\b':
+			out = append(out, '\\', 'b')
+		case '\f':
+			out = append(out, '\\', 'f')
+		case '\n':
+			out = append(out, '\\', 'n')
+		case '\r':
+			out = append(out, '\\', 'r')
+		case '\t':
+			out = append(out, '\\', 't')
+		default:
+			if ch < 32 {
+				out = append(out, '\\', 'u', '0', '0', hex[ch>>4], hex[ch&15])
+			} else {
+				out = append(out, ch)
+			}
+		}
+	}
+	return append(out, '"')
+}
+func stringObject(pairs ...[2]string) []byte {
+	out := []byte{'{'}
+	for i, pair := range pairs {
+		if i > 0 {
+			out = append(out, ',')
+		}
+		out = quotedWireString(out, pair[0])
+		out = append(out, ':')
+		out = quotedWireString(out, pair[1])
+	}
+	return append(out, '}')
+}
+
 // EncodeSend validates public fields and keeps payload tokens. 公有字段编码仍须验证。
 func EncodeSend(s Send) ([]byte, error) {
 	if e := lowerBound(MaxSendBytes, len(s.ClientMsgID), len(s.ConversationID), len(s.Type), len(s.Payload)); e != nil {
@@ -316,13 +359,9 @@ func EncodeSend(s Send) ([]byte, error) {
 	if s.Payload != nil && !json.Valid(s.Payload) {
 		return nil, InvalidJSON
 	}
-	meta, _ := json.Marshal(struct {
-		Client       string `json:"clientMsgId"`
-		Conversation string `json:"conversationId"`
-		Version      uint32 `json:"version"`
-		Type         string `json:"type"`
-	}{s.ClientMsgID, s.ConversationID, s.Version, s.Type})
-	body := append(meta[:len(meta)-1], []byte(`,"payload":`)...)
+	meta := stringObject([2]string{"clientMsgId", s.ClientMsgID}, [2]string{"conversationId", s.ConversationID}, [2]string{"type", s.Type})
+	body := append(meta[:len(meta)-1], []byte(`,"version":`+strconv.FormatUint(uint64(s.Version), 10)+`,"payload":`)...)
+
 	if s.Payload == nil {
 		body = append(body, []byte("null")...)
 	} else {
@@ -359,17 +398,14 @@ func EncodeServerFrame(f ServerFrame) ([]byte, error) {
 		if e = lowerBound(MaxResultBytes, len(a.ClientMsgID), len(a.ConversationID), len(a.SenderID), len(a.ServerMsgID), len(a.ConversationSeq), len(a.ServerTime)); e != nil {
 			return nil, e
 		}
-		body, e = json.Marshal(struct {
-			Status string `json:"status"`
-			*Ack
-		}{"SERVER_PERSISTED", a})
+		body = stringObject([2]string{"status", "SERVER_PERSISTED"}, [2]string{"clientMsgId", a.ClientMsgID}, [2]string{"conversationId", a.ConversationID}, [2]string{"senderId", a.SenderID}, [2]string{"serverMsgId", a.ServerMsgID}, [2]string{"conversationSeq", a.ConversationSeq}, [2]string{"serverTime", a.ServerTime})
 	}
 	if v := f.Error; v != nil {
 		kind = "send_error"
 		if e = lowerBound(MaxResultBytes, len(v.ClientMsgID), len(v.ConversationID), len(v.Code)); e != nil {
 			return nil, e
 		}
-		body, e = json.Marshal(v)
+		body = stringObject([2]string{"clientMsgId", v.ClientMsgID}, [2]string{"conversationId", v.ConversationID}, [2]string{"code", v.Code})
 	}
 	if f.Message != nil {
 		kind = "message"

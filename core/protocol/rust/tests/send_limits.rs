@@ -357,3 +357,25 @@ fn encoder_full_size_precedes_duplicate_fragment_after_escaping() {
     send.client_msg_id = "\0".repeat(100);
     check_error(encode_send(&send), "PROTOCOL_INVALID_JSON");
 }
+
+#[test]
+fn wire_string_escaping_keeps_size_and_shape_priority() {
+    for character in ["<", ">", "&", "\u{2028}", "\u{2029}"] {
+        let mut send = request("{}").unwrap();
+        send.client_msg_id = character.repeat(11_500);
+        check_error(encode_send(&send), "PROTOCOL_INVALID_MESSAGE");
+        let mut result = ack();
+        result.client_msg_id = character.repeat(800);
+        check_error(
+            encode_server_frame(&ServerFrame::Ack(result)),
+            "PROTOCOL_INVALID_MESSAGE",
+        );
+    }
+    for value in [
+        "a\"", "a\\", "a\n", "a\r", "a\t", "a\u{8}", "a\u{c}", "a\0", "a\u{1f}",
+    ] {
+        let mut send = request("{}").unwrap();
+        send.client_msg_id = value.into();
+        check_error(encode_send(&send), "PROTOCOL_INVALID_MESSAGE");
+    }
+}
