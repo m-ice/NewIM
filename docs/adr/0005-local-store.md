@@ -1,7 +1,9 @@
 # ADR 0005: LocalStore v1 and native SQLite
 
-Status: proposed implementation contract; independent task acceptance required.
+Status: accepted (2026-09-21).
 Task: NIM-SDK-001
+
+Independent data, code, QA, security and license content reviews approved candidate `27bc0424288c14c127080db0f2a6b9f84c89912b`. Final acceptance evidence for the integrated commit and delivery verification are recorded separately.
 
 ## Boundary
 
