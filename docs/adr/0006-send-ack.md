@@ -1,6 +1,6 @@
 # ADR 0006: Send requests and persistence results v1
 
-Status: proposed; acceptance requires shared Go/Rust fixtures and independent review.
+Status: accepted following independent architecture, code, QA and security review of the protocol design and implementation. Final task acceptance evidence is maintained separately.
 
 ## Compatibility
 
