@@ -233,8 +233,15 @@ fn interrupted_first_initialization_is_resumed_only_with_supported_committed_sch
         assert_eq!(fs::read(d.0.join("active/store.db")).ok(), bytes);
         assert!(!d.0.join("initialized").exists());
         quarantine(&d.0, "incomplete-create").unwrap();
-        let mut s = rebuild(&d.0, "alice", Limits::default()).unwrap();
-        assert!(snapshot(&mut s).recovery_required);
+        assert!(matches!(
+            rebuild(&d.0, "alice", Limits::default()),
+            Err(StoreError::RecoveryRequired)
+        ));
+        assert!(!d.0.join("active").exists());
+        assert_eq!(
+            fs::read(d.0.join("quarantine-incomplete-create/store.db")).ok(),
+            bytes
+        );
     }
 }
 #[test]
@@ -298,4 +305,83 @@ fn legacy_initialized_marker_upgrade_requires_supported_database() {
         SqliteStore::open(&d.0, "alice", Limits::default()),
         Err(StoreError::RecoveryRequired)
     ));
+}
+
+#[test]
+fn legacy_or_lost_binding_rebuild_checks_original_quarantine_account() {
+    for marker in ["legacy", "lost"] {
+        let d = Directory::new();
+        let mut s = d.open();
+        run(&mut s, 1, Action::Enqueue(pending(1))).unwrap();
+        drop(s);
+        if marker == "legacy" {
+            fs::write(d.0.join("initialized"), b"NewIM LocalStore v1\n").unwrap();
+        } else {
+            fs::remove_file(d.0.join("initialized")).unwrap();
+        }
+        quarantine(&d.0, "account-check").unwrap();
+        let before = fs::read(d.0.join("quarantine-account-check/store.db")).unwrap();
+        let marker_before = fs::read(d.0.join("initialized")).ok();
+        assert!(matches!(
+            rebuild(&d.0, "bob", Limits::default()),
+            Err(StoreError::StaleGeneration)
+        ));
+        assert!(!d.0.join("active").exists());
+        assert_eq!(fs::read(d.0.join("initialized")).ok(), marker_before);
+        assert!(d.0.join("RECOVERY").exists());
+        let mut s = rebuild(&d.0, "alice", Limits::default()).unwrap();
+        assert_eq!(s.fence().account, "alice");
+        assert!(snapshot(&mut s).recovery_required);
+        drop(s);
+        drop(d.open());
+        assert_eq!(
+            fs::read(d.0.join("quarantine-account-check/store.db")).unwrap(),
+            before
+        );
+        assert_eq!(
+            salvage_pending(&d.0, "account-check", "alice", None, 64)
+                .unwrap()
+                .items,
+            vec![pending(1)]
+        );
+    }
+}
+#[test]
+fn unbound_unreadable_quarantine_identity_fails_before_active_creation() {
+    for damage in ["zero", "header", "future_schema", "metadata"] {
+        let d = Directory::new();
+        let mut s = d.open();
+        run(&mut s, 1, Action::Enqueue(pending(1))).unwrap();
+        drop(s);
+        fs::write(d.0.join("initialized"), b"NewIM LocalStore v1\n").unwrap();
+        match damage {
+            "zero" => fs::write(d.0.join("active/store.db"), []).unwrap(),
+            "header" => {
+                let mut data = fs::read(d.0.join("active/store.db")).unwrap();
+                data[..16].fill(33);
+                fs::write(d.0.join("active/store.db"), data).unwrap();
+            }
+            "future_schema" => d.db().execute_batch("PRAGMA user_version=99").unwrap(),
+            "metadata" => d.db().execute_batch("DROP TABLE store_metadata").unwrap(),
+            _ => unreachable!(),
+        }
+        quarantine(&d.0, "unreadable").unwrap();
+        let before = fs::read(d.0.join("quarantine-unreadable/store.db")).unwrap();
+        let marker = fs::read(d.0.join("initialized")).unwrap();
+        for account in ["alice", "bob"] {
+            assert!(
+                matches!(
+                    rebuild(&d.0, account, Limits::default()),
+                    Err(StoreError::RecoveryRequired)
+                ),
+                "{damage}"
+            );
+            assert!(!d.0.join("active").exists());
+        }
+        assert_eq!(
+            fs::read(d.0.join("quarantine-unreadable/store.db")).unwrap(),
+            before
+        );
+        assert_eq!(fs::read(d.0.join("initialized")).unwrap(), marker);
+    }
 }

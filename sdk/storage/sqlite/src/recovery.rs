@@ -86,6 +86,12 @@ pub fn rebuild(
     if !quarantine.is_dir() {
         return Err(StoreError::RecoveryRequired);
     }
+    if crate::initialization::read(root)?.is_none() {
+        let original = quarantined_identity(root, &name)?;
+        if original.account != account {
+            return Err(StoreError::StaleGeneration);
+        }
+    }
     let store = SqliteStore::open_locked(root, account, limits, lock, true)?;
     let required: bool = store
         .conn
@@ -112,7 +118,6 @@ pub fn salvage_pending(
     after: Option<&str>,
     limit: usize,
 ) -> Result<PendingPage, StoreError> {
-    crate::verify_engine()?;
     let root = root.as_ref();
     let _lock = files::lock_root(root)?;
     if !name_valid(name)
@@ -121,6 +126,31 @@ pub fn salvage_pending(
     {
         return Err(StoreError::InvalidInput);
     }
+    let conn = open_quarantine(root, name)?;
+    let _deadline = crate::deadline::Deadline::new(&conn, 5_000);
+    let check: String = conn
+        .query_row("PRAGMA quick_check(1)", [], |r| r.get(0))
+        .map_err(|_| StoreError::RecoveryRequired)?;
+    if check != "ok" {
+        return Err(StoreError::RecoveryRequired);
+    }
+    let owner: String = conn
+        .query_row("SELECT account FROM store_metadata WHERE id=1", [], |r| {
+            r.get(0)
+        })
+        .map_err(|_| StoreError::RecoveryRequired)?;
+    if owner.len() > 128 {
+        return Err(StoreError::RecoveryRequired);
+    }
+    if owner != account {
+        return Err(StoreError::StaleGeneration);
+    }
+    pending_page(&conn, after, limit).map_err(|_| StoreError::RecoveryRequired)
+}
+
+// All quarantine readers share engine, symlink, connection and allocation bounds.
+fn open_quarantine(root: &Path, name: &str) -> Result<Connection, StoreError> {
+    crate::verify_engine()?;
     let dir = root.join(format!("quarantine-{name}"));
     for path in [
         &dir,
@@ -146,25 +176,55 @@ pub fn salvage_pending(
         .map_err(db)?;
     conn.set_limit(rusqlite::limits::Limit::SQLITE_LIMIT_ATTACHED, 0)
         .map_err(db)?;
-    let _deadline = crate::deadline::Deadline::new(&conn, 5_000);
     conn.execute_batch("PRAGMA trusted_schema=OFF; PRAGMA query_only=ON;")
         .map_err(|_| StoreError::RecoveryRequired)?;
+    Ok(conn)
+}
+fn quarantined_identity(
+    root: &Path,
+    name: &str,
+) -> Result<crate::initialization::Identity, StoreError> {
+    let conn = open_quarantine(root, name)?;
+    let _deadline = crate::deadline::Deadline::new(&conn, 5_000);
     let check: String = conn
         .query_row("PRAGMA quick_check(1)", [], |r| r.get(0))
         .map_err(|_| StoreError::RecoveryRequired)?;
     if check != "ok" {
         return Err(StoreError::RecoveryRequired);
     }
-    let owner: String = conn
-        .query_row("SELECT account FROM store_metadata WHERE id=1", [], |r| {
-            r.get(0)
-        })
+    let version: i64 = conn
+        .pragma_query_value(None, "user_version", |r| r.get(0))
         .map_err(|_| StoreError::RecoveryRequired)?;
-    if owner.len() > 128 {
+    let application: i64 = conn
+        .pragma_query_value(None, "application_id", |r| r.get(0))
+        .map_err(|_| StoreError::RecoveryRequired)?;
+    if !(1..=crate::migrations::VERSION).contains(&version) || application != 0x4e494d31 {
         return Err(StoreError::RecoveryRequired);
     }
-    if owner != account {
-        return Err(StoreError::StaleGeneration);
-    }
-    pending_page(&conn, after, limit).map_err(|_| StoreError::RecoveryRequired)
+    let (account, instance): (String, String) = conn
+        .query_row(
+            "SELECT account,instance FROM store_metadata WHERE id=1",
+            [],
+            |r| {
+                for column in 0..2 {
+                    let text = r.get_ref(column)?.as_str()?;
+                    if text.len() > 128 {
+                        return Err(rusqlite::Error::InvalidQuery);
+                    }
+                }
+                Ok((r.get(0)?, r.get(1)?))
+            },
+        )
+        .map_err(|_| StoreError::RecoveryRequired)?;
+    let request = Request {
+        fence: Fence {
+            account: account.clone(),
+            instance: instance.clone(),
+            generation: 1,
+        },
+        operation_id: 1,
+        action: Action::Metrics,
+    };
+    validate_request(&request).map_err(|_| StoreError::RecoveryRequired)?;
+    Ok(crate::initialization::Identity { account, instance })
 }
