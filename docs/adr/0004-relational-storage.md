@@ -1,6 +1,6 @@
 # ADR 0004: PostgreSQL relational storage and recovery
 
-Status: proposed for independent acceptance.
+Status: accepted following independent architecture, code, QA, security and license content reviews. Final commit acceptance evidence is maintained separately.
 Task: NIM-DAT-001
 
 ## Decision and boundary
