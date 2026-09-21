@@ -1,0 +1,16 @@
+[package]
+name = "newim-store-sqlite"
+version = "0.1.0-dev"
+edition = "2024"
+rust-version = "1.98.1"
+publish = false
+build = "build.rs"
+
+[dependencies]
+newim-sdk-core = { path = "../../core" }
+rusqlite = { version = "=0.40.2", default-features = false, features = ["limits"] }
+libsqlite3-sys = "=0.38.2"
+
+[dev-dependencies]
+newim-protocol = { path = "../../../core/protocol/rust" }
+serde_json = { version = "=1.0.151", features = ["raw_value"] }

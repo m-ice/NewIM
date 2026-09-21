@@ -1,0 +1,280 @@
+[
+  {
+    "name": "bitflags",
+    "version": "2.13.2",
+    "archive_sha256": "3ded4057c258ba199e2d26386d3af3780957ecaee6c4ef4041c6b4b8b97c0b06",
+    "url": "https://static.crates.io/crates/bitflags/bitflags-2.13.2.crate",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/bitflags/bitflags",
+    "archive_bytes": 51678,
+    "vcs": {
+      "git": {
+        "sha1": "80ce9b545acb0bd42150695fc351889cac1d8eb4"
+      },
+      "path_in_vcs": ""
+    }
+  },
+  {
+    "name": "fallible-iterator",
+    "version": "0.3.0",
+    "archive_sha256": "2acce4a10f12dc2fb14a218589d4f1f62ef011b2d0cc4b3cb1bba8e94da14649",
+    "url": "https://static.crates.io/crates/fallible-iterator/fallible-iterator-0.3.0.crate",
+    "license": "MIT/Apache-2.0",
+    "repository": "https://github.com/sfackler/rust-fallible-iterator",
+    "archive_bytes": 19639,
+    "vcs": {
+      "git": {
+        "sha1": "11cfa0558045e52bdb473c9eab6a1eb35a54e302"
+      },
+      "path_in_vcs": ""
+    }
+  },
+  {
+    "name": "fallible-streaming-iterator",
+    "version": "0.1.9",
+    "archive_sha256": "7360491ce676a36bf9bb3c56c1aa791658183a54d2744120f27285738d90465a",
+    "url": "https://static.crates.io/crates/fallible-streaming-iterator/fallible-streaming-iterator-0.1.9.crate",
+    "license": "MIT/Apache-2.0",
+    "repository": "https://github.com/sfackler/fallible-streaming-iterator",
+    "archive_bytes": 9249
+  },
+  {
+    "name": "itoa",
+    "version": "1.0.18",
+    "archive_sha256": "8f42a60cbdf9a97f5d2305f08a87dc4e09308d1276d28c869c684d7777685682",
+    "url": "https://static.crates.io/crates/itoa/itoa-1.0.18.crate",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/dtolnay/itoa",
+    "archive_bytes": 15935,
+    "vcs": {
+      "git": {
+        "sha1": "af77385d0daf4d0e949e81f2588be2e44f69f086"
+      },
+      "path_in_vcs": ""
+    }
+  },
+  {
+    "name": "libsqlite3-sys",
+    "version": "0.38.2",
+    "archive_sha256": "f1d20bef17f513b9b3004532233187769cd072d790971f4e4da0e346eb6401e8",
+    "url": "https://static.crates.io/crates/libsqlite3-sys/libsqlite3-sys-0.38.2.crate",
+    "license": "MIT",
+    "repository": "https://github.com/rusqlite/rusqlite",
+    "archive_bytes": 5361739,
+    "vcs": {
+      "git": {
+        "sha1": "e88f112bef7899234a497baed5cc3c3d553deeb8"
+      },
+      "path_in_vcs": "libsqlite3-sys"
+    }
+  },
+  {
+    "name": "memchr",
+    "version": "2.8.3",
+    "archive_sha256": "cf8baf1c55e62ffcace7a9f06f4bd9cd3f0c4beb022d3b367256b91b87513d98",
+    "url": "https://static.crates.io/crates/memchr/memchr-2.8.3.crate",
+    "license": "Unlicense OR MIT",
+    "repository": "https://github.com/BurntSushi/memchr",
+    "archive_bytes": 99165,
+    "vcs": {
+      "git": {
+        "sha1": "5fdb40c054e1fff359a2f7bdf7f87a13b34b465d"
+      },
+      "path_in_vcs": ""
+    }
+  },
+  {
+    "name": "pkg-config",
+    "version": "0.3.34",
+    "archive_sha256": "f6b464fbc74e149a392436b17d523f769e057cb6877f6a5c4618bc6f11800548",
+    "url": "https://static.crates.io/crates/pkg-config/pkg-config-0.3.34.crate",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/rust-lang/pkg-config-rs",
+    "archive_bytes": 21370,
+    "vcs": {
+      "git": {
+        "sha1": "a8852cc148f8f7d504bf3a62444c298dcd3637f0"
+      },
+      "path_in_vcs": ""
+    }
+  },
+  {
+    "name": "proc-macro2",
+    "version": "1.0.107",
+    "archive_sha256": "985e7ec9bb745e6ce6535b544d84d6cd6f7ad8bd711c398938ae983b91a766d9",
+    "url": "https://static.crates.io/crates/proc-macro2/proc-macro2-1.0.107.crate",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/dtolnay/proc-macro2",
+    "archive_bytes": 59588,
+    "vcs": {
+      "git": {
+        "sha1": "ed8a5497669cd63db33bf24646f261b012bbbc4a"
+      },
+      "path_in_vcs": ""
+    }
+  },
+  {
+    "name": "quote",
+    "version": "1.0.47",
+    "archive_sha256": "1fbf4db142a473a8d80c26bbf18454ed458bf8d26c8219c331daecfdbd079001",
+    "url": "https://static.crates.io/crates/quote/quote-1.0.47.crate",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/dtolnay/quote",
+    "archive_bytes": 31622,
+    "vcs": {
+      "git": {
+        "sha1": "723dcb47d3f0ddc896e17287c8a8d3f2ea2317d5"
+      },
+      "path_in_vcs": ""
+    }
+  },
+  {
+    "name": "rusqlite",
+    "version": "0.40.2",
+    "archive_sha256": "23f2a97da3e3873c73cb2a2e71b35c40ff95e0b1eefa8d72d8499a6928c3b5b3",
+    "url": "https://static.crates.io/crates/rusqlite/rusqlite-0.40.2.crate",
+    "license": "MIT",
+    "repository": "https://github.com/rusqlite/rusqlite",
+    "archive_bytes": 177215,
+    "vcs": {
+      "git": {
+        "sha1": "e88f112bef7899234a497baed5cc3c3d553deeb8"
+      },
+      "path_in_vcs": ""
+    }
+  },
+  {
+    "name": "serde",
+    "version": "1.0.229",
+    "archive_sha256": "4148590afebada386688f18773da617792bf2ef03ffc1e4cbd2b1d45b023e0ba",
+    "url": "https://static.crates.io/crates/serde/serde-1.0.229.crate",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/serde-rs/serde",
+    "archive_bytes": 83669,
+    "vcs": {
+      "git": {
+        "sha1": "7fc3b4c30c94f73a96ebd1553f2b090d928fc3a8"
+      },
+      "path_in_vcs": "serde"
+    }
+  },
+  {
+    "name": "serde_core",
+    "version": "1.0.229",
+    "archive_sha256": "67dca2c9c51e58a4791a4b1ed58308b39c64224d349a935ab5039aa360942a48",
+    "url": "https://static.crates.io/crates/serde_core/serde_core-1.0.229.crate",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/serde-rs/serde",
+    "archive_bytes": 63100,
+    "vcs": {
+      "git": {
+        "sha1": "7fc3b4c30c94f73a96ebd1553f2b090d928fc3a8"
+      },
+      "path_in_vcs": "serde_core"
+    }
+  },
+  {
+    "name": "serde_derive",
+    "version": "1.0.229",
+    "archive_sha256": "e7a5d71263a5a7d47b41f6b3f06ba276f10cc18b0931f1799f710578e2309348",
+    "url": "https://static.crates.io/crates/serde_derive/serde_derive-1.0.229.crate",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/serde-rs/serde",
+    "archive_bytes": 59864,
+    "vcs": {
+      "git": {
+        "sha1": "7fc3b4c30c94f73a96ebd1553f2b090d928fc3a8"
+      },
+      "path_in_vcs": "serde_derive"
+    }
+  },
+  {
+    "name": "serde_json",
+    "version": "1.0.151",
+    "archive_sha256": "c841b55ecdae098c80dcae9cf767f6f8a0c2cdb3416bbef72181df4d0fe73f14",
+    "url": "https://static.crates.io/crates/serde_json/serde_json-1.0.151.crate",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/serde-rs/json",
+    "archive_bytes": 156556,
+    "vcs": {
+      "git": {
+        "sha1": "de8500740cdcabffb9734f503e4889def823cf10"
+      },
+      "path_in_vcs": ""
+    }
+  },
+  {
+    "name": "smallvec",
+    "version": "1.16.1",
+    "archive_sha256": "ba467056f1b547ed52077911161fc86985becbc60e8e1857c8a144dab0def891",
+    "url": "https://static.crates.io/crates/smallvec/smallvec-1.16.1.crate",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/servo/rust-smallvec",
+    "archive_bytes": 32694,
+    "vcs": {
+      "git": {
+        "sha1": "700e1c3ff899cda7799b18e0804889105fc8beea"
+      },
+      "path_in_vcs": ""
+    }
+  },
+  {
+    "name": "syn",
+    "version": "3.0.6",
+    "archive_sha256": "8593e8e72159ed2257d083c7a454a85cbf854f37a0966d8d483aff8c8a3ebcee",
+    "url": "https://static.crates.io/crates/syn/syn-3.0.6.crate",
+    "license": "MIT OR Apache-2.0",
+    "repository": "https://github.com/dtolnay/syn",
+    "archive_bytes": 313821,
+    "vcs": {
+      "git": {
+        "sha1": "559cab55ef0c644f77660840edc3620d0d99d3d7"
+      },
+      "path_in_vcs": ""
+    }
+  },
+  {
+    "name": "unicode-ident",
+    "version": "1.0.26",
+    "archive_sha256": "d245f478577f809a851594d02313b640fb437e0bb33866753cff937863096954",
+    "url": "https://static.crates.io/crates/unicode-ident/unicode-ident-1.0.26.crate",
+    "license": "(MIT OR Apache-2.0) AND Unicode-3.0",
+    "repository": "https://github.com/dtolnay/unicode-ident",
+    "archive_bytes": 48425,
+    "vcs": {
+      "git": {
+        "sha1": "48771a67a73f7e14ce802aaeee16770ba661035b"
+      },
+      "path_in_vcs": ""
+    }
+  },
+  {
+    "name": "vcpkg",
+    "version": "0.2.15",
+    "archive_sha256": "accd4ea62f7bb7a82fe23066fb0957d48ef677f6eeb8215f372f52e48bb32426",
+    "url": "https://static.crates.io/crates/vcpkg/vcpkg-0.2.15.crate",
+    "license": "MIT/Apache-2.0",
+    "repository": "https://github.com/mcgoo/vcpkg-rs",
+    "archive_bytes": 228735,
+    "vcs": {
+      "git": {
+        "sha1": "e7d37e095ef2aa85c80242aa3850d442832b7b54"
+      }
+    }
+  },
+  {
+    "name": "zmij",
+    "version": "1.0.23",
+    "archive_sha256": "29666d0abbfad1e3dc4dcf6144730dd3a3ab225bbbdac83319345b1b44ccfc1b",
+    "url": "https://static.crates.io/crates/zmij/zmij-1.0.23.crate",
+    "license": "MIT",
+    "repository": "https://github.com/dtolnay/zmij",
+    "archive_bytes": 28612,
+    "vcs": {
+      "git": {
+        "sha1": "7b7cc48b58028e8af7be87e94c0c1c8936f1a57c"
+      },
+      "path_in_vcs": ""
+    }
+  }
+]
