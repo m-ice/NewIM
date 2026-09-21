@@ -1,0 +1,72 @@
+{
+  "verified_date": "2026-09-21",
+  "scope": "external immutable image tooling; no executable redistribution",
+  "components": [
+    {
+      "component": "docker-entrypoint.sh and docker-ensure-initdb.sh",
+      "version": "e00e1bd34ec5c8a8e7ad89b273b3d42efaf6d5bc",
+      "source": "https://github.com/docker-library/postgres/tree/e00e1bd34ec5c8a8e7ad89b273b3d42efaf6d5bc",
+      "license": "MIT",
+      "license_file": "docker-postgres-LICENSE",
+      "license_sha256": "87ffd2c45e3f90cfa3407b5c40ef8333e87c3e875e4895f8b64df758198deafc"
+    },
+    {
+      "component": "github.com/tianon/gosu",
+      "version": "v1.19.0 (release tag 1.19)",
+      "source": "https://github.com/tianon/gosu/tree/1.19",
+      "license": "Apache-2.0",
+      "license_file": "gosu-1.19-LICENSE",
+      "root_notice_http_status": 404,
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "component": "github.com/moby/sys/user",
+      "version": "v0.1.0",
+      "source": "https://proxy.golang.org/github.com/moby/sys/user/@v/v0.1.0.zip",
+      "source_archive_sha256": "85178932dc13b1c404c32e1b9f68fe88bf0b43e57dda39f24c45113e0bcf00ee",
+      "module_h1": "h1:WmZ93f5Ux6het5iituh9x2zAG7NFY9Aqi49jjE1PaQg=",
+      "license": "Apache-2.0",
+      "license_file": "moby-sys-user-LICENSE",
+      "license_sha256": "cfc7749b96f63bd31c3c42b5c471bf756814053e847c10f3eb003417bc523d30"
+    },
+    {
+      "component": "golang.org/x/sys",
+      "version": "v0.1.0",
+      "source": "https://github.com/golang/sys/tree/v0.1.0",
+      "module_h1": "h1:kunALQeHf1/185U1i0GOB/fy1IPRDDpuoOOqRReG57U=",
+      "license": "BSD-3-Clause",
+      "license_file": "x-sys-LICENSE",
+      "license_sha256": "2d36597f7117c38b006835ae7f537487207d8ec407aa9d9980794b2030cbc067"
+    },
+    {
+      "component": "Go runtime in gosu",
+      "version": "go1.24.6",
+      "source": "https://github.com/golang/go/tree/go1.24.6",
+      "license": "BSD-3-Clause",
+      "license_file": "go1.24.6-LICENSE",
+      "license_sha256": "911f8f5782931320f5b8d1160a76365b83aea6447ee6c04fa6d5591467db9dad"
+    }
+  ],
+  "platform_comparison": {
+    "arm64_packages": 147,
+    "amd64_packages": 147,
+    "package_differences": [],
+    "license_file_differences": [],
+    "scripts": {
+      "docker-entrypoint.sh": {
+        "amd64": "9c440299ae04a0a79d55b8bf03307036d890a40979d2fb698073c9050d4b20a5",
+        "arm64": "9c440299ae04a0a79d55b8bf03307036d890a40979d2fb698073c9050d4b20a5"
+      },
+      "docker-ensure-initdb.sh": {
+        "amd64": "922ade6b23a312e65023349b36e873752b15ff38ae4c0ae461d74451e104f312",
+        "arm64": "922ade6b23a312e65023349b36e873752b15ff38ae4c0ae461d74451e104f312"
+      },
+      "gosu": {
+        "amd64": "52c8749d0142edd234e9d6bd5237dff2d81e71f43537e2f4f66f75dd4b243dd0",
+        "arm64": "3a8ef022d82c0bc4a98bcb144e77da714c25fcfa64dccc57f6aba7ae47ff1a44"
+      }
+    }
+  },
+  "method": "amd64 static reading of all 13 compressed layers with descriptor SHA-256 and expanded DiffID verification; compare 147 installed package name/version/source records and 164 copyright/common-license content hashes; arm64 actual image metadata and files; entrypoint scripts byte-match pinned upstream; gosu versions/dependencies from static Go build metadata",
+  "limitations": "amd64 binaries were not executed; matching files do not prove vulnerability freedom or full redistribution compliance"
+}

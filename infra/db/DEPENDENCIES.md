@@ -43,6 +43,40 @@ are not product source implementations. The external image includes Debian
 components under multiple licenses (including GPL/LGPL), not just PostgreSQL and
 MIT. There is no blanket claim that the entire image is permissively licensed.
 
+The independent inventory comparison read all 13 locked amd64 layers, verified
+compressed descriptor SHA-256 and expanded DiffIDs, and compared 147 installed
+package name/version/source records with arm64 after removing architecture name
+qualifiers. There were no differences. All 164 collected copyright/common-license
+contents also matched. This is static amd64 artifact inspection, not an amd64
+database execution result. Both entrypoint scripts matched each other across
+platforms and the pinned upstream revision byte for byte.
+
+Non-dpkg components are recorded separately in `licenses/non-dpkg/components.json`
+with source identities, component/binary hashes and preserved license texts:
+
+| Component in the external image | Version/source | License |
+| --- | --- | --- |
+| docker-entrypoint.sh, docker-ensure-initdb.sh | docker-library/postgres e00e1bd34ec5c8a8e7ad89b273b3d42efaf6d5bc | MIT |
+| gosu | v1.19.0, upstream release tag 1.19 | Apache-2.0 |
+| github.com/moby/sys/user, linked into gosu | v0.1.0 | Apache-2.0 |
+| golang.org/x/sys, linked into gosu | v0.1.0 | BSD-3-Clause |
+| Go runtime linked into gosu | go1.24.6 | BSD-3-Clause |
+
+The gosu identities and dependency versions were read from the actual platform
+binaries' Go build metadata. Both use the same versions; executable hashes differ
+by architecture as expected. The upstream gosu root NOTICE request returned 404;
+this is not a blanket claim that no additional notice obligation can apply.
+The moby module license was obtained from its versioned Go module archive, whose
+SHA-256 and module checksum are recorded. No gosu, entrypoint or module
+implementation code or binary is copied into NewIM.
+
+For a future redistribution, preserve MIT copyright/permission notices and BSD
+copyright/conditions/disclaimers, and satisfy Apache-2.0 license/notice and change
+marking requirements for gosu and its Apache dependency. The Debian package
+GPL/LGPL and corresponding-source obligations remain separate. The included
+license texts and hashes support review; they are not a complete redistribution
+bundle, a corresponding-source offer or a security attestation.
+
 This task delivers NewIM SQL/tooling source and immutable pull references, not a
 redistributed container, PostgreSQL binary or OS distribution. Image distribution
 would require a separate complete package/component notices and corresponding

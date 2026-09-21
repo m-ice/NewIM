@@ -216,6 +216,18 @@ def sequence(db, commands):
     held.finish()
     equal(loser.finish().strip(), '18', 'cross conversation retry original')
     scalar(db, "SELECT last_seq FROM newim.im_conversations WHERE conversation_id='other';", 0, 'loser counter rolled back')
+    # The primary key may win constraint selection when a retry reuses server ID.
+    # The returned identity must not depend on PostgreSQL's unique-index check order.
+    held = db.session("SET application_name='newim_same_server_winner'; BEGIN; "+persist('same_server',server='shared_server',event='shared_winner_event'))
+    db.wait_sql("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name='newim_same_server_winner' AND state='idle in transaction');")
+    loser = db.session("SET application_name='newim_same_server_loser'; "+persist('same_server',room='other',server='shared_server',event='shared_loser_event'))
+    db.wait_sql("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name='newim_same_server_loser' AND wait_event_type='Lock');")
+    held.send('COMMIT;')
+    held.finish()
+    equal(loser.finish().strip(), '19', 'same-server cross-conversation retry returns original')
+    scalar(db, "SELECT last_seq FROM newim.im_conversations WHERE conversation_id='other';", 0, 'same-server loser allocation rolled back')
+    scalar(db, "SELECT conversation_id||'|'||server_msg_id FROM newim.im_messages WHERE sender_id='alice' AND client_msg_id='same_server';", 'room|shared_server', 'original identity unchanged')
+    scalar(db, "SELECT count(*) FROM newim.im_outbox_events WHERE event_id='shared_loser_event';", 0, 'same-server loser outbox rolled back')
     before = snapshot(db)
     db.sql('BEGIN; '+persist('rolled_back')+' ROLLBACK;')
     equal(snapshot(db), before, 'outer rollback atomicity')
@@ -238,7 +250,7 @@ def sequence(db, commands):
     scalar(db, persist('maximum',room='other'), MAXIMUM, 'duplicate still retrievable at exhaustion')
     scalar(db, "SELECT count(*) FROM newim.im_messages m FULL JOIN newim.im_outbox_events o USING(server_msg_id) WHERE m.server_msg_id IS NULL OR o.server_msg_id IS NULL;", 0, 'message/outbox atomicity')
     scalar(db, "SELECT count(*) FROM newim.im_conversations c JOIN newim.im_messages m ON c.latest_server_msg_id=m.server_msg_id WHERE c.last_seq<>m.conversation_seq;", 0, 'summary matches latest')
-    print('PASS 16 writers, 12 duplicate writers, forced cross-conversation race, rollback/collisions/overflow, independent conversation progress', flush=True)
+    print('PASS 16 writers, 12 duplicate writers, different/same-server cross-conversation races, rollback/collisions/overflow, independent conversation progress', flush=True)
 
 
 def repair(db, commands, image, target):

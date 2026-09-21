@@ -38,7 +38,6 @@ LANGUAGE plpgsql SECURITY INVOKER SET search_path = pg_catalog, newim AS $$
 DECLARE
   stored newim.im_messages;
   allocated bigint;
-  conflict_name text;
 BEGIN
   IF current_setting('transaction_isolation') <> 'read committed' THEN
     RAISE EXCEPTION USING ERRCODE = 'NI003', MESSAGE = 'STORAGE_ISOLATION_UNSUPPORTED';
@@ -71,8 +70,8 @@ BEGIN
       WHERE conversation_id = p_conversation;
     INSERT INTO newim.im_outbox_events (event_id, server_msg_id) VALUES (p_event, stored.server_msg_id);
   EXCEPTION WHEN unique_violation THEN
-    GET STACKED DIAGNOSTICS conflict_name = CONSTRAINT_NAME;
-    IF conflict_name <> 'im_messages_sender_client_key' THEN RAISE; END IF;
+    -- The same retry can conflict with both unique keys; PostgreSQL may report either.
+    -- 同一重试可同时命中主键和幂等键；以提交后的身份查询判断，不能依赖约束报错顺序。
     SELECT * INTO stored FROM newim.im_messages
       WHERE sender_id = p_sender AND client_msg_id = p_client;
     IF NOT FOUND THEN RAISE; END IF;
