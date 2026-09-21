@@ -135,25 +135,47 @@ func Decode(wire []byte) (Message, error) {
 
 // Encode validates outbound objects and preserves opaque payload numbers. 编码同样校验并保留未知负载数字。
 func Encode(m Message) ([]byte, error) {
-	// Bound allocations before JSON serialization, including invalid public structs.
-	if len(m.Payload) > MaxBytes {
-		return nil, TooLarge
-	}
-	if !shape(m) {
-		return nil, InvalidMessage
-	}
-	if err := strictJSON(m.Payload); err != nil {
-		return nil, err
+	// Bound raw public values before allocating their encoded representation.
+	total := 0
+	for _, size := range []int{len(m.ClientMsgID), len(m.ServerMsgID), len(m.ConversationID), len(m.ConversationSeq), len(m.SenderID), len(m.Type), len(m.ServerTime), len(m.Payload)} {
+		if size > MaxBytes-total {
+			return nil, TooLarge
+		}
+		total += size
 	}
 	var out bytes.Buffer
-	encoder := json.NewEncoder(&out)
-	encoder.SetEscapeHTML(false)
-	if encoder.Encode(m) != nil {
-		return nil, InvalidJSON
+	out.WriteString(`{"protocolVersion":`)
+	out.WriteString(strconv.FormatUint(uint64(m.ProtocolVersion), 10))
+	out.WriteString(`,"version":`)
+	out.WriteString(strconv.FormatUint(uint64(m.Version), 10))
+	for _, pair := range [][2]string{{"clientMsgId", m.ClientMsgID}, {"serverMsgId", m.ServerMsgID}, {"conversationId", m.ConversationID}, {"conversationSeq", m.ConversationSeq}, {"senderId", m.SenderID}, {"type", m.Type}, {"serverTime", m.ServerTime}} {
+		out.WriteByte(',')
+		out.WriteByte('"')
+		out.WriteString(pair[0])
+		out.WriteString(`":`)
+		var quoted bytes.Buffer
+		e := json.NewEncoder(&quoted)
+		e.SetEscapeHTML(false)
+		if e.Encode(pair[1]) != nil {
+			return nil, InvalidJSON
+		}
+		out.Write(bytes.TrimSuffix(quoted.Bytes(), []byte("\n")))
 	}
-	wire := bytes.TrimSuffix(out.Bytes(), []byte("\n"))
+	out.WriteString(`,"payload":`)
+	if m.Payload == nil {
+		out.WriteString("null")
+	} else {
+		out.Write(m.Payload)
+	}
+	out.WriteByte('}')
+	wire := out.Bytes()
+	// Keep outbound error precedence identical to decoding the full envelope.
 	if _, err := Decode(wire); err != nil {
 		return nil, err
+	}
+	// RawMessage is public: a JSON fragment must not inject envelope fields.
+	if m.Payload != nil && !json.Valid(m.Payload) {
+		return nil, InvalidJSON
 	}
 	return wire, nil
 }
@@ -165,12 +187,12 @@ func strictJSON(wire []byte) error {
 	if len(wire) > MaxBytes {
 		return TooLarge
 	}
-	if !utf8.Valid(wire) || !pairedSurrogates(wire) {
+	if !utf8.Valid(wire) {
 		return InvalidJSON
 	}
 	d := json.NewDecoder(bytes.NewReader(wire))
 	d.UseNumber()
-	if err := value(d, 0); err != nil {
+	if err := value(d, wire, 0); err != nil {
 		return err
 	}
 	if _, err := d.Token(); err != io.EOF {
@@ -179,9 +201,13 @@ func strictJSON(wire []byte) error {
 	return nil
 }
 
-func value(d *json.Decoder, depth int) error {
+func value(d *json.Decoder, wire []byte, depth int) error {
+	start := d.InputOffset()
 	token, err := d.Token()
 	if err != nil {
+		return InvalidJSON
+	}
+	if _, ok := token.(string); ok && !pairedSurrogates(wire[start:d.InputOffset()]) {
 		return InvalidJSON
 	}
 	if number, ok := token.(json.Number); ok && len(number) > 128 {
@@ -201,22 +227,23 @@ func value(d *json.Decoder, depth int) error {
 	if delim == '{' {
 		seen := map[string]bool{}
 		for d.More() {
+			start := d.InputOffset()
 			key, err := d.Token()
 			if err != nil {
 				return InvalidJSON
 			}
 			name, ok := key.(string)
-			if !ok || seen[name] {
+			if !ok || seen[name] || !pairedSurrogates(wire[start:d.InputOffset()]) {
 				return InvalidJSON
 			}
 			seen[name] = true
-			if err := value(d, depth); err != nil {
+			if err := value(d, wire, depth); err != nil {
 				return err
 			}
 		}
 	} else {
 		for d.More() {
-			if err := value(d, depth); err != nil {
+			if err := value(d, wire, depth); err != nil {
 				return err
 			}
 		}

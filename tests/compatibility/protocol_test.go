@@ -155,6 +155,7 @@ func TestEncodeRejectsInvalidPublicObjects(t *testing.T) {
 		"empty_text":        func(m *protocol.Message) { m.Payload = json.RawMessage(`{"text":""}`) },
 		"duplicate_payload": func(m *protocol.Message) { m.Payload = json.RawMessage(`{"text":"a","text":"b"}`) },
 		"null_payload":      func(m *protocol.Message) { m.Payload = json.RawMessage(`null`) },
+		"fragment_payload":  func(m *protocol.Message) { m.Payload = json.RawMessage(`{},"extra":1`) },
 		"oversize_payload":  func(m *protocol.Message) { m.Payload = bytes.Repeat([]byte(" "), protocol.MaxBytes+1) },
 	}
 	for name, change := range cases {
@@ -188,4 +189,20 @@ func FuzzDecode(f *testing.F) {
 			t.Fatalf("encoded value cannot decode: %v", err)
 		}
 	})
+}
+
+func TestEncodeCombinedErrorPrecedence(t *testing.T) {
+	m, err := protocol.Decode([]byte(fixtures(t)[0].Wire))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m.ClientMsgID = ""
+	m.Payload = json.RawMessage(`{"text":"a","text":"b"}`)
+	if _, err = protocol.Encode(m); err != protocol.InvalidJSON {
+		t.Fatalf("raw JSON must precede shape: %v", err)
+	}
+	m.ClientMsgID = string(bytes.Repeat([]byte("x"), protocol.MaxBytes+1))
+	if _, err = protocol.Encode(m); err != protocol.TooLarge {
+		t.Fatalf("minimum byte budget must precede other errors: %v", err)
+	}
 }

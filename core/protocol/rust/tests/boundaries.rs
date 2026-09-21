@@ -227,3 +227,23 @@ fn deterministic_mutation_corpus_never_panics_and_roundtrips_every_accepted_valu
         }
     }
 }
+
+#[test]
+fn outbound_combined_error_precedence_matches_wire_validation() {
+    let wire = include_str!("../../fixtures/cases.json");
+    let cases: serde_json::Value = serde_json::from_str(wire).unwrap();
+    let mut message =
+        newim_protocol::decode(cases[0]["wire"].as_str().unwrap().as_bytes()).unwrap();
+    message.client_msg_id.clear();
+    message.payload =
+        serde_json::value::RawValue::from_string(r#"{"text":"a","text":"b"}"#.to_owned()).unwrap();
+    assert_eq!(
+        newim_protocol::encode(&message).unwrap_err(),
+        newim_protocol::Error::InvalidJson
+    );
+    message.client_msg_id = "x".repeat(newim_protocol::MAX_WIRE_BYTES + 1);
+    assert_eq!(
+        newim_protocol::encode(&message).unwrap_err(),
+        newim_protocol::Error::MessageTooLarge
+    );
+}

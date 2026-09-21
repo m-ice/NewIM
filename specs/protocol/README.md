@@ -27,3 +27,5 @@
 `make protocol-golden`、`make protocol-unknown-fields`、`make protocol-unknown-type`、`make protocol-limits` 每项都运行 Go/Rust 对同一 fixtures/cases.json 的实际测试；`make check` 运行全部检查，`make build` 构建宿主和 wasm。Cargo.lock 固定依赖，首次构建需要下载其列出的 crates；依赖已缓存时可单独使用 Cargo 的 `--offline`。
 
 Go import: `github.com/m-ice/NewIM/core/protocol/go`（包名 protocol）；Rust workspace crate: `newim-protocol`。具体公有类型见各自源码。Go decode 后持有独立 payload 副本；Rust持有 Box<RawValue>，均无网络、数据库或 UI 依赖。完整决策见 ../../docs/adr/0003-protocol-v1.md。本阶段不实现鉴权、持久化 ACK、WebSocket 收发、离线同步或消息渲染。
+
+Error tie-breaking: after checking overall byte size and UTF-8, scan JSON left-to-right. An already encountered excessive container depth takes precedence over a later malformed Unicode escape. Encode first rejects a raw public-field byte sum that already exceeds the wire limit, then validates the complete output envelope with Decode rules; it must not check envelope shape before raw payload errors.
