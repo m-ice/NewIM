@@ -7,7 +7,12 @@ use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 pub const VERSION: i64 = 2;
 const APPLICATION_ID: i64 = 0x4e494d31;
 
-pub fn apply(conn: &mut Connection, account: &str, recovery: bool) -> Result<(), StoreError> {
+pub fn apply(
+    conn: &mut Connection,
+    account: &str,
+    recovery: bool,
+    allow_create: bool,
+) -> Result<(), StoreError> {
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(db)?;
@@ -21,6 +26,9 @@ pub fn apply(conn: &mut Connection, account: &str, recovery: bool) -> Result<(),
         return Err(StoreError::UnsupportedSchema);
     }
     if version == 0 {
+        if !allow_create {
+            return Err(StoreError::RecoveryRequired);
+        }
         let tables: i64 = tx
             .query_row(
                 "SELECT count(*) FROM sqlite_schema WHERE name NOT LIKE 'sqlite_%'",

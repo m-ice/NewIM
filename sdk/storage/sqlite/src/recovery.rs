@@ -45,8 +45,20 @@ pub fn quarantine(root: impl AsRef<Path>, name: &str) -> Result<RecoveryReport, 
         }
         files::marker(&root.join("RECOVERY"), name.as_bytes())?;
     }
-    if marker_name(root)? != name {
-        return Err(StoreError::RecoveryRequired);
+    let previous = marker_name(root)?;
+    if previous != name {
+        // A failed rebuild may have a partial active directory. Preserve it under a
+        // fresh name without ever replacing the original incident's quarantine.
+        let prior = root.join(format!("quarantine-{previous}"));
+        files::no_symlinks(&prior)?;
+        if !prior.is_dir() || !active.is_dir() || dest.exists() {
+            return Err(StoreError::RecoveryRequired);
+        }
+        files::replace_marker(
+            &root.join("RECOVERY"),
+            &active.join("recovery.next"),
+            name.as_bytes(),
+        )?;
     }
     if !dest.exists() {
         if !active.is_dir() {

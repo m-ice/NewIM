@@ -2,6 +2,7 @@
 #![forbid(unsafe_code)]
 mod deadline;
 mod files;
+mod initialization;
 mod migrations;
 mod operations;
 mod recovery;
@@ -10,7 +11,7 @@ pub use recovery::{RecoveryReport, quarantine, rebuild, salvage_pending};
 use newim_sdk_core::store::*;
 use rusqlite::{Connection, ErrorCode, OpenFlags};
 use std::{
-    fs::{self, File},
+    fs::File,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -111,17 +112,12 @@ impl SqliteStore {
         validate_request(&valid)?;
         verify_engine()?;
         let active = files::safe_active(root)?;
-        if !recovery && root.join("initialized").exists() && !active.join("store.db").is_file() {
-            return Err(StoreError::RecoveryRequired);
+        let (allow_create, identity) = initialization::prepare(root, &active, recovery, account)?;
+        let mut flags = OpenFlags::SQLITE_OPEN_READ_WRITE | OpenFlags::SQLITE_OPEN_NO_MUTEX;
+        if allow_create {
+            flags |= OpenFlags::SQLITE_OPEN_CREATE;
         }
-        fs::create_dir_all(&active).map_err(|_| StoreError::Io)?;
-        let mut conn = Connection::open_with_flags(
-            active.join("store.db"),
-            OpenFlags::SQLITE_OPEN_READ_WRITE
-                | OpenFlags::SQLITE_OPEN_CREATE
-                | OpenFlags::SQLITE_OPEN_NO_MUTEX,
-        )
-        .map_err(db)?;
+        let mut conn = Connection::open_with_flags(active.join("store.db"), flags).map_err(db)?;
         conn.busy_timeout(Duration::from_millis(100)).map_err(db)?;
         conn.set_limit(
             rusqlite::limits::Limit::SQLITE_LIMIT_LENGTH,
@@ -143,7 +139,30 @@ impl SqliteStore {
         if check != "ok" {
             return Err(StoreError::Corrupt);
         }
-        migrations::apply(&mut conn, account, recovery)?;
+        if !allow_create {
+            let version: i64 = conn
+                .pragma_query_value(None, "user_version", |r| r.get(0))
+                .map_err(db)?;
+            if version == 0 {
+                return Err(StoreError::RecoveryRequired);
+            }
+            if let Some(expected) = &identity {
+                let (owner, instance): (String, String) = conn
+                    .query_row(
+                        "SELECT account,instance FROM store_metadata WHERE id=1",
+                        [],
+                        |r| Ok((r.get(0)?, r.get(1)?)),
+                    )
+                    .map_err(db)?;
+                if owner != expected.account {
+                    return Err(StoreError::StaleGeneration);
+                }
+                if !recovery && instance != expected.instance {
+                    return Err(StoreError::RecoveryRequired);
+                }
+            }
+        }
+        migrations::apply(&mut conn, account, recovery, allow_create)?;
         let mode: String = conn
             .query_row("PRAGMA journal_mode=WAL", [], |r| r.get(0))
             .map_err(db)?;
@@ -173,9 +192,7 @@ impl SqliteStore {
                 },
             )
             .map_err(db)?;
-        if !root.join("initialized").exists() {
-            files::marker(&root.join("initialized"), b"NewIM LocalStore v1\n")?;
-        }
+        initialization::publish(root, &fence.account, &fence.instance)?;
         Ok(Self {
             conn,
             root: root.to_path_buf(),

@@ -65,6 +65,8 @@ pub fn safe_active(root: &Path) -> Result<PathBuf, StoreError> {
         "active/store.db",
         "active/store.db-wal",
         "active/store.db-shm",
+        "active/initialized.next",
+        "active/recovery.next",
         "initialized",
         "RECOVERY",
     ] {
@@ -88,5 +90,34 @@ pub fn marker(path: &Path, data: &[u8]) -> Result<(), StoreError> {
     f.write_all(data)
         .and_then(|_| f.sync_all())
         .map_err(|_| StoreError::Io)?;
+    sync_dir(path.parent().ok_or(StoreError::InvalidInput)?)
+}
+
+/// Atomically publish a bounded marker; retain an interrupted conflicting temporary file.
+pub(crate) fn replace_marker(path: &Path, temporary: &Path, data: &[u8]) -> Result<(), StoreError> {
+    no_symlinks(path)?;
+    no_symlinks(temporary)?;
+    if path.is_file() && fs::read(path).map_err(|_| StoreError::Io)? == data {
+        File::open(path)
+            .and_then(|f| f.sync_all())
+            .map_err(|_| StoreError::Io)?;
+        return sync_dir(path.parent().ok_or(StoreError::InvalidInput)?);
+    }
+    if temporary.exists() {
+        let metadata = fs::metadata(temporary).map_err(|_| StoreError::Io)?;
+        if !metadata.is_file()
+            || metadata.len() != data.len() as u64
+            || fs::read(temporary).map_err(|_| StoreError::Io)? != data
+        {
+            return Err(StoreError::RecoveryRequired);
+        }
+        File::open(temporary)
+            .and_then(|f| f.sync_all())
+            .map_err(|_| StoreError::Io)?;
+    } else {
+        marker(temporary, data)?;
+    }
+    fs::rename(temporary, path).map_err(|_| StoreError::Io)?;
+    sync_dir(temporary.parent().ok_or(StoreError::InvalidInput)?)?;
     sync_dir(path.parent().ok_or(StoreError::InvalidInput)?)
 }
