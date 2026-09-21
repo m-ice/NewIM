@@ -3,7 +3,9 @@
 //! Parsing validates a wire contract; it never confirms server persistence or
 //! authorizes a send. Unknown payload schemas remain opaque and unsupported.
 
+mod intent;
 mod scan;
+pub mod send;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -137,6 +139,12 @@ fn message_type(value: &str) -> bool {
 pub fn decode(input: &[u8]) -> Result<Message, Error> {
     scan::check(input)?;
     let text = std::str::from_utf8(input).map_err(|_| Error::InvalidJson)?;
+    let message = decode_shape(text)?;
+    validate_semantics(&message)?;
+    Ok(message)
+}
+
+fn decode_shape(text: &str) -> Result<Message, Error> {
     let mut fields = object(text)?;
     let protocol_version = version(&fields, "protocolVersion")?;
     let version = version(&fields, "version")?;
@@ -148,7 +156,7 @@ pub fn decode(input: &[u8]) -> Result<Message, Error> {
     let message_type = string(&fields, "type")?;
     let server_time = string(&fields, "serverTime")?;
     let payload = fields.remove("payload").ok_or(Error::InvalidMessage)?;
-    let payload_fields = object(payload.get())?;
+    object(payload.get())?;
     let message = Message {
         protocol_version,
         version,
@@ -171,16 +179,20 @@ pub fn decode(input: &[u8]) -> Result<Message, Error> {
     {
         return Err(Error::InvalidMessage);
     }
+    Ok(message)
+}
+
+fn validate_semantics(message: &Message) -> Result<(), Error> {
     if message.protocol_version != 1 {
         return Err(Error::UnsupportedVersion);
     }
     if message.supported() {
-        let text = string(&payload_fields, "text")?;
+        let text = string(&object(message.payload.get())?, "text")?;
         if text.is_empty() || text.len() > MAX_TEXT_BYTES {
             return Err(Error::InvalidMessage);
         }
     }
-    Ok(message)
+    Ok(())
 }
 
 /// 校验实际可编码消息 / Validate the complete encoded representation.

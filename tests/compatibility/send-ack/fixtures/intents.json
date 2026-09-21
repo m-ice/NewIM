@@ -1,0 +1,198 @@
+[
+  {
+    "id": "number-equal-0",
+    "left": "{\"n\":1}",
+    "right": "{\"n\":1.0}",
+    "equal": true,
+    "error": null
+  },
+  {
+    "id": "number-equal-1",
+    "left": "{\"n\":1}",
+    "right": "{\"n\":10e-1}",
+    "equal": true,
+    "error": null
+  },
+  {
+    "id": "number-equal-2",
+    "left": "{\"n\":1e9999}",
+    "right": "{\"n\":10e9998}",
+    "equal": true,
+    "error": null
+  },
+  {
+    "id": "number-equal-3",
+    "left": "{\"n\":-0.0e9999}",
+    "right": "{\"n\":0}",
+    "equal": true,
+    "error": null
+  },
+  {
+    "id": "number-equal-4",
+    "left": "{\"n\":9007199254740992}",
+    "right": "{\"n\":9007199254740992.0}",
+    "equal": true,
+    "error": null
+  },
+  {
+    "id": "number-equal-5",
+    "left": "{\"n\":1e-9999}",
+    "right": "{\"n\":10e-10000}",
+    "equal": true,
+    "error": null
+  },
+  {
+    "id": "number-equal-6",
+    "left": "{\"n\":100.0e-2}",
+    "right": "{\"n\":1}",
+    "equal": true,
+    "error": null
+  },
+  {
+    "id": "number-equal-7",
+    "left": "{\"n\":-1e+0009}",
+    "right": "{\"n\":-10e8}",
+    "equal": true,
+    "error": null
+  },
+  {
+    "id": "number-equal-8",
+    "left": "{\"n\":1e99999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999}",
+    "right": "{\"n\":10e99999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999998}",
+    "equal": true,
+    "error": null
+  },
+  {
+    "id": "number-equal-9",
+    "left": "{\"n\":1e-9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999998}",
+    "right": "{\"n\":10e-9999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999999}",
+    "equal": true,
+    "error": null
+  },
+  {
+    "id": "number-different-0",
+    "left": "{\"n\":9007199254740992}",
+    "right": "{\"n\":9007199254740993}",
+    "equal": false,
+    "error": null
+  },
+  {
+    "id": "number-different-1",
+    "left": "{\"n\":1}",
+    "right": "{\"n\":-1}",
+    "equal": false,
+    "error": null
+  },
+  {
+    "id": "number-different-2",
+    "left": "{\"n\":1e9999}",
+    "right": "{\"n\":1e9998}",
+    "equal": false,
+    "error": null
+  },
+  {
+    "id": "number-different-3",
+    "left": "{\"n\":1e-9999}",
+    "right": "{\"n\":1e9999}",
+    "equal": false,
+    "error": null
+  },
+  {
+    "id": "number-different-4",
+    "left": "{\"n\":0}",
+    "right": "{\"n\":1}",
+    "equal": false,
+    "error": null
+  },
+  {
+    "id": "number-different-5",
+    "left": "{\"n\":1}",
+    "right": "{\"n\":\"1\"}",
+    "equal": false,
+    "error": null
+  },
+  {
+    "id": "key-order-escape",
+    "left": "{\"a\":1,\"b\":\"a\"}",
+    "right": " { \"b\":\"\\u0061\", \"\\u0061\":1.00 } ",
+    "equal": true,
+    "error": null
+  },
+  {
+    "id": "nul",
+    "left": "{\"v\":\"x\\u0000\"}",
+    "right": "{\"v\":\"\\u0078\\u0000\"}",
+    "equal": true,
+    "error": null
+  },
+  {
+    "id": "surrogate-pair",
+    "left": "{\"v\":\"😀\"}",
+    "right": "{\"v\":\"\\ud83d\\ude00\"}",
+    "equal": true,
+    "error": null
+  },
+  {
+    "id": "not-nfc",
+    "left": "{\"v\":\"é\"}",
+    "right": "{\"v\":\"e\\u0301\"}",
+    "equal": false,
+    "error": null
+  },
+  {
+    "id": "array-order",
+    "left": "{\"v\":[1,2]}",
+    "right": "{\"v\":[2,1]}",
+    "equal": false,
+    "error": null
+  },
+  {
+    "id": "missing-null",
+    "left": "{}",
+    "right": "{\"x\":null}",
+    "equal": false,
+    "error": null
+  },
+  {
+    "id": "bool-number",
+    "left": "{\"v\":true}",
+    "right": "{\"v\":1}",
+    "equal": false,
+    "error": null
+  },
+  {
+    "id": "unknown-extension",
+    "left": "{\"text\":\"a\",\"x\":1}",
+    "right": "{\"text\":\"a\",\"x\":2}",
+    "equal": false,
+    "error": null
+  },
+  {
+    "id": "serde-key",
+    "left": "{\"$serde_json::private::Number\":\"1\"}",
+    "right": "{\"$serde_json::private::Number\":\"1\"}",
+    "equal": true,
+    "error": null
+  },
+  {
+    "id": "nested",
+    "left": "{\"a\":[{\"x\":1.0},null,false]}",
+    "right": "{\"a\":[{\"x\":10e-1},null,false]}",
+    "equal": true,
+    "error": null
+  },
+  {
+    "id": "duplicate",
+    "left": "{\"a\":1,\"a\":1}",
+    "right": "{}",
+    "equal": false,
+    "error": "PROTOCOL_INVALID_JSON"
+  },
+  {
+    "id": "number-129",
+    "left": "{\"n\":111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111}",
+    "right": "{}",
+    "equal": false,
+    "error": "PROTOCOL_INVALID_JSON"
+  }
+]

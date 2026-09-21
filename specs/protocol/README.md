@@ -29,3 +29,5 @@
 Go import: `github.com/m-ice/NewIM/core/protocol/go`（包名 protocol）；Rust workspace crate: `newim-protocol`。具体公有类型见各自源码。Go decode 后持有独立 payload 副本；Rust持有 Box<RawValue>，均无网络、数据库或 UI 依赖。完整决策见 ../../docs/adr/0003-protocol-v1.md。本阶段不实现鉴权、持久化 ACK、WebSocket 收发、离线同步或消息渲染。
 
 Error tie-breaking: after checking overall byte size and UTF-8, scan JSON left-to-right. An already encountered excessive container depth takes precedence over a later malformed Unicode escape. Encode first rejects a raw public-field byte sum that already exceeds the wire limit, then validates the complete output envelope with Decode rules; it must not check envelope shape before raw payload errors.
+
+Additive send/ACK/error framing and pure intent/correlation helpers are documented in [send-ack.md](send-ack.md). These codecs do not implement a server commit, authentication, WebSocket service or SDK send state machine.

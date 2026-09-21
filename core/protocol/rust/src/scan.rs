@@ -5,11 +5,23 @@ use std::collections::BTreeSet;
 use crate::{Error, MAX_DEPTH, MAX_WIRE_BYTES};
 
 pub(crate) fn check(input: &[u8]) -> Result<(), Error> {
-    if input.len() > MAX_WIRE_BYTES {
+    check_with_limits(input, MAX_WIRE_BYTES, MAX_DEPTH)
+}
+
+pub(crate) fn check_with_limits(
+    input: &[u8],
+    max_bytes: usize,
+    max_depth: usize,
+) -> Result<(), Error> {
+    if input.len() > max_bytes {
         return Err(Error::MessageTooLarge);
     }
     std::str::from_utf8(input).map_err(|_| Error::InvalidJson)?;
-    let mut scan = Scanner { input, offset: 0 };
+    let mut scan = Scanner {
+        input,
+        offset: 0,
+        max_depth,
+    };
     scan.value(0)?;
     scan.whitespace();
     if scan.offset != input.len() {
@@ -21,6 +33,7 @@ pub(crate) fn check(input: &[u8]) -> Result<(), Error> {
 struct Scanner<'a> {
     input: &'a [u8],
     offset: usize,
+    max_depth: usize,
 }
 
 impl Scanner<'_> {
@@ -57,7 +70,7 @@ impl Scanner<'_> {
     }
 
     fn object(&mut self, depth: usize) -> Result<(), Error> {
-        if depth > MAX_DEPTH {
+        if depth > self.max_depth {
             return Err(Error::NestingExceeded);
         }
         self.take(b'{')?;
@@ -91,7 +104,7 @@ impl Scanner<'_> {
     }
 
     fn array(&mut self, depth: usize) -> Result<(), Error> {
-        if depth > MAX_DEPTH {
+        if depth > self.max_depth {
             return Err(Error::NestingExceeded);
         }
         self.take(b'[')?;

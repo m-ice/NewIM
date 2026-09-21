@@ -34,3 +34,17 @@ protocol-unknown-type: toolchain
 protocol-limits: toolchain
 	go test -count=1 -run '^TestLimits$$' ./tests/compatibility
 	cargo test -p newim-protocol --locked --test fixtures limits -- --exact
+
+.PHONY: send-protocol-golden send-protocol-errors send-protocol-limits
+
+send-protocol-golden: toolchain
+	go test -count=1 ./tests/compatibility/send-ack/golden
+	cargo test -p newim-protocol --locked --test send_golden
+
+send-protocol-errors: toolchain
+	go test -count=1 ./tests/compatibility/send-ack/errors
+	cargo test -p newim-protocol --locked --test send_errors
+
+send-protocol-limits: toolchain
+	go test -count=1 ./tests/compatibility/send-ack/limits
+	cargo test -p newim-protocol --locked --test send_limits

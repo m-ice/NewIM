@@ -1,0 +1,632 @@
+[
+  {
+    "id": "send-missing-clientMsgId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send-null-clientMsgId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":null,\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send-missing-conversationId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send-null-conversationId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":null,\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send-missing-version",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"type\":\"text\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send-null-version",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":null,\"type\":\"text\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send-missing-type",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send-null-type",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":null,\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send-missing-payload",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\"}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send-null-payload",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":null}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send-future-outer",
+    "wire": "{\"protocolVersion\":2,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "send",
+    "error": "PROTOCOL_UNSUPPORTED_VERSION"
+  },
+  {
+    "id": "send-wrong-direction",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "server",
+    "error": "PROTOCOL_UNSUPPORTED_FRAME"
+  },
+  {
+    "id": "send_ack-missing-status",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_ack\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"senderId\":\"u1\",\"serverMsgId\":\"s1\",\"conversationSeq\":\"1\",\"serverTime\":\"1\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send_ack-null-status",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_ack\",\"body\":{\"status\":null,\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"senderId\":\"u1\",\"serverMsgId\":\"s1\",\"conversationSeq\":\"1\",\"serverTime\":\"1\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send_ack-missing-clientMsgId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_ack\",\"body\":{\"status\":\"SERVER_PERSISTED\",\"conversationId\":\"room1\",\"senderId\":\"u1\",\"serverMsgId\":\"s1\",\"conversationSeq\":\"1\",\"serverTime\":\"1\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send_ack-null-clientMsgId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_ack\",\"body\":{\"status\":\"SERVER_PERSISTED\",\"clientMsgId\":null,\"conversationId\":\"room1\",\"senderId\":\"u1\",\"serverMsgId\":\"s1\",\"conversationSeq\":\"1\",\"serverTime\":\"1\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send_ack-missing-conversationId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_ack\",\"body\":{\"status\":\"SERVER_PERSISTED\",\"clientMsgId\":\"c1\",\"senderId\":\"u1\",\"serverMsgId\":\"s1\",\"conversationSeq\":\"1\",\"serverTime\":\"1\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send_ack-null-conversationId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_ack\",\"body\":{\"status\":\"SERVER_PERSISTED\",\"clientMsgId\":\"c1\",\"conversationId\":null,\"senderId\":\"u1\",\"serverMsgId\":\"s1\",\"conversationSeq\":\"1\",\"serverTime\":\"1\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send_ack-missing-senderId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_ack\",\"body\":{\"status\":\"SERVER_PERSISTED\",\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"serverMsgId\":\"s1\",\"conversationSeq\":\"1\",\"serverTime\":\"1\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send_ack-null-senderId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_ack\",\"body\":{\"status\":\"SERVER_PERSISTED\",\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"senderId\":null,\"serverMsgId\":\"s1\",\"conversationSeq\":\"1\",\"serverTime\":\"1\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send_ack-missing-serverMsgId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_ack\",\"body\":{\"status\":\"SERVER_PERSISTED\",\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"senderId\":\"u1\",\"conversationSeq\":\"1\",\"serverTime\":\"1\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send_ack-null-serverMsgId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_ack\",\"body\":{\"status\":\"SERVER_PERSISTED\",\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"senderId\":\"u1\",\"serverMsgId\":null,\"conversationSeq\":\"1\",\"serverTime\":\"1\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send_ack-missing-conversationSeq",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_ack\",\"body\":{\"status\":\"SERVER_PERSISTED\",\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"senderId\":\"u1\",\"serverMsgId\":\"s1\",\"serverTime\":\"1\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send_ack-null-conversationSeq",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_ack\",\"body\":{\"status\":\"SERVER_PERSISTED\",\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"senderId\":\"u1\",\"serverMsgId\":\"s1\",\"conversationSeq\":null,\"serverTime\":\"1\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send_ack-missing-serverTime",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_ack\",\"body\":{\"status\":\"SERVER_PERSISTED\",\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"senderId\":\"u1\",\"serverMsgId\":\"s1\",\"conversationSeq\":\"1\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send_ack-null-serverTime",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_ack\",\"body\":{\"status\":\"SERVER_PERSISTED\",\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"senderId\":\"u1\",\"serverMsgId\":\"s1\",\"conversationSeq\":\"1\",\"serverTime\":null}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send_ack-future-outer",
+    "wire": "{\"protocolVersion\":2,\"kind\":\"send_ack\",\"body\":{\"status\":\"SERVER_PERSISTED\",\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"senderId\":\"u1\",\"serverMsgId\":\"s1\",\"conversationSeq\":\"1\",\"serverTime\":\"1\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_UNSUPPORTED_VERSION"
+  },
+  {
+    "id": "send_ack-wrong-direction",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_ack\",\"body\":{\"status\":\"SERVER_PERSISTED\",\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"senderId\":\"u1\",\"serverMsgId\":\"s1\",\"conversationSeq\":\"1\",\"serverTime\":\"1\"}}",
+    "direction": "send",
+    "error": "PROTOCOL_UNSUPPORTED_FRAME"
+  },
+  {
+    "id": "send_error-missing-clientMsgId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_error\",\"body\":{\"conversationId\":\"room1\",\"code\":\"SEND_ID_CONFLICT\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send_error-null-clientMsgId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_error\",\"body\":{\"clientMsgId\":null,\"conversationId\":\"room1\",\"code\":\"SEND_ID_CONFLICT\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send_error-missing-conversationId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_error\",\"body\":{\"clientMsgId\":\"c1\",\"code\":\"SEND_ID_CONFLICT\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send_error-null-conversationId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_error\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":null,\"code\":\"SEND_ID_CONFLICT\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send_error-missing-code",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_error\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send_error-null-code",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_error\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"code\":null}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "send_error-future-outer",
+    "wire": "{\"protocolVersion\":2,\"kind\":\"send_error\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"code\":\"SEND_ID_CONFLICT\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_UNSUPPORTED_VERSION"
+  },
+  {
+    "id": "send_error-wrong-direction",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_error\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"code\":\"SEND_ID_CONFLICT\"}}",
+    "direction": "send",
+    "error": "PROTOCOL_UNSUPPORTED_FRAME"
+  },
+  {
+    "id": "message-missing-protocolVersion",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"message\",\"body\":{\"version\":1,\"clientMsgId\":\"c1\",\"serverMsgId\":\"s1\",\"conversationId\":\"room1\",\"conversationSeq\":\"1\",\"senderId\":\"u1\",\"type\":\"text\",\"serverTime\":\"1\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "message-null-protocolVersion",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"message\",\"body\":{\"protocolVersion\":null,\"version\":1,\"clientMsgId\":\"c1\",\"serverMsgId\":\"s1\",\"conversationId\":\"room1\",\"conversationSeq\":\"1\",\"senderId\":\"u1\",\"type\":\"text\",\"serverTime\":\"1\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "message-missing-version",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"message\",\"body\":{\"protocolVersion\":1,\"clientMsgId\":\"c1\",\"serverMsgId\":\"s1\",\"conversationId\":\"room1\",\"conversationSeq\":\"1\",\"senderId\":\"u1\",\"type\":\"text\",\"serverTime\":\"1\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "message-null-version",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"message\",\"body\":{\"protocolVersion\":1,\"version\":null,\"clientMsgId\":\"c1\",\"serverMsgId\":\"s1\",\"conversationId\":\"room1\",\"conversationSeq\":\"1\",\"senderId\":\"u1\",\"type\":\"text\",\"serverTime\":\"1\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "message-missing-clientMsgId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"message\",\"body\":{\"protocolVersion\":1,\"version\":1,\"serverMsgId\":\"s1\",\"conversationId\":\"room1\",\"conversationSeq\":\"1\",\"senderId\":\"u1\",\"type\":\"text\",\"serverTime\":\"1\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "message-null-clientMsgId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"message\",\"body\":{\"protocolVersion\":1,\"version\":1,\"clientMsgId\":null,\"serverMsgId\":\"s1\",\"conversationId\":\"room1\",\"conversationSeq\":\"1\",\"senderId\":\"u1\",\"type\":\"text\",\"serverTime\":\"1\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "message-missing-serverMsgId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"message\",\"body\":{\"protocolVersion\":1,\"version\":1,\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"conversationSeq\":\"1\",\"senderId\":\"u1\",\"type\":\"text\",\"serverTime\":\"1\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "message-null-serverMsgId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"message\",\"body\":{\"protocolVersion\":1,\"version\":1,\"clientMsgId\":\"c1\",\"serverMsgId\":null,\"conversationId\":\"room1\",\"conversationSeq\":\"1\",\"senderId\":\"u1\",\"type\":\"text\",\"serverTime\":\"1\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "message-missing-conversationId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"message\",\"body\":{\"protocolVersion\":1,\"version\":1,\"clientMsgId\":\"c1\",\"serverMsgId\":\"s1\",\"conversationSeq\":\"1\",\"senderId\":\"u1\",\"type\":\"text\",\"serverTime\":\"1\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "message-null-conversationId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"message\",\"body\":{\"protocolVersion\":1,\"version\":1,\"clientMsgId\":\"c1\",\"serverMsgId\":\"s1\",\"conversationId\":null,\"conversationSeq\":\"1\",\"senderId\":\"u1\",\"type\":\"text\",\"serverTime\":\"1\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "message-missing-conversationSeq",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"message\",\"body\":{\"protocolVersion\":1,\"version\":1,\"clientMsgId\":\"c1\",\"serverMsgId\":\"s1\",\"conversationId\":\"room1\",\"senderId\":\"u1\",\"type\":\"text\",\"serverTime\":\"1\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "message-null-conversationSeq",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"message\",\"body\":{\"protocolVersion\":1,\"version\":1,\"clientMsgId\":\"c1\",\"serverMsgId\":\"s1\",\"conversationId\":\"room1\",\"conversationSeq\":null,\"senderId\":\"u1\",\"type\":\"text\",\"serverTime\":\"1\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "message-missing-senderId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"message\",\"body\":{\"protocolVersion\":1,\"version\":1,\"clientMsgId\":\"c1\",\"serverMsgId\":\"s1\",\"conversationId\":\"room1\",\"conversationSeq\":\"1\",\"type\":\"text\",\"serverTime\":\"1\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "message-null-senderId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"message\",\"body\":{\"protocolVersion\":1,\"version\":1,\"clientMsgId\":\"c1\",\"serverMsgId\":\"s1\",\"conversationId\":\"room1\",\"conversationSeq\":\"1\",\"senderId\":null,\"type\":\"text\",\"serverTime\":\"1\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "message-missing-type",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"message\",\"body\":{\"protocolVersion\":1,\"version\":1,\"clientMsgId\":\"c1\",\"serverMsgId\":\"s1\",\"conversationId\":\"room1\",\"conversationSeq\":\"1\",\"senderId\":\"u1\",\"serverTime\":\"1\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "message-null-type",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"message\",\"body\":{\"protocolVersion\":1,\"version\":1,\"clientMsgId\":\"c1\",\"serverMsgId\":\"s1\",\"conversationId\":\"room1\",\"conversationSeq\":\"1\",\"senderId\":\"u1\",\"type\":null,\"serverTime\":\"1\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "message-missing-serverTime",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"message\",\"body\":{\"protocolVersion\":1,\"version\":1,\"clientMsgId\":\"c1\",\"serverMsgId\":\"s1\",\"conversationId\":\"room1\",\"conversationSeq\":\"1\",\"senderId\":\"u1\",\"type\":\"text\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "message-null-serverTime",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"message\",\"body\":{\"protocolVersion\":1,\"version\":1,\"clientMsgId\":\"c1\",\"serverMsgId\":\"s1\",\"conversationId\":\"room1\",\"conversationSeq\":\"1\",\"senderId\":\"u1\",\"type\":\"text\",\"serverTime\":null,\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "message-missing-payload",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"message\",\"body\":{\"protocolVersion\":1,\"version\":1,\"clientMsgId\":\"c1\",\"serverMsgId\":\"s1\",\"conversationId\":\"room1\",\"conversationSeq\":\"1\",\"senderId\":\"u1\",\"type\":\"text\",\"serverTime\":\"1\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "message-null-payload",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"message\",\"body\":{\"protocolVersion\":1,\"version\":1,\"clientMsgId\":\"c1\",\"serverMsgId\":\"s1\",\"conversationId\":\"room1\",\"conversationSeq\":\"1\",\"senderId\":\"u1\",\"type\":\"text\",\"serverTime\":\"1\",\"payload\":null}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "message-future-outer",
+    "wire": "{\"protocolVersion\":2,\"kind\":\"message\",\"body\":{\"protocolVersion\":1,\"version\":1,\"clientMsgId\":\"c1\",\"serverMsgId\":\"s1\",\"conversationId\":\"room1\",\"conversationSeq\":\"1\",\"senderId\":\"u1\",\"type\":\"text\",\"serverTime\":\"1\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "server",
+    "error": "PROTOCOL_UNSUPPORTED_VERSION"
+  },
+  {
+    "id": "message-wrong-direction",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"message\",\"body\":{\"protocolVersion\":1,\"version\":1,\"clientMsgId\":\"c1\",\"serverMsgId\":\"s1\",\"conversationId\":\"room1\",\"conversationSeq\":\"1\",\"senderId\":\"u1\",\"type\":\"text\",\"serverTime\":\"1\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "send",
+    "error": "PROTOCOL_UNSUPPORTED_FRAME"
+  },
+  {
+    "id": "authority-body-senderId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"},\"senderId\":null}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "authority-outer-senderId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"}},\"senderId\":null}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "authority-body-serverMsgId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"},\"serverMsgId\":null}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "authority-outer-serverMsgId",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"}},\"serverMsgId\":null}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "authority-body-conversationSeq",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"},\"conversationSeq\":null}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "authority-outer-conversationSeq",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"}},\"conversationSeq\":null}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "authority-body-serverTime",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"},\"serverTime\":null}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "authority-outer-serverTime",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"}},\"serverTime\":null}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "authority-body-status",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"},\"status\":null}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "authority-outer-status",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"}},\"status\":null}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "authority-escaped",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"},\"sender\\u0049d\":\"u\"}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "ack-status-SERVER_ACCEPTED",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_ack\",\"body\":{\"status\":\"SERVER_ACCEPTED\",\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"senderId\":\"u1\",\"serverMsgId\":\"s1\",\"conversationSeq\":\"1\",\"serverTime\":\"1\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "ack-status-DELIVERED",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_ack\",\"body\":{\"status\":\"DELIVERED\",\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"senderId\":\"u1\",\"serverMsgId\":\"s1\",\"conversationSeq\":\"1\",\"serverTime\":\"1\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "ack-status-READ",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_ack\",\"body\":{\"status\":\"READ\",\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"senderId\":\"u1\",\"serverMsgId\":\"s1\",\"conversationSeq\":\"1\",\"serverTime\":\"1\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "ack-status-",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_ack\",\"body\":{\"status\":\"\",\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"senderId\":\"u1\",\"serverMsgId\":\"s1\",\"conversationSeq\":\"1\",\"serverTime\":\"1\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "error-code-73",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_error\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"code\":\"\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "error-code-74",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_error\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"code\":\"lower\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "error-code-75",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_error\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"code\":\"1BAD\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "error-code-76",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_error\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"code\":\"HAS SPACE\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "error-code-77",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_error\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"code\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "outer-missing-protocolVersion",
+    "wire": "{\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "outer-missing-kind",
+    "wire": "{\"protocolVersion\":1,\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "outer-missing-body",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\"}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "body-shape-81",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":null}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "body-shape-82",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":[]}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "body-shape-83",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":1}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "body-shape-84",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":\"x\"}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "version-shape-85",
+    "wire": "{\"protocolVersion\":0,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "version-shape-86",
+    "wire": "{\"protocolVersion\":-1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "version-shape-87",
+    "wire": "{\"protocolVersion\":1.5,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "version-shape-88",
+    "wire": "{\"protocolVersion\":\"1\",\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "version-shape-89",
+    "wire": "{\"protocolVersion\":2147483648,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "unknown-kind",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"future\",\"body\":{}}",
+    "direction": "send",
+    "error": "PROTOCOL_UNSUPPORTED_FRAME"
+  },
+  {
+    "id": "unknown-kind-shape-first",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"future\",\"body\":null}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "unknown-kind-version-first",
+    "wire": "{\"protocolVersion\":2,\"kind\":\"future\",\"body\":{}}",
+    "direction": "send",
+    "error": "PROTOCOL_UNSUPPORTED_VERSION"
+  },
+  {
+    "id": "shape-before-version",
+    "wire": "{\"protocolVersion\":2,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":null,\"type\":\"text\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "text-after-version",
+    "wire": "{\"protocolVersion\":2,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"\"}}}",
+    "direction": "send",
+    "error": "PROTOCOL_UNSUPPORTED_VERSION"
+  },
+  {
+    "id": "text-after-direction",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"\"}}}",
+    "direction": "server",
+    "error": "PROTOCOL_UNSUPPORTED_FRAME"
+  },
+  {
+    "id": "ack-status-before-version",
+    "wire": "{\"protocolVersion\":2,\"kind\":\"send_ack\",\"body\":{\"status\":\"READ\",\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"senderId\":\"u1\",\"serverMsgId\":\"s1\",\"conversationSeq\":\"1\",\"serverTime\":\"1\"}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "inner-version",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"message\",\"body\":{\"protocolVersion\":2,\"version\":1,\"clientMsgId\":\"c1\",\"serverMsgId\":\"s1\",\"conversationId\":\"room1\",\"conversationSeq\":\"1\",\"senderId\":\"u1\",\"type\":\"text\",\"serverTime\":\"1\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "server",
+    "error": "PROTOCOL_UNSUPPORTED_VERSION"
+  },
+  {
+    "id": "inner-shape-before-outer-version",
+    "wire": "{\"protocolVersion\":2,\"kind\":\"message\",\"body\":{\"protocolVersion\":1,\"version\":1,\"clientMsgId\":\"c1\",\"serverMsgId\":null,\"conversationId\":\"room1\",\"conversationSeq\":\"1\",\"senderId\":\"u1\",\"type\":\"text\",\"serverTime\":\"1\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "server",
+    "error": "PROTOCOL_INVALID_MESSAGE"
+  },
+  {
+    "id": "duplicate-outer",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"}},\"kind\":\"send\"}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_JSON"
+  },
+  {
+    "id": "duplicate-escaped-payload",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\",\"te\\u0078t\":\"hi\"}}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_JSON"
+  },
+  {
+    "id": "surrogate",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"\\ud800\"}}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_JSON"
+  },
+  {
+    "id": "trailing",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"}}}{}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_JSON"
+  },
+  {
+    "id": "overlong-number",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\",\"n\":111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111111}}}",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_JSON"
+  },
+  {
+    "id": "invalid-utf8",
+    "wireHex": "7b2270726f746f636f6c56657273696f6e223a312c226b696e64223a2273656e64222c22626f6479223a7b22636c69656e744d73674964223a226331222c22636f6e766572736174696f6e4964223a22726f6f6d31222c2276657273696f6e223a312c2274797065223a2274657874222c227061796c6f6164223a7b2274657874223a226869227d7d7dff",
+    "direction": "send",
+    "error": "PROTOCOL_INVALID_JSON"
+  }
+]

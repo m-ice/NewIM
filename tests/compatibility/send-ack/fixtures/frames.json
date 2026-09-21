@@ -1,0 +1,62 @@
+[
+  {
+    "id": "send",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "send",
+    "error": null
+  },
+  {
+    "id": "ack",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_ack\",\"body\":{\"status\":\"SERVER_PERSISTED\",\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"senderId\":\"u1\",\"serverMsgId\":\"s1\",\"conversationSeq\":\"1\",\"serverTime\":\"1\"}}",
+    "direction": "server",
+    "error": null
+  },
+  {
+    "id": "error",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send_error\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"code\":\"SEND_ID_CONFLICT\"}}",
+    "direction": "server",
+    "error": null
+  },
+  {
+    "id": "message",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"message\",\"body\":{\"protocolVersion\":1,\"version\":1,\"clientMsgId\":\"c1\",\"serverMsgId\":\"s1\",\"conversationId\":\"room1\",\"conversationSeq\":\"1\",\"senderId\":\"u1\",\"type\":\"text\",\"serverTime\":\"1\",\"payload\":{\"text\":\"hi\"}}}",
+    "direction": "server",
+    "error": null
+  },
+  {
+    "id": "send-unknown-payload",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\",\"senderId\":\"ordinary\",\"n\":9007199254740993,\"$serde_json::private::Number\":\"ordinary\"}}}",
+    "direction": "send",
+    "error": null
+  },
+  {
+    "id": "future-type",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"future\",\"payload\":{\"n\":\"x\"}}}",
+    "direction": "send",
+    "error": null
+  },
+  {
+    "id": "future-schema",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":2,\"type\":\"text\",\"payload\":{}}}",
+    "direction": "send",
+    "error": null
+  },
+  {
+    "id": "unknown-fields",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\"},\"extra\":{\"v\":1}}}",
+    "direction": "send",
+    "error": null
+  },
+  {
+    "id": "payload-huge-number",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\",\"n\":1e9999}}}",
+    "direction": "send",
+    "error": null
+  },
+  {
+    "id": "payload-nul",
+    "wire": "{\"protocolVersion\":1,\"kind\":\"send\",\"body\":{\"clientMsgId\":\"c1\",\"conversationId\":\"room1\",\"version\":1,\"type\":\"text\",\"payload\":{\"text\":\"hi\\u0000\"}}}",
+    "direction": "send",
+    "error": null
+  }
+]

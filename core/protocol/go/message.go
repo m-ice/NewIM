@@ -87,7 +87,9 @@ func shape(m Message) bool {
 }
 
 // Decode rejects ambiguous JSON before interpreting fields. 先消除重复键等解析歧义，再校验语义。
-func Decode(wire []byte) (Message, error) {
+func Decode(wire []byte) (Message, error) { return decodeMessage(wire, true) }
+
+func decodeMessage(wire []byte, semantics bool) (Message, error) {
 	var m Message
 	if err := strictJSON(wire); err != nil {
 		return m, err
@@ -120,10 +122,10 @@ func Decode(wire []byte) (Message, error) {
 	if !ok || json.Unmarshal(raw, &payload) != nil || payload == nil || !shape(m) {
 		return Message{}, InvalidMessage
 	}
-	if m.ProtocolVersion != 1 {
+	if semantics && m.ProtocolVersion != 1 {
 		return Message{}, UnsupportedVersion
 	}
-	if m.Supported() {
+	if semantics && m.Supported() {
 		var text string
 		if json.Unmarshal(payload["text"], &text) != nil || len(text) == 0 || len(text) > MaxTextBytes {
 			return Message{}, InvalidMessage
@@ -183,8 +185,10 @@ func Encode(m Message) ([]byte, error) {
 // Validate applies the same rules as Encode. 出站校验与编码使用同一契约。
 func Validate(m Message) error { _, err := Encode(m); return err }
 
-func strictJSON(wire []byte) error {
-	if len(wire) > MaxBytes {
+func strictJSON(wire []byte) error { return strictJSONLimits(wire, MaxBytes, MaxDepth) }
+
+func strictJSONLimits(wire []byte, maxBytes, maxDepth int) error {
+	if len(wire) > maxBytes {
 		return TooLarge
 	}
 	if !utf8.Valid(wire) {
@@ -192,7 +196,7 @@ func strictJSON(wire []byte) error {
 	}
 	d := json.NewDecoder(bytes.NewReader(wire))
 	d.UseNumber()
-	if err := value(d, wire, 0); err != nil {
+	if err := value(d, wire, 0, maxDepth); err != nil {
 		return err
 	}
 	if _, err := d.Token(); err != io.EOF {
@@ -201,7 +205,7 @@ func strictJSON(wire []byte) error {
 	return nil
 }
 
-func value(d *json.Decoder, wire []byte, depth int) error {
+func value(d *json.Decoder, wire []byte, depth, maxDepth int) error {
 	start := d.InputOffset()
 	token, err := d.Token()
 	if err != nil {
@@ -221,7 +225,7 @@ func value(d *json.Decoder, wire []byte, depth int) error {
 		return InvalidJSON
 	}
 	depth++
-	if depth > MaxDepth {
+	if depth > maxDepth {
 		return TooDeep
 	}
 	if delim == '{' {
@@ -237,13 +241,13 @@ func value(d *json.Decoder, wire []byte, depth int) error {
 				return InvalidJSON
 			}
 			seen[name] = true
-			if err := value(d, wire, depth); err != nil {
+			if err := value(d, wire, depth, maxDepth); err != nil {
 				return err
 			}
 		}
 	} else {
 		for d.More() {
-			if err := value(d, wire, depth); err != nil {
+			if err := value(d, wire, depth, maxDepth); err != nil {
 				return err
 			}
 		}
