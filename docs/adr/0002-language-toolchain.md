@@ -1,7 +1,11 @@
 # ADR 0002: Product build foundation and build identity
 
-Status: proposed for independent review
+Status: accepted
 Date: 2026-09-21
+
+The decision is accepted following independent code, QA, security and licensing
+content reviews. The final implementation candidate still requires review
+coverage and test evidence bound to its exact commit before delivery.
 
 NewIM needs separately identifiable server and SDK artifacts before its message,
 storage and platform modules can be developed. Missing source metadata must remain
