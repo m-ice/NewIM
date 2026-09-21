@@ -45,6 +45,8 @@ class Commands:
         self.record(argv, code, time.monotonic()-start, label, data)
         if check and code:
             # Never include SQL/output containing payloads, IDs, tokens or signed URLs.
+            if label == 'image-inspect-after-pull' and b'unknown flag: --platform' in result.stderr:
+                raise Failure(f'{label}: Docker CLI does not support inspect --platform (exit {code})')
             raise Failure(f'{label}: command exit {code}')
         return result
 
@@ -81,43 +83,63 @@ def locked_metadata(target):
 
 def verify_inspected_image(actual, target, locked):
     expected_arch = 'arm64' if target == 'linux/arm64/v8' else 'amd64'
-    # Classic stores identify config; containerd stores identify the manifest.
-    # Both identities are cryptographically bound by the checked original metadata.
-    if (actual.get('Descriptor', {}).get('digest') != locked['manifest']
-            or actual.get('Id') not in (locked['config'], locked['manifest'])
-            or actual.get('Os') != 'linux' or actual.get('Architecture') != expected_arch
+    if (actual.get('Os') != 'linux' or actual.get('Architecture') != expected_arch
             or (expected_arch == 'arm64' and actual.get('Variant') not in ('v8', None, ''))
-            or actual.get('RootFS', {}).get('Layers') != locked['diff_ids']):
+            or not isinstance(actual.get('RootFS'), dict)
+            or actual['RootFS'].get('Layers') != locked['diff_ids']):
         raise Failure('local image descriptor/config/platform/rootfs does not match reviewed image lock')
+    if 'Descriptor' in actual:
+        descriptor = actual['Descriptor']
+        if (not isinstance(descriptor, dict) or descriptor.get('digest') != locked['manifest']
+                or actual.get('Id') not in (locked['config'], locked['manifest'])):
+            raise Failure('present image descriptor/config does not match reviewed image lock')
+        return 'oci-descriptor'
+    # Docker 28 classic: actual config identity binds execution settings and DiffIDs.
+    # 缺失 Descriptor 时仅允许官方仓库 digest 与精确 config；不凭相同标签降级。
+    aliases = ('postgres', 'library/postgres', 'docker.io/library/postgres')
+    expected = {repo+'@'+digest for repo in aliases for digest in (LOCK['index'], locked['manifest'])}
+    digests = actual.get('RepoDigests')
+    if (actual.get('Id') != locked['config'] or not isinstance(digests, list)
+            or not any(isinstance(d, str) and d in expected for d in digests)):
+        raise Failure('classic image config/official repository digest does not match reviewed image lock')
+    return 'classic-config'
 
 
 def image_identity(commands: Commands, *, prepare=False):
     target = native_platform()
     locked = locked_metadata(target)
+    explicit = 'NEWIM_DB_IMAGE' in os.environ
     selector = os.environ.get('NEWIM_DB_IMAGE', locked['manifest'])
     if selector.startswith('-') or len(selector) > 512:
         raise Failure('invalid local image selector')
     result = commands.run(['docker', 'image', 'inspect', selector, '--format', '{{json .}}'],
                           label='image-inspect', check=False)
+    if result.returncode and explicit:
+        raise Failure('explicit local image selector unavailable; no substitution allowed')
+    if result.returncode:
+        # Classic images are addressable by config ID, not the OCI manifest ID.
+        result = commands.run(['docker', 'image', 'inspect', locked['config'], '--format', '{{json .}}'],
+                              label='classic-config-inspect', check=False)
     if result.returncode and prepare:
         commands.run(['docker', 'pull', '--platform', target,
                       LOCK['repository']+'@'+LOCK['index']], timeout=180, label='locked-image-pull')
         selector = LOCK['repository']+'@'+LOCK['index']
-        result = commands.run(['docker', 'image', 'inspect', '--platform', target, selector,
+        result = commands.run(['docker', 'image', 'inspect', selector,
                                '--format', '{{json .}}'], label='image-inspect-after-pull')
     elif result.returncode:
         raise Failure('locked image absent; run make db-prepare first')
     actual = json.loads(result.stdout)
     # A prepared multiarch index may resolve to an index descriptor. Resolve its
     # locked platform by digest; never accept a tag just because its name matches.
-    if actual.get('Descriptor', {}).get('digest') == LOCK['index']:
+    if isinstance(actual.get('Descriptor'), dict) and actual['Descriptor'].get('digest') == LOCK['index']:
         result = commands.run(['docker', 'image', 'inspect', locked['manifest'],
                                '--format', '{{json .}}'], label='platform-image-inspect')
         actual = json.loads(result.stdout)
-    verify_inspected_image(actual, target, locked)
+    verification = verify_inspected_image(actual, target, locked)
     identity = {'platform': target, 'official_index': LOCK['index'],
                 'official_manifest': locked['manifest'], 'official_config': locked['config'],
-                'actual_image_id': actual['Id'], 'actual_repo_digests': actual.get('RepoDigests', []),
+                'actual_image_id': actual['Id'], 'verification': verification,
+                'actual_repo_digests': actual.get('RepoDigests', []),
                 'actual_size': actual.get('Size'), 'diff_ids': locked['diff_ids']}
     (commands.directory / 'image.json').write_text(json.dumps(identity, indent=2)+'\n')
     return actual['Id'], target

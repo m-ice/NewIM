@@ -27,6 +27,13 @@ with pull disabled. Merely naming an image with the expected tag cannot pass.
 The local arm64 Docker 29 containerd store returns manifest as image ID; the
 original config is verified through the hashed manifest/config chain, not claimed
 to be a separately returned Docker inspect field.
+Docker 28 classic instead returns the exact config ID and no Descriptor. That
+path additionally requires an official PostgreSQL repository digest for the locked
+index/platform; known Docker Hub aliases are enumerated, never suffix-matched.
+The daemon/content store is a trusted local execution boundary in both modes.
+A present invalid Descriptor cannot fall back to classic verification. These
+checks preserve the image lock without adding a Docker image-store dependency or
+requiring users to change global daemon settings.
 
 Compressed layers total 155,248,016 bytes for arm64 and 157,251,669 for amd64.
 The arm64 imported image reports 155,261,527 bytes; expanded ordered layer tar
