@@ -3,3 +3,5 @@
 #![forbid(unsafe_code)]
 
 pub mod build_info;
+
+pub mod store;

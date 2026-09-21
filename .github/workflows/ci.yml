@@ -25,8 +25,12 @@ jobs:
           cache: false
       - name: Install exact Rust toolchain
         run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy --target wasm32-unknown-unknown --no-self-update
+      - run: make store-prepare
+      - run: cargo fetch --locked
+      - run: make store-engine
       - run: make build
       - run: make check
+      - run: make store-idempotency store-migrations store-maintenance store-recovery
       - name: Prepare immutable PostgreSQL image
         timeout-minutes: 5
         run: timeout 15s docker info >/dev/null && make db-prepare
