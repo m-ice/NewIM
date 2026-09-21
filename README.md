@@ -1,33 +1,63 @@
 # NewIM
 
 NewIM is an independently developed messaging platform for 澜遇科技. The current
-foundation provides server and SDK build-identity diagnostics, strict Go/Rust
-message protocol v1 codecs, and shared build/test entry points. Message transport, persistence, sync, platform adapters and UI are
-not implemented yet.
+foundation includes Go/Rust message and send/ACK/error protocol v1 codecs,
+PostgreSQL schema and atomic message/outbox persistence primitives, and a portable
+SDK local-store contract with a native SQLite adapter. Storage has real migration,
+idempotency and recovery tests. Authentication services, network send/ACK and retry
+orchestration, full synchronization, platform adapters and UI remain future work.
+These libraries and SQL primitives do not yet form an end-to-end messaging service.
 
 ## Build and test
 
-Install Go **1.27.1**, Rust/Cargo **1.98.1**, rustfmt, Clippy, Make and a native C
-linker. Rust uses edition 2024. The wasm standard library is also required:
+Install Go **1.27.1**, Rust/Cargo **1.98.1**, rustfmt, Clippy, Make, Python **3.11+**,
+a native C compiler/linker and `ar`. Rust uses edition 2024. The current SQLite
+adapter supports macOS/Linux; the wasm build includes only portable core/protocol
+libraries. Prepare the pinned source, Cargo dependencies and native engine first:
 
 ```sh
 rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy --target wasm32-unknown-unknown --no-self-update
+make store-prepare
+cargo fetch --locked
+make store-engine
 make build
 make check
+make store-idempotency store-migrations store-maintenance store-recovery
 ```
 
+`store-prepare` downloads and verifies the locked official SQLite source;
+`cargo fetch --locked` prepares registry dependencies. Engine compilation and the
+native build/check/store targets run offline and reject absent or mismatched
+caches. They do not fall back to the host's SQLite. Warm runs reuse this checkout's
+verified native engine. See the [SQLite guide](sdk/storage/sqlite/README.md) and
+[dependency provenance](docs/dependencies/local-store.md).
+
 The commands reject other Go/Rust/Cargo patch versions. Build compiles all Go
-packages and the `build/newim-buildinfo` utility, the native Rust SDK library, and
-the SDK and protocol libraries for wasm. Check runs formatting, Go vet, Clippy,
-behavioral unit tests and the shared protocol corpus. Cargo uses the committed
-lockfile; the protocol crate uses serde_json with its locked transitive dependencies.
-Go uses only the standard library.
+packages and `build/newim-buildinfo`, the native Rust workspace, and the portable
+SDK/protocol libraries for wasm. Check runs formatting, Go vet, Clippy, behavioral
+tests and the shared protocol corpus. Cargo uses the committed lockfile; Go uses
+only the standard library. wasm compilation establishes compiler compatibility,
+not browser behavior or an exported JavaScript API.
 
-The GitHub workflow uses these same commands on Ubuntu 24.04. A successful local
-run does not establish that a hosted CI job ran. wasm compilation establishes
-compiler compatibility, not browser behavior or an exported JavaScript API.
+For PostgreSQL suites, additionally install Docker with a running daemon:
 
-## Build identity
+```sh
+make db-prepare
+make db-schema db-migrations db-sequence db-repair
+```
+
+Preparation verifies the locked official PostgreSQL image and pulls it if absent.
+The suites use their own isolated containers and labeled volumes, with no host
+ports or user database connection. Docker is required for these database suites,
+not for the Go/Rust checks above. See the [database guide](infra/db/README.md) for
+image verification, migration, backup and recovery contracts, and its
+[dependency provenance](infra/db/DEPENDENCIES.md).
+
+The GitHub workflow declares the same preparation, build, check, SQLite and
+PostgreSQL suites on Ubuntu 24.04. A successful local run does not establish that
+a hosted CI job ran.
+
+## Build identity and schema versions
 
 ```sh
 ./build/newim-buildinfo
@@ -44,9 +74,13 @@ Revision labels must be complete lowercase Git hashes; validation establishes
 syntax only. Ordinary SDK builds leave that optional label unset. The SDK does
 not infer clean state or wire compatibility from a revision.
 
-Server and SDK versions are independently maintained at `0.1.0-dev`. The message protocol is version 1;
-database schema versions remain undefined until their own contracts exist.
-See [architecture](docs/architecture.md), the [build ADR](docs/adr/0002-language-toolchain.md)
+Server and SDK versions are independently maintained at `0.1.0-dev`; the message
+protocol is version 1. PostgreSQL and SQLite have separate migration histories,
+each currently containing initial-installation stages 001 and 002. They are not
+interchangeable schemas or previously released upgrade histories. See the
+[relational storage ADR](docs/adr/0004-relational-storage.md),
+[local-store ADR](docs/adr/0005-local-store.md),
+[architecture](docs/architecture.md), [build ADR](docs/adr/0002-language-toolchain.md)
 and [contribution guide](CONTRIBUTING.md).
 
 ## macOS toolchain note
@@ -70,6 +104,6 @@ the project's licensing decision. Third-party build tools retain their licenses.
 
 ## 消息协议 v1
 
-已提供 Go/Rust 持久消息编解码和验证：文本 v1、未知类型保留、序列十进制字符串、严格 JSON/Unicode/大小边界，以及两端共享兼容测试。见 [协议说明](specs/protocol/README.md) 与 [决策](docs/adr/0003-protocol-v1.md)。这项库能力不代表服务端消息持久化或客户端聊天界面已经实现。
+已提供 Go/Rust 持久消息及发送请求、ACK、错误编解码和验证：文本 v1、未知类型保留、序列十进制字符串、严格 JSON/Unicode/大小边界，以及两端共享兼容测试。见 [协议说明](specs/protocol/README.md) 与 [决策](docs/adr/0003-protocol-v1.md)。协议编解码、数据库持久化原语与本地存储已有实现，网络发送确认、鉴权、同步协调和聊天界面尚未完成。
 
-运行 `make check` 进行完整检查；四组兼容测试也可分别使用 `make protocol-golden`、`make protocol-unknown-fields`、`make protocol-unknown-type`、`make protocol-limits`。新增 Rust 解析依赖已固定在 Cargo.lock，首次构建会下载锁定依赖；缓存具备后可以使用 Cargo 的 `--offline`。第三方来源和许可见 [依赖记录](docs/dependencies/protocol-v1.md)。
+完成上述准备后运行 `make check`。协议专项检查包括 `make protocol-golden protocol-unknown-fields protocol-unknown-type protocol-limits` 和 `make send-protocol-golden send-protocol-errors send-protocol-limits`。Rust 依赖版本固定在 Cargo.lock；首次通过 `cargo fetch --locked` 显式准备依赖。第三方来源和许可见 [协议依赖记录](docs/dependencies/protocol-v1.md) 与上述存储依赖记录。
