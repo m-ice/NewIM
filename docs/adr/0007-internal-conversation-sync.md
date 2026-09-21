@@ -1,6 +1,6 @@
 # ADR 0007: Durable internal conversation projection and pagination
 
-Status: proposed; architecture, data and security design review required before implementation.
+Status: accepted design following independent architecture, data and security review of 6632043961e2b1084576ab7d841f7ee5c376837e; implementation and functional acceptance remain pending.
 Date: 2026-09-21
 Task: NIM-SYN-003
 
