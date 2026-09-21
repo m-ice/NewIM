@@ -1,0 +1,7 @@
+[package]
+name = "newim-sdk-core"
+version = "0.1.0-dev"
+edition = "2024"
+rust-version = "1.98.1"
+publish = false
+description = "NewIM platform-neutral SDK foundation"
