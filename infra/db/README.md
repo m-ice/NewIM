@@ -4,7 +4,7 @@ This directory implements PostgreSQL constraints, atomic message persistence and
 transactional migrations. It supplies no authentication, network ACK, dispatcher,
 sync cursor or retention policy. See ADR 0004 for the caller contract.
 
-Prerequisites: Python 3.11+, Docker with an OCI descriptor-aware image store,
+Prerequisites: Python 3.11+, Docker (classic or OCI descriptor-aware image store),
 the root pinned Go/Rust tools. No Python package or Go database driver is needed.
 The SQL dialect is PostgreSQL 18.6; deployment compatibility with other versions
 has not been established.
@@ -18,10 +18,17 @@ make build check
 Preparation checks immutable official image metadata and pulls its digest only
 if absent. `NEWIM_DB_IMAGE` may select an already imported original OCI image;
 the actual descriptor/config/platform/ordered rootfs must still match the lock.
-A wrong local image fails, without trying a substitute. A legacy image store
-that cannot supply an OCI descriptor is rejected. Docker's platform image ID can
-be the manifest digest or the config digest; both are bound by the saved, hashed
-upstream index/manifest/config chain in `image-metadata/`.
+A wrong or unavailable explicit local image fails without substitution. Docker's
+platform image ID can be the manifest digest or config digest, bound by the saved,
+hashed upstream chain in `image-metadata/`. A classic store with no Descriptor
+must expose the exact locked config ID, OS/architecture/variant, ordered rootfs
+DiffIDs and an official PostgreSQL RepoDigest for the locked index/platform.
+Only `postgres`, `library/postgres`, `docker.io/library/postgres` are accepted
+official repository aliases. A present malformed or wrong Descriptor is rejected,
+never treated as classic. Both paths trust the local daemon/content store. Inspect
+avoids the --platform option unavailable in Docker 28.0.4; pull and execution
+still explicitly select the verified native platform. No daemon reconfiguration,
+unlocked image, tag-only acceptance or image-store conversion is required.
 
 Each suite uses its own labeled durable volume and isolated container, no host
 port, no user bind mount and no external network. Local socket trust is solely

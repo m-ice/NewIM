@@ -5,12 +5,14 @@ import argparse
 import base64
 import hashlib
 import json
+import os
 from pathlib import Path
 import sys
 import time
 import uuid
 
 from migrate import migration_sql
+from identity_checks import check_identity_contract
 from runtime import Commands, Database, DB_DIR, Failure, MAXIMUM, ROOT, image_identity, locked_metadata, verify_inspected_image
 
 
@@ -84,6 +86,24 @@ def codec_roundtrips(db, commands):
 
 
 def schema(db, commands):
+    check_identity_contract()
+    previous = os.environ.get('NEWIM_DB_IMAGE')
+    start = len(commands.records)
+    try:
+        os.environ['NEWIM_DB_IMAGE'] = 'newim-nonexistent-'+uuid.uuid4().hex
+        try:
+            image_identity(commands, prepare=True)
+        except Failure:
+            pass
+        else:
+            raise Failure('unavailable explicit image was substituted')
+        if any(r['label'] == 'locked-image-pull' for r in commands.records[start:]):
+            raise Failure('explicit selector unexpectedly triggered image pull')
+    finally:
+        if previous is None:
+            os.environ.pop('NEWIM_DB_IMAGE', None)
+        else:
+            os.environ['NEWIM_DB_IMAGE'] = previous
     locked = locked_metadata(db.target)
     actual = json.loads(commands.run(['docker','image','inspect',db.image,'--format','{{json .}}'],label='identity-negative-test-source').stdout)
     for field, bad in [('Id','sha256:'+'0'*64),('Architecture','invalid'),('RootFS',{'Layers':[]}),('Descriptor',{'digest':'sha256:'+'0'*64})]:
