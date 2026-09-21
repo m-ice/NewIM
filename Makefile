@@ -83,3 +83,24 @@ store-maintenance: toolchain
 
 store-recovery: toolchain
 	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test recovery
+
+.PHONY: sync-bootstrap sync-delta sync-cursor sync-query-plan sync-recovery sync-migrations sync-check
+sync-bootstrap:
+	python3 -B infra/db/sync_suite.py bootstrap
+
+sync-delta:
+	python3 -B infra/db/sync_suite.py delta
+
+sync-cursor:
+	python3 -B infra/db/sync_suite.py cursor
+
+sync-query-plan:
+	python3 -B infra/db/sync_suite.py query-plan
+
+sync-recovery:
+	python3 -B infra/db/sync_suite.py recovery
+
+sync-migrations:
+	python3 -B infra/db/sync_suite.py migrations
+
+sync-check: sync-bootstrap sync-delta sync-cursor sync-query-plan sync-recovery sync-migrations

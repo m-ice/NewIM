@@ -10,7 +10,7 @@ permissions:
 jobs:
   foundation:
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 25
     env:
       GOTOOLCHAIN: local
       RUSTUP_TOOLCHAIN: '1.98.1'
@@ -37,3 +37,6 @@ jobs:
       - name: Exercise real PostgreSQL storage and recovery
         timeout-minutes: 8
         run: make db-schema db-migrations db-sequence db-repair
+      - name: Exercise durable conversation sync projection
+        timeout-minutes: 12
+        run: make sync-check

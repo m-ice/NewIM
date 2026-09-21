@@ -2,10 +2,12 @@
 
 NewIM is an independently developed messaging platform for 澜遇科技. The current
 foundation includes Go/Rust message and send/ACK/error protocol v1 codecs,
-PostgreSQL schema and atomic message/outbox persistence primitives, and a portable
-SDK local-store contract with a native SQLite adapter. Storage has real migration,
-idempotency and recovery tests. Authentication services, network send/ACK and retry
-orchestration, full synchronization, platform adapters and UI remain future work.
+PostgreSQL schema, atomic message/outbox persistence primitives and a durable
+internal conversation-sync projection, plus a portable SDK local-store contract
+with a native SQLite adapter. Storage has real migration, idempotency, pagination,
+query-plan and recovery tests. Authentication services, network send/ACK and retry
+orchestration, a complete multi-device sync service, platform adapters and UI remain
+future work.
 These libraries and SQL primitives do not yet form an end-to-end messaging service.
 
 ## Build and test
@@ -36,14 +38,15 @@ The commands reject other Go/Rust/Cargo patch versions. Build compiles all Go
 packages and `build/newim-buildinfo`, the native Rust workspace, and the portable
 SDK/protocol libraries for wasm. Check runs formatting, Go vet, Clippy, behavioral
 tests and the shared protocol corpus. Cargo uses the committed lockfile; Go uses
-only the standard library. wasm compilation establishes compiler compatibility,
-not browser behavior or an exported JavaScript API.
+the locked module graph in `go.mod`/`go.sum`. wasm compilation establishes compiler
+compatibility, not browser behavior or an exported JavaScript API.
 
 For PostgreSQL suites, additionally install Docker with a running daemon:
 
 ```sh
 make db-prepare
 make db-schema db-migrations db-sequence db-repair
+make sync-check
 ```
 
 Preparation verifies the locked official PostgreSQL image and pulls it if absent.
@@ -54,8 +57,8 @@ image verification, migration, backup and recovery contracts, and its
 [dependency provenance](infra/db/DEPENDENCIES.md).
 
 The GitHub workflow declares the same preparation, build, check, SQLite and
-PostgreSQL suites on Ubuntu 24.04. A successful local run does not establish that
-a hosted CI job ran.
+PostgreSQL suites and the six conversation-sync suites on Ubuntu 24.04. A
+successful local run does not establish that a hosted CI job ran.
 
 ## Build identity and schema versions
 
@@ -75,13 +78,15 @@ syntax only. Ordinary SDK builds leave that optional label unset. The SDK does
 not infer clean state or wire compatibility from a revision.
 
 Server and SDK versions are independently maintained at `0.1.0-dev`; the message
-protocol is version 1. PostgreSQL and SQLite have separate migration histories,
-each currently containing initial-installation stages 001 and 002. They are not
-interchangeable schemas or previously released upgrade histories. See the
+protocol is version 1. PostgreSQL has additive migration stages 001 through 003;
+SQLite has its separate migration history. They are not interchangeable schemas or
+previously released upgrade histories. See the
 [relational storage ADR](docs/adr/0004-relational-storage.md),
 [local-store ADR](docs/adr/0005-local-store.md),
 [architecture](docs/architecture.md), [build ADR](docs/adr/0002-language-toolchain.md)
-and [contribution guide](CONTRIBUTING.md).
+and [contribution guide](CONTRIBUTING.md). The internal projection contract is in
+[conversation projection](specs/sync/conversation-projection.md), with reviewed
+dependency provenance in [conversation sync dependencies](docs/dependencies/conversation-sync.md).
 
 ## macOS toolchain note
 
@@ -104,6 +109,6 @@ the project's licensing decision. Third-party build tools retain their licenses.
 
 ## 消息协议 v1
 
-已提供 Go/Rust 持久消息及发送请求、ACK、错误编解码和验证：文本 v1、未知类型保留、序列十进制字符串、严格 JSON/Unicode/大小边界，以及两端共享兼容测试。见 [协议说明](specs/protocol/README.md) 与 [决策](docs/adr/0003-protocol-v1.md)。协议编解码、数据库持久化原语与本地存储已有实现，网络发送确认、鉴权、同步协调和聊天界面尚未完成。
+已提供 Go/Rust 持久消息及发送请求、ACK、错误编解码和验证：文本 v1、未知类型保留、序列十进制字符串、严格 JSON/Unicode/大小边界，以及两端共享兼容测试。见 [协议说明](specs/protocol/README.md) 与 [决策](docs/adr/0003-protocol-v1.md)。协议编解码、数据库持久化原语与本地存储已有实现。内部会话同步投影提供 bootstrap/delta 分页、认证 HMAC 游标、成员隔离、事务写入和恢复原语；它不包含 HTTP/WS、登录鉴权、既有账户回填或客户端合并，完整多端同步、网络发送确认和聊天界面尚未完成。
 
 完成上述准备后运行 `make check`。协议专项检查包括 `make protocol-golden protocol-unknown-fields protocol-unknown-type protocol-limits` 和 `make send-protocol-golden send-protocol-errors send-protocol-limits`。Rust 依赖版本固定在 Cargo.lock；首次通过 `cargo fetch --locked` 显式准备依赖。第三方来源和许可见 [协议依赖记录](docs/dependencies/protocol-v1.md) 与上述存储依赖记录。

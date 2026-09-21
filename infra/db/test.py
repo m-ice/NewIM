@@ -8,6 +8,7 @@ import json
 import os
 from pathlib import Path
 import sys
+import tempfile
 import time
 import uuid
 
@@ -23,6 +24,48 @@ def equal(actual, expected, label):
 
 def scalar(db, sql, expected, label):
     equal(db.sql(sql).strip(), str(expected), label)
+
+
+BASE_TABLES = {'im_users', 'im_devices', 'im_sessions', 'im_conversations',
+               'im_conversation_members', 'im_messages', 'im_read_states', 'im_blocks'}
+DURABILITY_TABLES = {'im_outbox_events', 'im_webhook_deliveries', 'im_push_tokens'}
+SYNC_TABLES = {'im_conversation_sync_accounts', 'im_conversation_sync_keys',
+               'im_conversation_sync_changes'}
+
+
+def source_migrations():
+    sources = sorted((DB_DIR/'migrations').glob('[0-9][0-9][0-9]_*.sql'))
+    equal([int(p.name[:3]) for p in sources], list(range(1, len(sources)+1)),
+          'source migration versions contiguous')
+    return sources
+
+
+def check_ledger(db, target=None):
+    sources = source_migrations()
+    target = len(sources) if target is None else target
+    expected = [f'{i}|{hashlib.sha256(p.read_bytes()).hexdigest()}'
+                for i, p in enumerate(sources[:target], 1)]
+    equal(db.sql("SELECT version::text||'|'||sha256 FROM newim_meta.migrations ORDER BY version;").splitlines(),
+          expected, 'complete ledger matches immutable source bytes')
+
+
+def check_catalog(db, target=None):
+    target = len(source_migrations()) if target is None else target
+    expected = BASE_TABLES | (DURABILITY_TABLES if target >= 2 else set())
+    expected |= SYNC_TABLES if target >= 3 else set()
+    equal(set(db.sql("SELECT tablename FROM pg_tables WHERE schemaname='newim';").splitlines()),
+          expected, 'exact catalog table set')
+    scalar(db, "SELECT count(*) FROM pg_constraint WHERE connamespace='newim'::regnamespace AND contype='f' AND confdeltype<>'a';",
+           0, 'no cascading deletes')
+    functions = db.sql("SELECT p.oid::regprocedure::text FROM pg_proc p WHERE pronamespace='newim'::regnamespace ORDER BY 1;").splitlines()
+    expected_functions = ['newim.persist_message(newim.identifier,newim.identifier,newim.identifier,newim.identifier,newim.message_type,integer,bigint,bytea,newim.identifier)'] if target >= 2 else []
+    equal(functions, expected_functions, 'exact function signatures')
+    privileges = db.sql("SELECT has_function_privilege('public',p.oid,'EXECUTE') FROM pg_proc p WHERE pronamespace='newim'::regnamespace ORDER BY p.oid::regprocedure::text;").splitlines()
+    equal(privileges, ['f']*len(expected_functions), 'every function denies public execute')
+    scalar(db, "SELECT has_schema_privilege('public','newim','USAGE');", 'f', 'schema denies public usage')
+    scalar(db, "SELECT count(*) FROM pg_trigger WHERE tgrelid IN (SELECT oid FROM pg_class WHERE relnamespace='newim'::regnamespace) AND NOT tgisinternal;",
+           0, 'no application triggers')
+    check_ledger(db, target)
 
 
 def seed(db):
@@ -85,6 +128,61 @@ def codec_roundtrips(db, commands):
     print(f'PASS codec relational roundtrips: {len(wires)} accepted fixtures/boundaries', flush=True)
 
 
+def sync_constraints(db):
+    db.sql("INSERT INTO newim.im_conversation_sync_accounts(user_id) VALUES ('alice'); "
+           "INSERT INTO newim.im_conversation_sync_keys VALUES ('alice','room',1),('alice','other',2); "
+           "INSERT INTO newim.im_conversation_sync_changes VALUES ('alice',1,'room','upsert',1,'s_one'),"
+           "('alice',2,'other','upsert',0,NULL),('alice',3,'room','remove',NULL,NULL);")
+    scalar(db, "SELECT epoch||'|'||last_change_seq||'|'||min_valid_seq FROM newim.im_conversation_sync_accounts WHERE user_id='alice';",
+           '1|0|0', 'initial account defaults')
+    columns = {
+        'accounts': 'user_id,epoch,last_change_seq,min_valid_seq',
+        'keys': 'user_id,conversation_id,first_change_seq',
+        'changes': 'user_id,change_seq,conversation_id,kind,latest_seq,latest_server_msg_id',
+    }
+    for suffix, expected in columns.items():
+        scalar(db, "SELECT string_agg(column_name,',' ORDER BY ordinal_position) FROM information_schema.columns "
+               f"WHERE table_schema='newim' AND table_name='im_conversation_sync_{suffix}';",
+               expected, 'exact sync columns '+suffix)
+    scalar(db, "SELECT pg_get_indexdef('newim.im_conversation_sync_changes_version_idx'::regclass);",
+           'CREATE INDEX im_conversation_sync_changes_version_idx ON newim.im_conversation_sync_changes USING btree (user_id, conversation_id, change_seq DESC)',
+           'version lookup index')
+    scalar(db, "SELECT coll.collname FROM pg_attribute a JOIN pg_collation coll ON coll.oid=a.attcollation "
+           "WHERE a.attrelid='newim.im_conversation_sync_keys'::regclass AND a.attname='conversation_id';",
+           'C', 'directory identifier collation')
+    negatives = [
+        ("INSERT INTO newim.im_conversation_sync_accounts(user_id) VALUES ('missing');", '23503'),
+        ("UPDATE newim.im_conversation_sync_accounts SET epoch=0;", '23514'),
+        ("UPDATE newim.im_conversation_sync_accounts SET epoch=NULL;", '23502'),
+        ("UPDATE newim.im_conversation_sync_accounts SET last_change_seq=-1;", '23514'),
+        ("UPDATE newim.im_conversation_sync_accounts SET min_valid_seq=-1;", '23514'),
+        ("UPDATE newim.im_conversation_sync_accounts SET min_valid_seq=1;", '23514'),
+        ("UPDATE newim.im_conversation_sync_keys SET first_change_seq=0;", '23514'),
+        ("INSERT INTO newim.im_conversation_sync_keys VALUES ('bob','room',1);", '23503'),
+        ("INSERT INTO newim.im_conversation_sync_keys VALUES ('alice','missing',1);", '23503'),
+        ("INSERT INTO newim.im_conversation_sync_changes VALUES ('bob',1,'room','remove',NULL,NULL);", '23503'),
+        ("INSERT INTO newim.im_conversation_sync_changes VALUES ('alice',0,'room','upsert',0,NULL);", '23514'),
+        ("INSERT INTO newim.im_conversation_sync_changes VALUES ('alice',4,'room','invalid',0,NULL);", '23514'),
+        ("INSERT INTO newim.im_conversation_sync_changes VALUES ('alice',4,'room','upsert',NULL,NULL);", '23514'),
+        ("INSERT INTO newim.im_conversation_sync_changes VALUES ('alice',4,'room','upsert',-1,NULL);", '23514'),
+        ("INSERT INTO newim.im_conversation_sync_changes VALUES ('alice',4,'room','remove',0,NULL);", '23514'),
+        ("INSERT INTO newim.im_conversation_sync_changes VALUES ('alice',4,'room','remove',NULL,'s_one');", '23514'),
+        ("INSERT INTO newim.im_conversation_sync_changes VALUES ('alice',4,'other','upsert',1,'s_one');", '23503'),
+        ("INSERT INTO newim.im_conversation_sync_changes VALUES ('alice',1,'other','upsert',0,NULL);", '23505'),
+        ("DELETE FROM newim.im_conversation_sync_keys WHERE conversation_id='room';", '23503'),
+        ("DELETE FROM newim.im_conversation_sync_accounts WHERE user_id='alice';", '23503'),
+    ]
+    before = snapshot(db)
+    for sql, error in negatives:
+        db.sql(sql, error=error)
+    equal(snapshot(db), before, 'sync constraint failures preserve state')
+    # BIGINT boundaries are valid independently of application-level allocation.
+    db.sql(f"BEGIN; UPDATE newim.im_conversation_sync_accounts SET epoch={MAXIMUM},last_change_seq={MAXIMUM},min_valid_seq={MAXIMUM}; "
+           f"INSERT INTO newim.im_conversation_sync_changes VALUES ('alice',{MAXIMUM},'room','upsert',{MAXIMUM},NULL); ROLLBACK;")
+    equal(snapshot(db), before, 'boundary transaction rollback')
+    print(f'PASS sync schema constraints: {len(negatives)} rejected writes', flush=True)
+
+
 def schema(db, commands):
     check_identity_contract()
     previous = os.environ.get('NEWIM_DB_IMAGE')
@@ -114,11 +212,7 @@ def schema(db, commands):
             continue
         raise Failure('image identity negative assertion: '+field)
     db.sql(migration_sql())
-    expected = {'im_users','im_devices','im_sessions','im_conversations','im_conversation_members',
-                'im_messages','im_read_states','im_blocks','im_outbox_events','im_webhook_deliveries','im_push_tokens'}
-    equal(set(db.sql("SELECT tablename FROM pg_tables WHERE schemaname='newim';").splitlines()), expected, 'catalog tables')
-    scalar(db, "SELECT count(*) FROM pg_constraint WHERE connamespace='newim'::regnamespace AND contype='f' AND confdeltype<>'a';", 0, 'no cascading deletes')
-    scalar(db, "SELECT has_function_privilege('public',p.oid,'EXECUTE') FROM pg_proc p WHERE pronamespace='newim'::regnamespace;", 'f', 'no public persist privilege')
+    check_catalog(db)
     seed(db)
     db.sql(persist('one'))
     db.sql("INSERT INTO newim.im_devices VALUES ('alice','phone',default); "
@@ -151,6 +245,7 @@ def schema(db, commands):
     for sql, error in negatives:
         db.sql(sql, error=error)
     equal(snapshot(db), before, 'negative writes preserve database')
+    sync_constraints(db)
     print(f'PASS schema catalogs and {len(negatives)} negative writes', flush=True)
     codec_roundtrips(db, commands)
     db.sql("TRUNCATE newim.im_users CASCADE;")
@@ -178,45 +273,104 @@ def schema(db, commands):
     print('PASS four populated index plans, numeric bounded history', flush=True)
 
 
+def sync_migration_faults(db, commands):
+    # Alter only owned copies; applied 001/002 checksums remain authoritative.
+    marker = '-- SYNC_MIGRATION_FAULT_POINT'
+    source = DB_DIR/'migrations/003_conversation_sync.sql'
+    equal(source.read_text().count(marker), 1, 'unique sync fault injection marker')
+    before = snapshot(db)
+    with tempfile.TemporaryDirectory(prefix='migration-copy-', dir=commands.directory) as owned:
+        directory = Path(owned)
+        for path in source_migrations():
+            (directory/path.name).write_bytes(path.read_bytes())
+        candidate = directory/source.name
+        candidate.write_text(source.read_text().replace(marker, 'SELECT 1/0;', 1))
+        db.sql(migration_sql(directory=directory), error='22012')
+        equal(snapshot(db), before, 'failed 003 leaves exact populated 002 state')
+        check_catalog(db, 2)
+        candidate.write_text(source.read_text().replace(marker, 'SELECT pg_sleep(30);', 1))
+        held = db.session("SET application_name='newim_sync_migration_interrupt'; "+migration_sql(directory=directory))
+        db.wait_sql("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name='newim_sync_migration_interrupt' AND wait_event='PgSleep');")
+        db.sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='newim_sync_migration_interrupt';")
+        held.finish(error='57P01')
+        equal(snapshot(db), before, 'terminated 003 leaves exact populated 002 state')
+        check_catalog(db, 2)
+    # Four first-time upgrades queue behind a real migration lock, then race.
+    # 原始源码重试；锁屏障确保覆盖首次升级竞争，而非仅完成后的重放。
+    gate = db.session("SET application_name='newim_upgrade_gate'; BEGIN; SELECT pg_advisory_xact_lock(1947620131);")
+    db.wait_sql("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name='newim_upgrade_gate' AND state='idle in transaction');")
+    concurrent = [db.session("SET application_name='newim_upgrade_contender'; "+migration_sql()) for _ in range(4)]
+    db.wait_sql("SELECT count(*)=4 FROM pg_stat_activity WHERE application_name='newim_upgrade_contender' AND wait_event_type='Lock';")
+    gate.send('COMMIT;')
+    gate.finish()
+    for session in concurrent:
+        session.finish()
+    check_catalog(db)
+    after = snapshot(db)
+    equal({k:after[k] for k in before if k!='migrations'},
+          {k:v for k,v in before.items() if k!='migrations'}, '003 preserves all historical rows')
+    for table in SYNC_TABLES:
+        scalar(db, 'SELECT count(*) FROM newim.'+table+';', 0, 'migration performs no automatic backfill')
+    print('PASS populated 003 failure/termination rollback, original-source restart and no implicit backfill', flush=True)
+
+
 def migrations(db, commands):
+    head = len(source_migrations())
     db.sql(migration_sql(1))
+    check_catalog(db, 1)
     seed(db)
     db.sql("INSERT INTO newim.im_messages VALUES ('legacy','alice','legacy','room',1,1,1,'text',10,convert_to('{}','UTF8')); "
            "UPDATE newim.im_conversations SET last_seq=1,latest_server_msg_id='legacy' WHERE conversation_id='room';")
     before = snapshot(db)
-    db.sql(migration_sql())
+    db.sql(migration_sql(2))
+    check_catalog(db, 2)
     after = snapshot(db)
-    equal({k:after[k] for k in before if k!='migrations'}, {k:v for k,v in before.items() if k!='migrations'}, 'populated stage upgrade')
+    equal({k:after[k] for k in before if k!='migrations'}, {k:v for k,v in before.items() if k!='migrations'}, 'historical 001 to 002 preserves populated rows and payload')
+    db.sql("UPDATE newim.im_messages SET conversation_seq=-1;", error='23514')
+    db.sql("UPDATE newim.im_conversations SET latest_server_msg_id='legacy' WHERE conversation_id='other';", error='23503')
+    db.sql(persist('migration_durable'))
+    sync_migration_faults(db, commands)
+    after = snapshot(db)
     db.sql(migration_sql())
-    equal(snapshot(db), after, 'replay stable')
+    equal(snapshot(db), after, 'head replay stable')
     concurrent = [db.session(migration_sql()) for _ in range(4)]
     for session in concurrent:
         session.finish()
-    equal(snapshot(db), after, 'competing migration replay')
-    original = db.sql('SELECT sha256 FROM newim_meta.migrations WHERE version=1;').strip()
-    db.sql("UPDATE newim_meta.migrations SET sha256=repeat('0',64) WHERE version=1;")
-    db.sql(migration_sql(), error='NM002')
-    db.sql(f"UPDATE newim_meta.migrations SET sha256='{original}' WHERE version=1;")
-    db.sql("INSERT INTO newim_meta.migrations VALUES (3,repeat('0',64),default);")
+    equal(snapshot(db), after, 'competing head migration replay')
+    check_catalog(db)
+    # Check every applied checksum, including the latest migration.
+    for version, path in enumerate(source_migrations(), 1):
+        original = hashlib.sha256(path.read_bytes()).hexdigest()
+        db.sql(f"UPDATE newim_meta.migrations SET sha256=repeat('0',64) WHERE version={version};")
+        db.sql(migration_sql(), error='NM002')
+        db.sql(f"UPDATE newim_meta.migrations SET sha256='{original}' WHERE version={version};")
+    future = head+1
+    db.sql(f"INSERT INTO newim_meta.migrations VALUES ({future},repeat('0',64),default);")
     db.sql(migration_sql(), error='NM001')
-    db.sql('DELETE FROM newim_meta.migrations WHERE version=3; DELETE FROM newim_meta.migrations WHERE version=1;')
+    db.sql(f'DELETE FROM newim_meta.migrations WHERE version={future};')
+    db.sql('DELETE FROM newim_meta.migrations WHERE version=1;')
     db.sql(migration_sql(), error='NM003')
+    original = hashlib.sha256(source_migrations()[0].read_bytes()).hexdigest()
     db.sql(f"INSERT INTO newim_meta.migrations VALUES (1,'{original}',now());")
-    # A new database proves atomic failed installation and terminated migration.
+    check_catalog(db)
+    # Preserve 002 injection coverage on a fresh atomic install.
     db.sql('CREATE DATABASE migration_failure;')
-    failing = migration_sql().replace('CREATE TABLE newim.im_outbox_events', "SELECT 1/0;\nCREATE TABLE newim.im_outbox_events")
+    failure_marker = 'CREATE TABLE newim.im_outbox_events'
+    equal(migration_sql().count(failure_marker), 1, 'unique durability failure injection marker')
+    failing = migration_sql().replace(failure_marker, "SELECT 1/0;\n"+failure_marker, 1)
     db.sql(failing, database='migration_failure', error='22012')
     equal(db.sql("SELECT count(*) FROM pg_namespace WHERE nspname IN ('newim','newim_meta');", database='migration_failure').strip(), '0', 'atomic failed initial install')
-    # Hold the entire uncommitted DDL behind an observable backend barrier.
+    # Preserve historical 002 termination, then recover directly to newest head.
     db.sql('DROP SCHEMA newim CASCADE; DROP SCHEMA newim_meta CASCADE;')
-    held = db.session("SET application_name='newim_migration_interrupt'; "+migration_sql().replace('COMMIT;', 'SELECT pg_sleep(10); COMMIT;'))
+    held = db.session("SET application_name='newim_migration_interrupt'; "+migration_sql(2).replace('COMMIT;', 'SELECT pg_sleep(30); COMMIT;'))
     db.wait_sql("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name='newim_migration_interrupt' AND wait_event='PgSleep');")
     db.sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='newim_migration_interrupt';")
     held.finish(error='57P01')
-    scalar(db, "SELECT count(*) FROM pg_namespace WHERE nspname IN ('newim','newim_meta');", 0, 'killed migration rollback')
+    scalar(db, "SELECT count(*) FROM pg_namespace WHERE nspname IN ('newim','newim_meta');", 0, 'killed historical migration rollback')
     db.sql(migration_sql())
-    scalar(db, 'SELECT count(*) FROM newim_meta.migrations;', 2, 'restart completes migration')
-    print('PASS empty/populated migration, replay, concurrent migrations, checksum/future/gap rejection, failure and backend termination recovery', flush=True)
+    check_catalog(db)
+    scalar(db, 'SELECT count(*) FROM newim_meta.migrations;', head, 'restart completes newest migration')
+    print('PASS empty/populated 1 to 2 to head migration, head replay/concurrency/checksum/future/gap, failure and termination recovery', flush=True)
 
 
 def sequence(db, commands):
@@ -300,7 +454,7 @@ def repair(db, commands, image, target):
     with Database(commands,image,target) as restored:
         commands.run(['docker','exec','-i',restored.name,'pg_restore','-U','newim_test','-d','newim_test','--exit-on-error','--single-transaction','--no-owner'],data=dump,timeout=45,label='restore-new-volume')
         equal(snapshot(restored),snapshot(db),'restored all tables/ledger exactly')
-        scalar(restored, "SELECT has_function_privilege('public',p.oid,'EXECUTE') FROM pg_proc p WHERE pronamespace='newim'::regnamespace;", 'f', 'restored public function privilege')
+        check_catalog(restored)
         scalar(restored, "SELECT has_schema_privilege('public','newim','USAGE');", 'f', 'restored schema privilege')
         restored.sql(migration_sql())
         # Derived summary can be repaired under the same conversation lock; never renumber IDs.

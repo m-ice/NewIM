@@ -1,6 +1,195 @@
 # Third-party notices
 
-These notices apply to dependencies of the Rust protocol library. NewIM has not selected its own distribution license. MIT is the available path used for dual-licensed packages below; unicode-ident also retains its Unicode-3.0 notice. Packages present only in the lock graph are included for completeness. This file preserves the actual notice text from verified crate archives.
+These notices apply to the Rust protocol library and the Go conversation-sync dependencies. NewIM has not selected its own distribution license. MIT is the available path used for dual-licensed packages below; unicode-ident also retains its Unicode-3.0 notice. Packages present only in the lock graph are included for completeness. This file preserves the actual notice text from verified crate archives.
+
+
+## Go conversation-sync dependencies
+The conversation-sync adapter pins `github.com/jackc/pgx/v5 v5.11.0` and the exact module graph recorded in [`docs/dependencies/conversation-sync.md`](docs/dependencies/conversation-sync.md). The six imported modules are pgx/v5 v5.11.0, pgpassfile v1.0.0, pgservicefile v0.0.0-20240606120523-5a60cdf6a761, puddle/v2 v2.2.2, golang.org/x/sync v0.21.0 and golang.org/x/text v0.39.0. The graph-only modules x/mod v0.37.0, x/tools v0.47.0, go-spew v1.1.1, kr/pretty v0.3.0, go-difflib v1.0.0, objx v0.1.0, testify v1.11.1, check.v1 v1.0.0-20201130134442-10cb98267c6c and yaml.v3 v3.0.1 are not claimed to be linked. Their source/notice conditions remain applicable if they are later vendored or redistributed.
+### pgx/v5 v5.11.0
+
+Source: exact module archive license retained at [`third_party/licenses/pgx/LICENSE.pgx-v5.11.0.txt`](third_party/licenses/pgx/LICENSE.pgx-v5.11.0.txt).
+
+```text
+Copyright (c) 2013-2021 Jack Christensen
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+### pgpassfile v1.0.0
+
+Source: exact module archive license retained at [`third_party/licenses/pgx/LICENSE.pgpassfile-v1.0.0.txt`](third_party/licenses/pgx/LICENSE.pgpassfile-v1.0.0.txt).
+
+```text
+Copyright (c) 2019 Jack Christensen
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+### pgservicefile v0.0.0-20240606120523-5a60cdf6a761
+
+Source: exact module archive license retained at [`third_party/licenses/pgx/LICENSE.pgservicefile-5a60cdf6a761.txt`](third_party/licenses/pgx/LICENSE.pgservicefile-5a60cdf6a761.txt).
+
+```text
+Copyright (c) 2020 Jack Christensen
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+### puddle/v2 v2.2.2
+
+Source: exact module archive license retained at [`third_party/licenses/pgx/LICENSE.puddle-v2.2.2.txt`](third_party/licenses/pgx/LICENSE.puddle-v2.2.2.txt).
+
+```text
+Copyright (c) 2018 Jack Christensen
+
+MIT License
+
+Permission is hereby granted, free of charge, to any person obtaining
+a copy of this software and associated documentation files (the
+"Software"), to deal in the Software without restriction, including
+without limitation the rights to use, copy, modify, merge, publish,
+distribute, sublicense, and/or sell copies of the Software, and to
+permit persons to whom the Software is furnished to do so, subject to
+the following conditions:
+
+The above copyright notice and this permission notice shall be
+included in all copies or substantial portions of the Software.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND,
+EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF
+MERCHANTABILITY, FITNESS FOR A PARTICULAR PURPOSE AND
+NONINFRINGEMENT. IN NO EVENT SHALL THE AUTHORS OR COPYRIGHT HOLDERS BE
+LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION
+WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+```
+### golang.org/x/sync v0.21.0 and golang.org/x/text v0.39.0
+
+Both modules use the same Go BSD-3-Clause and PATENTS bytes retained at [`third_party/licenses/pgx/LICENSE.go-bsd-3-clause.txt`](third_party/licenses/pgx/LICENSE.go-bsd-3-clause.txt) and [`third_party/licenses/pgx/PATENTS.go.txt`](third_party/licenses/pgx/PATENTS.go.txt).
+#### LICENSE
+
+```text
+Copyright 2009 The Go Authors.
+
+Redistribution and use in source and binary forms, with or without
+modification, are permitted provided that the following conditions are
+met:
+
+   * Redistributions of source code must retain the above copyright
+notice, this list of conditions and the following disclaimer.
+   * Redistributions in binary form must reproduce the above
+copyright notice, this list of conditions and the following disclaimer
+in the documentation and/or other materials provided with the
+distribution.
+   * Neither the name of Google LLC nor the names of its
+contributors may be used to endorse or promote products derived from
+this software without specific prior written permission.
+
+THIS SOFTWARE IS PROVIDED BY THE COPYRIGHT HOLDERS AND CONTRIBUTORS
+"AS IS" AND ANY EXPRESS OR IMPLIED WARRANTIES, INCLUDING, BUT NOT
+LIMITED TO, THE IMPLIED WARRANTIES OF MERCHANTABILITY AND FITNESS FOR
+A PARTICULAR PURPOSE ARE DISCLAIMED. IN NO EVENT SHALL THE COPYRIGHT
+OWNER OR CONTRIBUTORS BE LIABLE FOR ANY DIRECT, INDIRECT, INCIDENTAL,
+SPECIAL, EXEMPLARY, OR CONSEQUENTIAL DAMAGES (INCLUDING, BUT NOT
+LIMITED TO, PROCUREMENT OF SUBSTITUTE GOODS OR SERVICES; LOSS OF USE,
+DATA, OR PROFITS; OR BUSINESS INTERRUPTION) HOWEVER CAUSED AND ON ANY
+THEORY OF LIABILITY, WHETHER IN CONTRACT, STRICT LIABILITY, OR TORT
+(INCLUDING NEGLIGENCE OR OTHERWISE) ARISING IN ANY WAY OUT OF THE USE
+OF THIS SOFTWARE, EVEN IF ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
+```
+#### PATENTS
+
+```text
+Additional IP Rights Grant (Patents)
+
+"This implementation" means the copyrightable works distributed by
+Google as part of the Go project.
+
+Google hereby grants to You a perpetual, worldwide, non-exclusive,
+no-charge, royalty-free, irrevocable (except as stated in this section)
+patent license to make, have made, use, offer to sell, sell, import,
+transfer and otherwise run, modify and propagate the contents of this
+implementation of Go, where such license applies only to those patent
+claims, both currently owned or controlled by Google and acquired in
+the future, licensable by Google that are necessarily infringed by this
+implementation of Go.  This grant does not include claims that would be
+infringed only as a consequence of further modification of this
+implementation.  If you or your agent or exclusive licensee institute or
+order or agree to the institution of patent litigation against any
+entity (including a cross-claim or counterclaim in a lawsuit) alleging
+that this implementation of Go or any code incorporated within this
+implementation of Go constitutes direct or contributory patent
+infringement, or inducement of patent infringement, then any patent
+rights granted to you under this License for this implementation of Go
+shall terminate as of the date such litigation is filed.
+```
+### Unicode and CLDR data
+
+`golang.org/x/text v0.39.0` contains Unicode 17.0.0 generated tables and CLDR 32 language tables. This attribution does not imply ICU C library linkage or Unicode endorsement.
+
+```text
+# Unicode Character Database
+# Date: 2025-08-15
+# © 2025 Unicode®, Inc.
+# Unicode and the Unicode Logo are registered trademarks of Unicode, Inc. in the U.S. and other countries.
+# For terms of use and license, see https://www.unicode.org/terms_of_use.html
+```
+
+Unicode License V3 is reproduced at [`third_party/licenses/pgx/UNICODE-LICENSE-V3.txt`](third_party/licenses/pgx/UNICODE-LICENSE-V3.txt). The original CLDR 32 Unicode data license is reproduced at [`third_party/licenses/pgx/CLDR-32-unicode-license.txt`](third_party/licenses/pgx/CLDR-32-unicode-license.txt).
 
 ## itoa 1.0.18
 
