@@ -34,3 +34,19 @@ protocol-unknown-type: toolchain
 protocol-limits: toolchain
 	go test -count=1 -run '^TestLimits$$' ./tests/compatibility
 	cargo test -p newim-protocol --locked --test fixtures limits -- --exact
+
+.PHONY: db-prepare db-schema db-migrations db-sequence db-repair
+db-prepare:
+	python3 -B infra/db/test.py prepare
+
+db-schema: toolchain
+	python3 -B infra/db/test.py schema
+
+db-migrations:
+	python3 -B infra/db/test.py migrations
+
+db-sequence:
+	python3 -B infra/db/test.py sequence
+
+db-repair:
+	python3 -B infra/db/test.py repair

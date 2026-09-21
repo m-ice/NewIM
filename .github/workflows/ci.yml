@@ -27,3 +27,9 @@ jobs:
         run: rustup toolchain install 1.98.1 --profile minimal --component rustfmt,clippy --target wasm32-unknown-unknown --no-self-update
       - run: make build
       - run: make check
+      - name: Prepare immutable PostgreSQL image
+        timeout-minutes: 5
+        run: timeout 15s docker info >/dev/null && make db-prepare
+      - name: Exercise real PostgreSQL storage and recovery
+        timeout-minutes: 8
+        run: make db-schema db-migrations db-sequence db-repair
