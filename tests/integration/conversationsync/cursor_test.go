@@ -146,6 +146,18 @@ func TestCursorExpiry(t *testing.T) {
 		}
 	})
 
+	t.Run("epoch-exhaustion-does-not-change-state", func(t *testing.T) {
+		user := "cursor_epoch_exhaustion"
+		f.populate(user, user, 1)
+		f.sql("UPDATE newim.im_conversation_sync_accounts SET epoch=$2 WHERE user_id=$1", user, int64(app.MaxSequence))
+		before := f.scalarString("SELECT epoch||'|'||last_change_seq||'|'||min_valid_seq FROM newim.im_conversation_sync_accounts WHERE user_id=$1", user)
+		wantCode(t, app.Page{}, f.repo.AdvanceFloor(ctx, user, 1), app.SequenceExhausted)
+		after := f.scalarString("SELECT epoch||'|'||last_change_seq||'|'||min_valid_seq FROM newim.im_conversation_sync_accounts WHERE user_id=$1", user)
+		if after != before {
+			t.Fatalf("epoch exhaustion changed state from %s to %s", before, after)
+		}
+	})
+
 	t.Run("invalid-limit-has-no-effects", func(t *testing.T) {
 		user := "cursor_limit"
 		f.populate(user, fmt.Sprintf("%s", user), 1)

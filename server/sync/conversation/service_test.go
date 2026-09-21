@@ -447,6 +447,38 @@ func TestLimitAndCursorFailuresHaveNoEffects(t *testing.T) {
 	assertNoPageEffects(t, page)
 }
 
+func TestAssembledPageRejectsUnfittableItem(t *testing.T) {
+	now := time.Unix(1000, 0)
+	service, err := NewService(&fakeStore{}, Config{Keys: map[string][]byte{"k": testKey(1)}, ActiveKeyID: "k", Clock: func() time.Time { return now }})
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := syncCursor{
+		kind:        cursorKindBootstrapPage,
+		keyID:       "k",
+		account:     "user1",
+		epoch:       1,
+		issued:      1000,
+		expires:     1900,
+		limit:       1,
+		fence:       1,
+		afterKey:    "a",
+		terminalKey: "z",
+	}
+	entries := []itemEnvelope{{
+		item: Item{
+			ConversationID: strings.Repeat("x", 70000),
+			Revision:       1,
+			Kind:           "upsert",
+		},
+		before: cursorPosition{key: "a"},
+		after:  cursorPosition{key: "b"},
+	}}
+	page, err := service.renderAssembledPage(base, entries, cursorPosition{key: "b"}, true, 1000)
+	mustCode(t, err, LimitExceeded)
+	assertNoPageEffects(t, page)
+}
+
 func TestPageEncodingRejectsOversizeItem(t *testing.T) {
 	now := time.Unix(1000, 0)
 	service, err := NewService(&fakeStore{}, Config{Keys: map[string][]byte{"k": testKey(1)}, ActiveKeyID: "k", Clock: func() time.Time { return now }})

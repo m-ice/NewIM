@@ -140,6 +140,30 @@ func TestDeltaTombstones(t *testing.T) {
 		}
 	})
 
+	t.Run("invented-removal-does-not-change-state", func(t *testing.T) {
+		user := "delta_invented_remove"
+		f.account(user)
+		conversation := f.conversations("delta_invented_remove", 1)[0]
+		before := f.scalarString("SELECT epoch||'|'||last_change_seq||'|'||min_valid_seq FROM newim.im_conversation_sync_accounts WHERE user_id=$1", user)
+		tx, err := f.repo.Begin(ctx)
+		must(t, err)
+		batch, err := f.repo.PrepareBatch(ctx, tx, []string{conversation}, []string{user})
+		must(t, err)
+		_, err = batch.RecordRemoval(ctx, conversation, user)
+		wantCode(t, app.Page{}, err, app.Forbidden)
+		must(t, tx.Rollback(ctx))
+		after := f.scalarString("SELECT epoch||'|'||last_change_seq||'|'||min_valid_seq FROM newim.im_conversation_sync_accounts WHERE user_id=$1", user)
+		if after != before {
+			t.Fatalf("invented removal changed account state from %s to %s", before, after)
+		}
+		if keys := f.scalarInt64("SELECT count(*) FROM newim.im_conversation_sync_keys WHERE user_id=$1", user); keys != 0 {
+			t.Fatalf("invented removal created %d directory rows", keys)
+		}
+		if changes := f.scalarInt64("SELECT count(*) FROM newim.im_conversation_sync_changes WHERE user_id=$1", user); changes != 0 {
+			t.Fatalf("invented removal created %d revisions", changes)
+		}
+	})
+
 	t.Run("duplicate-remove-and-account-isolation", func(t *testing.T) {
 		userA := "delta_a"
 		f.account(userA)

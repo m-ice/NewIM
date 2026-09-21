@@ -99,25 +99,35 @@ func planIndexLoopsAtMost(t *testing.T, name string, plan any, index string, max
 func TestQueryPlan(t *testing.T) {
 	f := openFixture(t)
 	user := "qplan_user"
+	other := "qplan_other"
 	f.account(user)
+	f.account(other)
 
 	f.sql("INSERT INTO newim.im_conversations(conversation_id) SELECT 'q'||lpad(g::text,6,'0') FROM generate_series(0,100000) g")
 	f.sql("INSERT INTO newim.im_conversation_members(conversation_id,user_id) SELECT conversation_id,$1 FROM newim.im_conversations WHERE conversation_id LIKE 'q%'", user)
+	f.sql("INSERT INTO newim.im_conversation_members(conversation_id,user_id) SELECT conversation_id,$1 FROM newim.im_conversations WHERE conversation_id LIKE 'q%'", other)
 	f.sql("INSERT INTO newim.im_conversation_sync_keys(user_id,conversation_id,first_change_seq) SELECT $1::newim.identifier,conversation_id,g FROM (SELECT conversation_id,row_number() OVER (ORDER BY conversation_id)::bigint g FROM newim.im_conversations WHERE conversation_id LIKE 'q%') rows", user)
+	f.sql("INSERT INTO newim.im_conversation_sync_keys(user_id,conversation_id,first_change_seq) SELECT $1::newim.identifier,conversation_id,g FROM (SELECT conversation_id,row_number() OVER (ORDER BY conversation_id)::bigint g FROM newim.im_conversations WHERE conversation_id LIKE 'q%') rows", other)
 	f.sql("INSERT INTO newim.im_conversation_sync_changes(user_id,change_seq,conversation_id,kind,latest_seq) SELECT $1::newim.identifier,first_change_seq,conversation_id,'upsert',0 FROM newim.im_conversation_sync_keys WHERE user_id=$1::newim.identifier", user)
+	f.sql("INSERT INTO newim.im_conversation_sync_changes(user_id,change_seq,conversation_id,kind,latest_seq) SELECT $1::newim.identifier,first_change_seq,conversation_id,'upsert',0 FROM newim.im_conversation_sync_keys WHERE user_id=$1::newim.identifier", other)
 	f.sql("UPDATE newim.im_conversation_sync_accounts SET last_change_seq=100001 WHERE user_id=$1", user)
+	f.sql("UPDATE newim.im_conversation_sync_accounts SET last_change_seq=100001 WHERE user_id=$1", other)
 	f.sql("ANALYZE newim.im_conversation_sync_accounts; ANALYZE newim.im_conversation_sync_keys; ANALYZE newim.im_conversation_sync_changes; ANALYZE newim.im_conversation_members")
 
 	_, checkpoint := bootstrapAll(t, f.service(nil, ""), user, 100)
-	f.sql("INSERT INTO newim.im_conversation_sync_changes(user_id,change_seq,conversation_id,kind,latest_seq) SELECT $1,g,'q000000','upsert',0 FROM generate_series(100002,200000) g", user)
-	f.sql("UPDATE newim.im_conversation_sync_accounts SET last_change_seq=200000 WHERE user_id=$1", user)
+	for _, account := range []string{user, other} {
+		f.sql("INSERT INTO newim.im_conversation_sync_changes(user_id,change_seq,conversation_id,kind,latest_seq) SELECT $1,g,'q000000','upsert',0 FROM generate_series(100002,200000) g", account)
+		f.sql("UPDATE newim.im_conversation_sync_accounts SET last_change_seq=200000 WHERE user_id=$1", account)
+	}
 	f.sql("ANALYZE newim.im_conversation_sync_accounts; ANALYZE newim.im_conversation_sync_changes")
 
-	if conversations := f.scalarInt64("SELECT count(*) FROM newim.im_conversation_sync_keys WHERE user_id=$1", user); conversations != 100001 {
-		t.Fatalf("directory rows got %d want 100001", conversations)
-	}
-	if hot := f.scalarInt64("SELECT count(*) FROM newim.im_conversation_sync_changes WHERE user_id=$1 AND conversation_id='q000000'", user); hot != 100000 {
-		t.Fatalf("hot revisions got %d want 100000", hot)
+	for _, account := range []string{user, other} {
+		if conversations := f.scalarInt64("SELECT count(*) FROM newim.im_conversation_sync_keys WHERE user_id=$1", account); conversations != 100001 {
+			t.Fatalf("%s directory rows got %d want 100001", account, conversations)
+		}
+		if hot := f.scalarInt64("SELECT count(*) FROM newim.im_conversation_sync_changes WHERE user_id=$1 AND conversation_id='q000000'", account); hot != 100000 {
+			t.Fatalf("%s hot revisions got %d want 100000", account, hot)
+		}
 	}
 	if value := strings.TrimSpace(f.scalarString("SHOW enable_seqscan")); value != "on" {
 		t.Fatalf("enable_seqscan got %q want on", value)
@@ -131,6 +141,14 @@ func TestQueryPlan(t *testing.T) {
 	observation, ok := observer.latest("begin_bootstrap")
 	if !ok || observation.Candidates != 200 || len(page.Items) != 100 {
 		t.Fatalf("bootstrap bound observation=%+v items=%d", observation, len(page.Items))
+	}
+	otherObserver := &captureObserver{}
+	otherPage, err := f.serviceWithObserver(nil, "", otherObserver).BeginBootstrap(ctx, principal(other), 100)
+	must(t, err)
+	checkedPage(t, otherPage, 100)
+	otherObservation, ok := otherObserver.latest("begin_bootstrap")
+	if !ok || otherObservation.Candidates != 200 || len(otherPage.Items) != 100 {
+		t.Fatalf("unrelated-account bootstrap bound observation=%+v items=%d", otherObservation, len(otherPage.Items))
 	}
 	delta, err := service.BeginDelta(ctx, principal(user), checkpoint, 100)
 	must(t, err)

@@ -619,7 +619,11 @@ func selectDeltaCandidate(candidate Candidate) (*Item, error) {
 }
 
 func (s *Service) renderAssembledPage(base syncCursor, entries []itemEnvelope, finalPosition cursorPosition, hasMore bool, now uint64) (Page, error) {
-	for keep := len(entries); keep >= 0; keep-- {
+	minimumEntries := 0
+	if len(entries) > 0 {
+		minimumEntries = 1
+	}
+	for keep := len(entries); keep >= minimumEntries; keep-- {
 		position := finalPosition
 		if keep < len(entries) {
 			position = entries[keep].before
