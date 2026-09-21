@@ -1,0 +1,8 @@
+[package]
+name = "newim-protocol"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[dependencies]
+serde_json = { version = "=1.0.151", default-features = false, features = ["std", "raw_value"] }

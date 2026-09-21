@@ -1,0 +1,5 @@
+# Wire schema
+
+`message-v1.schema.json` uses JSON Schema 2020-12 for the parsed envelope shape. The Go/Rust codecs additionally enforce the normative wire profile: UTF-8 bytes (not Unicode character counts), duplicate keys, paired surrogate escapes, lexical integer versions, number-token length, total bytes and container depth. Standard JSON Schema alone cannot enforce those properties after a parser has discarded the original representation; the `x-*` annotations document them and are not standard validator keywords.
+
+Run the codecs before consuming a message. Unknown envelope fields are allowed. Unknown types and text schema versions remain opaque and unsupported; a schema match does not imply an implemented renderer or server permission. The shared compatibility corpus exercises both codecs; the Go schema regression checks declared limits and decimal-range patterns, not a third-party full schema validator.
