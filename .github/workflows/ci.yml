@@ -10,7 +10,7 @@ permissions:
 jobs:
   foundation:
     runs-on: ubuntu-24.04
-    timeout-minutes: 25
+    timeout-minutes: 35
     env:
       GOTOOLCHAIN: local
       RUSTUP_TOOLCHAIN: '1.98.1'
@@ -40,3 +40,12 @@ jobs:
       - name: Exercise durable conversation sync projection
         timeout-minutes: 12
         run: make sync-check
+      - name: Exercise auth token storage and identity
+        timeout-minutes: 10
+        run: make auth-check
+      - name: Exercise auth recovery and revocation durability
+        timeout-minutes: 12
+        run: make auth-recovery
+      - name: Exercise auth policy boundary
+        timeout-minutes: 10
+        run: make auth-policy

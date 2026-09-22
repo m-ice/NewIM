@@ -1,17 +1,21 @@
 # Relational storage v1
 
-This directory implements PostgreSQL constraints, atomic message persistence and
-transactional migrations. It supplies no authentication, network ACK, dispatcher,
-sync cursor or retention policy. See ADR 0004 for the caller contract.
+This directory implements PostgreSQL constraints, atomic message persistence,
+transactional migrations and the durable auth-session/token storage primitive. It
+supplies no credential verification, network ACK, dispatcher, sync cursor,
+retention policy or public authentication endpoint. See ADRs 0004 and 0008 for the
+caller contracts.
 
 Prerequisites: Python 3.11+, Docker (classic or OCI descriptor-aware image store),
-the root pinned Go/Rust tools. No Python package or Go database driver is needed.
-The SQL dialect is PostgreSQL 18.6; deployment compatibility with other versions
-has not been established.
+the root pinned Go/Rust tools. No Python package or additional Go database
+driver is needed; product code uses the existing reviewed pgx dependency. The SQL
+dialect is PostgreSQL 18.6; deployment compatibility with other versions has not
+been established.
 
 ```sh
 make db-prepare
 make db-schema db-migrations db-sequence db-repair
+make auth-check auth-recovery auth-policy
 make build check
 ```
 
@@ -39,17 +43,22 @@ temporary initdb server. Cleanup verifies exact resource ownership labels.
 Command/SQL/lock/readiness bounds prevent indefinite waits; CI additionally has
 an 8 minute bound around all four suites. Failures are errors, never skips.
 
-Records under ignored `build/db-runs/<suite>-<unique>/` contain actual argv,
-working directory, exit code, duration and stdin SHA-256, image identity, suite
-result and populated query plans. SQL parameters and raw errors are not logged.
-The test-only codec binary has no production API and no database driver.
+Records under ignored `build/db-runs/<suite>-<unique>/` and
+`build/auth/<suite>-<unique>/` contain actual argv, working directory, exit code,
+duration and stdin SHA-256, image identity, compilation/test logs and suite
+result. SQL parameters and raw errors are not logged. The test-only codec binary
+has no production API and no database driver.
 
 ## Schema and queries
 
 Core tables cover users/devices/sessions, conversations/members, messages/read
 state, blocks, outbox, webhook delivery references and opaque encrypted push
-tokens. Restrictive FKs avoid implicit account/message deletion. Session/token
-rows do not implement revocation policy, credential encryption or token refresh.
+tokens. Migration 004 adds `im_auth_tokens` with a lowercase-hex `token_id`
+primary key, unique 32-byte SHA-256 token digest, restrictive session FK,
+issue/expiry timestamps and nullable revocation timestamp. Restrictive FKs avoid
+implicit account/message deletion. The table stores no raw token or secret and
+does not implement credential verification, token refresh, transport or login
+policy.
 
 `newim.persist_message` requires a trusted, authorized, protocol-validated caller
 and READ COMMITTED. Invoke it in a transaction and only acknowledge persistence
@@ -87,6 +96,16 @@ Query callers must separately cap limits, scope permissions and enforce deadline
 number tokens and escaped NUL. Do not cast it through JSONB/numeric. The SQL byte
 bound does not replace full envelope, text, nesting or JSON validation.
 
+The auth PostgreSQL harness builds the tagged `tests/integration/auth` package
+for Linux and executes it in the same owned, networkless PostgreSQL 18.6 setup.
+`make auth-check` exercises token format, digest-only storage, constant-time
+verification, binding/ownership, stable errors and mandatory redacted observer
+paths. `make auth-recovery` checks concurrent revoke/authenticate ordering,
+commit-time failure/disconnect, database restart and logical restore without
+token resurrection. `make auth-policy` exercises the injected `LoginPolicy` seam
+and complete five-ID connection identity. These targets do not start HTTP, WS,
+gateway, credential, push, refresh-token or multi-device policy implementations.
+
 ## Migration and recovery runbook
 
 1. Pin and review the migration source revision. Back up the current database
@@ -103,8 +122,11 @@ bound does not replace full envelope, text, nesting or JSON validation.
 4. Stages 001 and 002 are parts of this first installation, not previously
    released schemas. Populated 001→002 is a supported staged installation test;
    do not deploy a service with only 001. Migration 002 does not generate events
-   for manually populated 001 fixtures. No production backlog conversion is
-   claimed and no destructive down migration exists.
+   for manually populated 001 fixtures. Migration 003 adds the conversation
+   projection and migration 004 adds the opaque token table. Migration 004 keeps
+   all populated 001-003 rows and performs no implicit token backfill. No
+   production backlog conversion is claimed and no destructive down migration
+   exists.
 5. For backup, use `pg_dump --format=custom --no-owner` with the explicitly
    selected database and protected output location. Preserve ACLs; do not add
    `--no-privileges`. Test tooling captures the dump in memory and logs only its

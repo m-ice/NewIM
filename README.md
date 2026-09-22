@@ -2,12 +2,14 @@
 
 NewIM is an independently developed messaging platform for 澜遇科技. The current
 foundation includes Go/Rust message and send/ACK/error protocol v1 codecs,
-PostgreSQL schema, atomic message/outbox persistence primitives and a durable
-internal conversation-sync projection, plus a portable SDK local-store contract
-with a native SQLite adapter. Storage has real migration, idempotency, pagination,
-query-plan and recovery tests. Authentication services, network send/ACK and retry
-orchestration, a complete multi-device sync service, platform adapters and UI remain
-future work.
+PostgreSQL schema, atomic message/outbox persistence primitives, a durable
+internal conversation-sync projection and policy-neutral opaque auth-session/token
+primitives, plus a portable SDK local-store contract with a native SQLite adapter.
+Storage has real migration, idempotency, pagination, query-plan, concurrency,
+rollback and recovery tests. User credential verification, HTTP/WS/gateway login,
+refresh tokens, multi-device login/kick policy, network send/ACK and retry
+orchestration, a complete multi-device sync service, platform adapters and UI
+remain future work.
 These libraries and SQL primitives do not yet form an end-to-end messaging service.
 
 ## Build and test
@@ -47,6 +49,7 @@ For PostgreSQL suites, additionally install Docker with a running daemon:
 make db-prepare
 make db-schema db-migrations db-sequence db-repair
 make sync-check
+make auth-check auth-recovery auth-policy
 ```
 
 Preparation verifies the locked official PostgreSQL image and pulls it if absent.
@@ -57,8 +60,8 @@ image verification, migration, backup and recovery contracts, and its
 [dependency provenance](infra/db/DEPENDENCIES.md).
 
 The GitHub workflow declares the same preparation, build, check, SQLite and
-PostgreSQL suites and the six conversation-sync suites on Ubuntu 24.04. A
-successful local run does not establish that a hosted CI job ran.
+PostgreSQL suites, the six conversation-sync suites and the three auth suites on
+Ubuntu 24.04. A successful local run does not establish that a hosted CI job ran.
 
 ## Build identity and schema versions
 
@@ -78,7 +81,7 @@ syntax only. Ordinary SDK builds leave that optional label unset. The SDK does
 not infer clean state or wire compatibility from a revision.
 
 Server and SDK versions are independently maintained at `0.1.0-dev`; the message
-protocol is version 1. PostgreSQL has additive migration stages 001 through 003;
+protocol is version 1. PostgreSQL has additive migration stages 001 through 004;
 SQLite has its separate migration history. They are not interchangeable schemas or
 previously released upgrade histories. See the
 [relational storage ADR](docs/adr/0004-relational-storage.md),

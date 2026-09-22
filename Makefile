@@ -104,3 +104,13 @@ sync-migrations:
 	python3 -B infra/db/sync_suite.py migrations
 
 sync-check: sync-bootstrap sync-delta sync-cursor sync-query-plan sync-recovery sync-migrations
+
+.PHONY: auth-check auth-recovery auth-policy
+auth-check: toolchain
+	python3 -B infra/db/auth_suite.py check
+
+auth-recovery: toolchain
+	python3 -B infra/db/auth_suite.py recovery
+
+auth-policy: toolchain
+	python3 -B infra/db/auth_suite.py policy

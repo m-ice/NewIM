@@ -31,6 +31,7 @@ BASE_TABLES = {'im_users', 'im_devices', 'im_sessions', 'im_conversations',
 DURABILITY_TABLES = {'im_outbox_events', 'im_webhook_deliveries', 'im_push_tokens'}
 SYNC_TABLES = {'im_conversation_sync_accounts', 'im_conversation_sync_keys',
                'im_conversation_sync_changes'}
+AUTH_TABLES = {'im_auth_tokens'}
 
 
 def source_migrations():
@@ -53,6 +54,7 @@ def check_catalog(db, target=None):
     target = len(source_migrations()) if target is None else target
     expected = BASE_TABLES | (DURABILITY_TABLES if target >= 2 else set())
     expected |= SYNC_TABLES if target >= 3 else set()
+    expected |= AUTH_TABLES if target >= 4 else set()
     equal(set(db.sql("SELECT tablename FROM pg_tables WHERE schemaname='newim';").splitlines()),
           expected, 'exact catalog table set')
     scalar(db, "SELECT count(*) FROM pg_constraint WHERE connamespace='newim'::regnamespace AND contype='f' AND confdeltype<>'a';",
@@ -246,6 +248,7 @@ def schema(db, commands):
         db.sql(sql, error=error)
     equal(snapshot(db), before, 'negative writes preserve database')
     sync_constraints(db)
+    auth_constraints(db)
     print(f'PASS schema catalogs and {len(negatives)} negative writes', flush=True)
     codec_roundtrips(db, commands)
     db.sql("TRUNCATE newim.im_users CASCADE;")
@@ -285,11 +288,11 @@ def sync_migration_faults(db, commands):
             (directory/path.name).write_bytes(path.read_bytes())
         candidate = directory/source.name
         candidate.write_text(source.read_text().replace(marker, 'SELECT 1/0;', 1))
-        db.sql(migration_sql(directory=directory), error='22012')
+        db.sql(migration_sql(3, directory=directory), error='22012')
         equal(snapshot(db), before, 'failed 003 leaves exact populated 002 state')
         check_catalog(db, 2)
         candidate.write_text(source.read_text().replace(marker, 'SELECT pg_sleep(30);', 1))
-        held = db.session("SET application_name='newim_sync_migration_interrupt'; "+migration_sql(directory=directory))
+        held = db.session("SET application_name='newim_sync_migration_interrupt'; "+migration_sql(3, directory=directory))
         db.wait_sql("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name='newim_sync_migration_interrupt' AND wait_event='PgSleep');")
         db.sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='newim_sync_migration_interrupt';")
         held.finish(error='57P01')
@@ -299,19 +302,85 @@ def sync_migration_faults(db, commands):
     # 原始源码重试；锁屏障确保覆盖首次升级竞争，而非仅完成后的重放。
     gate = db.session("SET application_name='newim_upgrade_gate'; BEGIN; SELECT pg_advisory_xact_lock(1947620131);")
     db.wait_sql("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name='newim_upgrade_gate' AND state='idle in transaction');")
-    concurrent = [db.session("SET application_name='newim_upgrade_contender'; "+migration_sql()) for _ in range(4)]
+    concurrent = [db.session("SET application_name='newim_upgrade_contender'; "+migration_sql(3)) for _ in range(4)]
     db.wait_sql("SELECT count(*)=4 FROM pg_stat_activity WHERE application_name='newim_upgrade_contender' AND wait_event_type='Lock';")
     gate.send('COMMIT;')
     gate.finish()
     for session in concurrent:
         session.finish()
-    check_catalog(db)
+    check_catalog(db, 3)
     after = snapshot(db)
     equal({k:after[k] for k in before if k!='migrations'},
           {k:v for k,v in before.items() if k!='migrations'}, '003 preserves all historical rows')
     for table in SYNC_TABLES:
         scalar(db, 'SELECT count(*) FROM newim.'+table+';', 0, 'migration performs no automatic backfill')
     print('PASS populated 003 failure/termination rollback, original-source restart and no implicit backfill', flush=True)
+
+
+def auth_constraints(db):
+    db.sql("INSERT INTO newim.im_devices VALUES ('alice','auth_phone',default) ON CONFLICT DO NOTHING; "
+           "INSERT INTO newim.im_sessions(session_id,user_id,device_id) VALUES ('auth_session','alice','auth_phone') ON CONFLICT DO NOTHING; "
+           "INSERT INTO newim.im_auth_tokens(token_id,token_digest,session_id,created_at,expires_at) "
+           "VALUES ('0123456789abcdef0123456789abcdef',decode(repeat('01',32),'hex'),'auth_session',"
+           "'2026-01-01 00:00:00+00','2026-01-01 01:00:00+00');")
+    scalar(db, "SELECT string_agg(column_name,',' ORDER BY ordinal_position) FROM information_schema.columns "
+           "WHERE table_schema='newim' AND table_name='im_auth_tokens';",
+           'token_id,token_digest,session_id,created_at,expires_at,revoked_at', 'exact auth token columns')
+    scalar(db, "SELECT pg_get_indexdef('newim.im_auth_tokens_session_idx'::regclass);",
+           'CREATE INDEX im_auth_tokens_session_idx ON newim.im_auth_tokens USING btree (session_id, token_id)',
+           'auth token session index')
+    scalar(db, "SELECT coll.collname FROM pg_attribute a JOIN pg_collation coll ON coll.oid=a.attcollation "
+           "WHERE a.attrelid='newim.im_auth_tokens'::regclass AND a.attname='token_id';",
+           'C', 'auth token identifier collation')
+    negatives = [
+        ("INSERT INTO newim.im_auth_tokens(token_id,token_digest,session_id,created_at,expires_at) VALUES ('0123456789abcdef0123456789abcdeF',decode(repeat('02',32),'hex'),'auth_session',now(),now()+interval '1 hour');", '23514'),
+        ("INSERT INTO newim.im_auth_tokens(token_id,token_digest,session_id,created_at,expires_at) VALUES ('0123456789abcdef0123456789abcde',decode(repeat('02',32),'hex'),'auth_session',now(),now()+interval '1 hour');", '23514'),
+        ("INSERT INTO newim.im_auth_tokens(token_id,token_digest,session_id,created_at,expires_at) VALUES ('fedcba9876543210fedcba9876543210',decode(repeat('02',31),'hex'),'auth_session',now(),now()+interval '1 hour');", '23514'),
+        ("INSERT INTO newim.im_auth_tokens(token_id,token_digest,session_id,created_at,expires_at) VALUES ('0123456789abcdef0123456789abcdef',decode(repeat('03',32),'hex'),'auth_session',now(),now()+interval '1 hour');", '23505'),
+        ("INSERT INTO newim.im_auth_tokens(token_id,token_digest,session_id,created_at,expires_at) VALUES ('fedcba9876543210fedcba9876543210',decode(repeat('01',32),'hex'),'auth_session',now(),now()+interval '1 hour');", '23505'),
+        ("INSERT INTO newim.im_auth_tokens(token_id,token_digest,session_id,created_at,expires_at) VALUES ('fedcba9876543210fedcba9876543210',decode(repeat('02',32),'hex'),'missing',now(),now()+interval '1 hour');", '23503'),
+        ("UPDATE newim.im_auth_tokens SET expires_at=created_at WHERE token_id='0123456789abcdef0123456789abcdef';", '23514'),
+        ("UPDATE newim.im_auth_tokens SET revoked_at=created_at-interval '1 second' WHERE token_id='0123456789abcdef0123456789abcdef';", '23514'),
+    ]
+    before = snapshot(db)
+    for sql, error in negatives:
+        db.sql(sql, error=error)
+    equal(snapshot(db), before, 'auth constraint failures preserve state')
+    print(f'PASS auth schema constraints: {len(negatives)} rejected writes', flush=True)
+
+
+def auth_migration_faults(db, commands):
+    # Alter only an owned 004 copy; populated 001-003 bytes must survive every failure.
+    marker = '-- AUTH_MIGRATION_FAULT_POINT'
+    source = DB_DIR/'migrations/004_auth_sessions.sql'
+    equal(source.read_text().count(marker), 1, 'unique auth migration fault injection marker')
+    db.sql("INSERT INTO newim.im_devices VALUES ('alice','migration_auth_phone',default) ON CONFLICT DO NOTHING; "
+           "INSERT INTO newim.im_sessions(session_id,user_id,device_id) VALUES ('migration_auth_session','alice','migration_auth_phone') ON CONFLICT DO NOTHING;")
+    before = snapshot(db)
+    with tempfile.TemporaryDirectory(prefix='auth-migration-copy-', dir=commands.directory) as owned:
+        directory = Path(owned)
+        for path in source_migrations():
+            (directory/path.name).write_bytes(path.read_bytes())
+        candidate = directory/source.name
+        candidate.write_text(source.read_text().replace(marker, 'SELECT 1/0;', 1))
+        db.sql(migration_sql(directory=directory), error='22012')
+        equal(snapshot(db), before, 'failed 004 leaves exact populated 003 state')
+        check_catalog(db, 3)
+        candidate.write_text(source.read_text().replace(marker, 'SELECT pg_sleep(30);', 1))
+        held = db.session("SET application_name='newim_auth_migration_interrupt'; "+migration_sql(directory=directory))
+        db.wait_sql("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name='newim_auth_migration_interrupt' AND wait_event='PgSleep');")
+        db.sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='newim_auth_migration_interrupt';")
+        held.finish(error='57P01')
+        equal(snapshot(db), before, 'terminated 004 leaves exact populated 003 state')
+        check_catalog(db, 3)
+    db.sql(migration_sql())
+    check_catalog(db, 4)
+    after = snapshot(db)
+    equal({k:after[k] for k in before if k!='migrations'},
+          {k:v for k,v in before.items() if k!='migrations'}, '004 preserves all historical rows')
+    for table in AUTH_TABLES:
+        scalar(db, 'SELECT count(*) FROM newim.'+table+';', 0, 'auth migration performs no implicit backfill')
+    print('PASS populated 004 failure/termination rollback and original-source retry', flush=True)
 
 
 def migrations(db, commands):
@@ -330,6 +399,7 @@ def migrations(db, commands):
     db.sql("UPDATE newim.im_conversations SET latest_server_msg_id='legacy' WHERE conversation_id='other';", error='23503')
     db.sql(persist('migration_durable'))
     sync_migration_faults(db, commands)
+    auth_migration_faults(db, commands)
     after = snapshot(db)
     db.sql(migration_sql())
     equal(snapshot(db), after, 'head replay stable')
