@@ -3,12 +3,13 @@
 NewIM is an independently developed messaging platform for 澜遇科技. The current
 foundation includes Go/Rust message and send/ACK/error protocol v1 codecs,
 PostgreSQL schema, atomic message/outbox persistence primitives, a durable
-internal conversation-sync projection and policy-neutral opaque auth-session/token
+internal 1v1 send transaction with idempotent persisted ACKs, a durable internal
+conversation-sync projection and policy-neutral opaque auth-session/token
 primitives, plus a portable SDK local-store contract with a native SQLite adapter.
 Storage has real migration, idempotency, pagination, query-plan, concurrency,
 rollback and recovery tests. User credential verification, HTTP/WS/gateway login,
-refresh tokens, multi-device login/kick policy, network send/ACK and retry
-orchestration, a complete multi-device sync service, platform adapters and UI
+refresh tokens, multi-device login/kick policy, network delivery, client retry
+state machines, a complete multi-device sync service, platform adapters and UI
 remain future work.
 These libraries and SQL primitives do not yet form an end-to-end messaging service.
 
@@ -50,6 +51,7 @@ make db-prepare
 make db-schema db-migrations db-sequence db-repair
 make sync-check
 make auth-check auth-recovery auth-policy
+make message-check message-recovery message-errors
 ```
 
 Preparation verifies the locked official PostgreSQL image and pulls it if absent.
@@ -60,8 +62,9 @@ image verification, migration, backup and recovery contracts, and its
 [dependency provenance](infra/db/DEPENDENCIES.md).
 
 The GitHub workflow declares the same preparation, build, check, SQLite and
-PostgreSQL suites, the six conversation-sync suites and the three auth suites on
-Ubuntu 24.04. A successful local run does not establish that a hosted CI job ran.
+PostgreSQL suites, the six conversation-sync suites, the three auth suites and
+the three message-send suites on Ubuntu 24.04. A successful local run does not
+establish that a hosted CI job ran.
 
 ## Build identity and schema versions
 

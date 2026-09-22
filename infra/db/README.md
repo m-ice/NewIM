@@ -1,10 +1,10 @@
 # Relational storage v1
 
 This directory implements PostgreSQL constraints, atomic message persistence,
-transactional migrations and the durable auth-session/token storage primitive. It
-supplies no credential verification, network ACK, dispatcher, sync cursor,
-retention policy or public authentication endpoint. See ADRs 0004 and 0008 for the
-caller contracts.
+transactional migrations, the durable message-send transaction and the durable
+auth-session/token storage primitive. It supplies no credential verification,
+network ACK, dispatcher, sync cursor, retention policy or public authentication
+endpoint. See ADRs 0004, 0008 and 0009 for the caller contracts.
 
 Prerequisites: Python 3.11+, Docker (classic or OCI descriptor-aware image store),
 the root pinned Go/Rust tools. No Python package or additional Go database
@@ -16,6 +16,7 @@ been established.
 make db-prepare
 make db-schema db-migrations db-sequence db-repair
 make auth-check auth-recovery auth-policy
+make message-check message-recovery message-errors
 make build check
 ```
 
@@ -43,11 +44,12 @@ temporary initdb server. Cleanup verifies exact resource ownership labels.
 Command/SQL/lock/readiness bounds prevent indefinite waits; CI additionally has
 an 8 minute bound around all four suites. Failures are errors, never skips.
 
-Records under ignored `build/db-runs/<suite>-<unique>/` and
-`build/auth/<suite>-<unique>/` contain actual argv, working directory, exit code,
-duration and stdin SHA-256, image identity, compilation/test logs and suite
-result. SQL parameters and raw errors are not logged. The test-only codec binary
-has no production API and no database driver.
+Records under ignored `build/db-runs/<suite>-<unique>/`,
+`build/auth/<suite>-<unique>/` and `build/message/<suite>-<unique>/` contain
+actual argv, working directory, exit code, duration and stdin SHA-256, image
+identity, compilation/test logs and suite result. SQL parameters and raw errors
+are not logged. The test-only codec binary has no production API and no database
+driver.
 
 ## Schema and queries
 
@@ -69,6 +71,17 @@ BIGINT allocation and NI003 unsupported isolation. These internal SQLSTATEs are
 not public wire error codes. Whole-transaction retries must handle 40P01, 40001
 and ambiguous connection loss with bounded backoff. Retrieving a duplicate also
 requires caller authorization; SQL SECURITY INVOKER does not enforce membership.
+
+The `server/message` application service and `server/storage/message` adapter use
+that primitive for an internal durable send. The adapter runs READ COMMITTED,
+locks the conversation and membership rows, invokes the trusted generator
+callback, persists, compares the original intent, and commits before returning a
+result. Equal retries return the original server ID, sequence and time; unequal
+intent returns `SEND_ID_CONFLICT` without writes. A `SERVER_PERSISTED` ACK is
+constructed only after commit. Retryable storage/lock failures remain distinct
+from permanent input, authorization, missing-conversation, sequence-exhaustion
+and ID-conflict failures. No dispatcher, peer delivery or public network ACK is
+implemented here.
 
 The privileged service role can write tables directly, so the invariant is an
 application transaction contract, not protection against a compromised service.
@@ -105,6 +118,15 @@ commit-time failure/disconnect, database restart and logical restore without
 token resurrection. `make auth-policy` exercises the injected `LoginPolicy` seam
 and complete five-ID connection identity. These targets do not start HTTP, WS,
 gateway, credential, push, refresh-token or multi-device policy implementations.
+
+The message PostgreSQL harness builds the tagged `tests/integration/message`
+package and runs it in the same owned PostgreSQL environment. `make message-check`
+covers equal retry, unequal intent, ACK-after-commit and identity correlation.
+`make message-recovery` covers rollback, backend termination, restart/restore and
+lost-response retry convergence with one durable message/outbox identity.
+`make message-errors` covers permanent and retryable classifications. These
+targets do not implement HTTP/WebSocket, peer delivery, fan-out, read receipts
+or an SDK retry state machine.
 
 ## Migration and recovery runbook
 

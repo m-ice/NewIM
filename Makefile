@@ -114,3 +114,13 @@ auth-recovery: toolchain
 
 auth-policy: toolchain
 	python3 -B infra/db/auth_suite.py policy
+
+.PHONY: message-check message-recovery message-errors
+message-check: toolchain
+	python3 -B infra/db/message_suite.py check
+
+message-recovery: toolchain
+	python3 -B infra/db/message_suite.py recovery
+
+message-errors: toolchain
+	python3 -B infra/db/message_suite.py errors
