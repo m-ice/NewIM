@@ -76,9 +76,11 @@ different payload/result fails closed. `CommitOutcomeUnknown` never reports succ
 authoritative reload before another decision.
 
 `PendingMutationStore` is additive and leaves `LocalStore` and exhaustive `Action` unchanged.
-The SQLite adapter performs exact three-field, revision-CAS updates/removals without a schema
-migration or request-byte change. It also observes the existing `requires_reopen` freeze: after
-corruption or an ambiguous commit, pending mutations return `RecoveryRequired` until reopen.
+It exposes the adapter's exact current store fence so core can reject a stale caller context
+before dispatch, failure application, rebind, resume or terminal removal. The SQLite adapter
+performs exact three-field, revision-CAS updates/removals without a schema migration or
+request-byte change. It also observes the existing `requires_reopen` freeze: after corruption or
+an ambiguous commit, pending mutations return `RecoveryRequired` until reopen.
 
 ## Consequences
 
