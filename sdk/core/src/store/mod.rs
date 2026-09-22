@@ -234,3 +234,95 @@ pub trait LocalStore {
     fn submit(&mut self, request: Request) -> Result<(), StoreError>;
     fn take_completion(&mut self) -> Option<Completion>;
 }
+
+/// 待处理 outbox 的精确三字段身份 / Exact three-field identity for one pending row.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PendingIdentity {
+    pub sender_id: String,
+    pub client_id: String,
+    pub conversation_id: String,
+}
+impl PendingIdentity {
+    pub fn validate(&self) -> Result<(), StoreError> {
+        if validation::valid_identity(&self.sender_id)
+            && validation::valid_identity(&self.client_id)
+            && validation::valid_identity(&self.conversation_id)
+        {
+            Ok(())
+        } else {
+            Err(StoreError::InvalidInput)
+        }
+    }
+}
+impl fmt::Debug for PendingIdentity {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PendingIdentity")
+            .field("sender_id", &"redacted")
+            .field("client_id", &"redacted")
+            .field("conversation_id", &"redacted")
+            .finish()
+    }
+}
+
+/// 替换一条 pending payload 的 CAS 请求 / Revision-CAS replacement of one pending payload.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PendingMutation {
+    pub expected_revision: u64,
+    pub identity: PendingIdentity,
+    pub payload: Blob,
+}
+impl PendingMutation {
+    pub fn validate(&self) -> Result<(), StoreError> {
+        self.identity.validate()?;
+        if self.expected_revision > i64::MAX as u64 || self.payload.0.len() > MAX_VALUE_BYTES {
+            return Err(StoreError::InvalidInput);
+        }
+        Ok(())
+    }
+}
+impl fmt::Debug for PendingMutation {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PendingMutation")
+            .field("expected_revision", &self.expected_revision)
+            .field("identity", &self.identity)
+            .field("payload_len", &self.payload.0.len())
+            .finish()
+    }
+}
+
+/// 显式移除一条 terminal/auth-recovery pending 的 CAS 请求。
+/// Revision-CAS removal reserved for explicit terminal/auth-recovery dismissal.
+#[derive(Clone, PartialEq, Eq)]
+pub struct PendingRemoval {
+    pub expected_revision: u64,
+    pub identity: PendingIdentity,
+}
+impl PendingRemoval {
+    pub fn validate(&self) -> Result<(), StoreError> {
+        self.identity.validate()?;
+        if self.expected_revision > i64::MAX as u64 {
+            return Err(StoreError::InvalidInput);
+        }
+        Ok(())
+    }
+}
+impl fmt::Debug for PendingRemoval {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("PendingRemoval")
+            .field("expected_revision", &self.expected_revision)
+            .field("identity", &self.identity)
+            .finish()
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct PendingReceipt {
+    pub revision: u64,
+}
+
+/// Additive pending mutation port; existing `LocalStore` and exhaustive `Action` stay unchanged.
+/// 增量 pending 变更端口；不改既有 LocalStore 与穷尽 Action。
+pub trait PendingMutationStore {
+    fn update_pending(&mut self, mutation: PendingMutation) -> Result<PendingReceipt, StoreError>;
+    fn remove_pending(&mut self, removal: PendingRemoval) -> Result<PendingReceipt, StoreError>;
+}

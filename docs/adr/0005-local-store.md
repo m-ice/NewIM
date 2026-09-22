@@ -46,3 +46,24 @@ The durable root `initialized` marker binds account and store instance. Valid fi
 Explicit rebuild can create a new instance only after quarantine authorization and keeps recovery_required visible. Rebuilding an already-present active directory never reinitializes an empty file. If rebuild itself was interrupted before a supported schema was committed, a new uniquely named quarantine can preserve that partial active directory while retaining every previous quarantine, then a new rebuild attempt proceeds. The account binding cannot change during rebuild. This is a fail-closed recovery workflow, not automatic healthy storage recreation.
 
 Legacy generic markers contain no account identity. Before rebuild creates or opens active data, a missing/generic binding must be resolved from the current quarantine's read-only, bounded, supported SQLite metadata and must match the requested account. If that identity cannot be safely read, rebuild returns RecoveryRequired without creating active files or changing either marker or quarantine. A readable legacy store can therefore rebuild only under its original account. This also applies when the initialized marker was lost. Unbound first-creation remnants with no committed readable identity are retained for inspection; this API does not offer an account override to recreate them in place. The host can explicitly choose a separate new directory without claiming that the quarantined data was recovered.
+
+## Additive pending mutation port (NIM-SDK-002)
+
+Status: accepted amendment, 2026-09-23.
+
+The existing `LocalStore`, `Action` enum, request bytes and receipt semantics remain unchanged.
+SDK Core adds a separate additive `PendingMutationStore` port for the two outbox-only CAS
+transitions:
+
+- `update_pending(PendingMutation) -> PendingReceipt`
+- `remove_pending(PendingRemoval) -> PendingReceipt`
+
+Each request carries the exact `(sender_id, client_id, conversation_id)` identity and the last
+observed revision. The native adapter updates or removes exactly one matching pending row and
+returns `IdentityConflict` on a missing/contradictory identity or `StaleRevision` when the CAS
+revision does not match. Success increments the store revision and commits the mutation and
+receipt atomically. The adapter does not parse the opaque pending payload, does not insert or
+modify message rows, and does not change `pending_outbox` schema or migrations. `remove_pending`
+is an explicit terminal/auth-recovery dismissal; ordinary queue cleanup cannot call it. The
+wire-neutral coordinator remains responsible for classifying terminal states before requesting
+removal and for all ACK authority checks.

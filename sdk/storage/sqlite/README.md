@@ -27,3 +27,18 @@ Operation IDs increase for mutations within each generation. The most recent suc
 A new quarantine name is required for every new incident. If a rebuild was interrupted before committing a supported schema, call quarantine again with a fresh name to preserve the partial active directory; prior quarantines remain intact, and rebuild can then start a new attempt. The initialized marker binds account/instance. Missing, truncated or empty-schema data in any existing active directory is an error, not automatic fresh storage. Only the call that exclusively creates a previously absent active directory may initialize schema zero. A committed supported database whose marker publication was interrupted resumes the same instance; partial schema creation requires explicit quarantine/rebuild. Read queries and migration checks have bounded input/page limits; SQLite opening/recovery checks use interrupt deadlines, while OS filesystem I/O cannot be given a hard deadline by SQLite interrupt. Compact has a requested interrupt deadline (1–30,000 ms) and can return Busy/StorageFull/Cancelled/Io. Its temporary attachment allowance is private to VACUUM and restored afterward. Process-kill tests exercise SQLite transaction/WAL recovery, not arbitrary power failure or broken hardware.
 
 See [ADR 0005](../../../docs/adr/0005-local-store.md) and [dependency review](../../../docs/dependencies/local-store.md).
+
+## Pending outbox CAS adapter
+
+The native adapter implements the additive `PendingMutationStore` port in `operations.rs`:
+
+- `update_pending` replaces exactly one `(sender_id, client_id, conversation_id)` payload when
+  `expected_revision` matches the committed revision.
+- `remove_pending` is reserved for an explicit terminal/auth-recovery dismissal and never
+  inserts, renames or edits message rows.
+- Missing/contradictory identity returns `IdentityConflict`; a stale revision returns
+  `StaleRevision`; success increments the store revision atomically.
+
+No schema migration or request-byte change is introduced. The adapter treats pending payload as
+opaque bytes and never guesses or rewrites a legacy envelope. The core outbox owns versioned
+envelope validation, retry state, ACK authority and terminal-state policy.

@@ -428,3 +428,95 @@ impl SqliteStore {
         }))
     }
 }
+
+impl PendingMutationStore for SqliteStore {
+    fn update_pending(&mut self, mutation: PendingMutation) -> Result<PendingReceipt, StoreError> {
+        mutation.validate()?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db)?;
+        let rev = tx
+            .query_row("SELECT revision FROM store_metadata WHERE id=1", [], |r| {
+                unsigned(r, 0)
+            })
+            .map_err(db)?;
+        if mutation.expected_revision != rev {
+            return Err(StoreError::StaleRevision);
+        }
+        if rev == i64::MAX as u64 {
+            return Err(StoreError::CapacityExceeded);
+        }
+        let current: Option<String> = tx
+            .query_row(
+                "SELECT conversation_id FROM pending_outbox WHERE sender_id=? AND client_id=?",
+                params![mutation.identity.sender_id, mutation.identity.client_id],
+                |r| r.get(0),
+            )
+            .optional()
+            .map_err(db)?;
+        if current.as_deref() != Some(mutation.identity.conversation_id.as_str()) {
+            return Err(StoreError::IdentityConflict);
+        }
+        let changed = tx
+            .execute(
+                "UPDATE pending_outbox SET payload=? WHERE sender_id=? AND client_id=? AND conversation_id=?",
+                params![
+                    mutation.payload.0,
+                    mutation.identity.sender_id,
+                    mutation.identity.client_id,
+                    mutation.identity.conversation_id
+                ],
+            )
+            .map_err(db)?;
+        if changed != 1 {
+            return Err(StoreError::IdentityConflict);
+        }
+        tx.execute(
+            "UPDATE store_metadata SET revision=revision+1 WHERE id=1",
+            [],
+        )
+        .map_err(db)?;
+        tx.commit().map_err(|_| StoreError::CommitOutcomeUnknown)?;
+        Ok(PendingReceipt { revision: rev + 1 })
+    }
+
+    fn remove_pending(&mut self, removal: PendingRemoval) -> Result<PendingReceipt, StoreError> {
+        removal.validate()?;
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .map_err(db)?;
+        let rev = tx
+            .query_row("SELECT revision FROM store_metadata WHERE id=1", [], |r| {
+                unsigned(r, 0)
+            })
+            .map_err(db)?;
+        if removal.expected_revision != rev {
+            return Err(StoreError::StaleRevision);
+        }
+        if rev == i64::MAX as u64 {
+            return Err(StoreError::CapacityExceeded);
+        }
+        let changed = tx
+            .execute(
+                "DELETE FROM pending_outbox WHERE sender_id=? AND client_id=? AND conversation_id=?",
+                params![
+                    removal.identity.sender_id,
+                    removal.identity.client_id,
+                    removal.identity.conversation_id
+                ],
+            )
+            .map_err(db)?;
+        if changed != 1 {
+            return Err(StoreError::IdentityConflict);
+        }
+        tx.execute(
+            "UPDATE store_metadata SET revision=revision+1 WHERE id=1",
+            [],
+        )
+        .map_err(db)?;
+        tx.commit().map_err(|_| StoreError::CommitOutcomeUnknown)?;
+        Ok(PendingReceipt { revision: rev + 1 })
+    }
+}

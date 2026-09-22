@@ -31,6 +31,7 @@ jobs:
       - run: make build
       - run: make check
       - run: make store-idempotency store-migrations store-maintenance store-recovery
+      - run: make sdk-outbox-check
       - name: Prepare immutable PostgreSQL image
         timeout-minutes: 5
         run: timeout 15s docker info >/dev/null && make db-prepare

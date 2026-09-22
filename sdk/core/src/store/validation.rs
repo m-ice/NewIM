@@ -6,6 +6,10 @@ fn id(s: &str) -> bool {
         && s.bytes()
             .all(|b| b.is_ascii_alphanumeric() || b == b'_' || b == b'-')
 }
+pub(crate) fn valid_identity(value: &str) -> bool {
+    id(value)
+}
+
 fn blob(b: &Blob) -> bool {
     b.0.len() <= MAX_VALUE_BYTES
 }

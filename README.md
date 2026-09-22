@@ -5,11 +5,11 @@ foundation includes Go/Rust message and send/ACK/error protocol v1 codecs,
 PostgreSQL schema, atomic message/outbox persistence primitives, a durable
 internal 1v1 send transaction with idempotent persisted ACKs, a durable internal
 conversation-sync projection and policy-neutral opaque auth-session/token
-primitives, plus a portable SDK local-store contract with a native SQLite adapter.
-Storage has real migration, idempotency, pagination, query-plan, concurrency,
-rollback and recovery tests. User credential verification, HTTP/WS/gateway login,
-refresh tokens, multi-device login/kick policy, network delivery, client retry
-state machines, a complete multi-device sync service, platform adapters and UI
+primitives, plus a portable SDK local-store contract with a native SQLite adapter and a
+wire-neutral SDK Core outbox/send state machine. Storage has real migration, idempotency,
+pagination, query-plan, concurrency, rollback and recovery tests. User credential verification,
+HTTP/WS/gateway login, refresh tokens, multi-device login/kick policy, network delivery,
+transport/reconnect integration, a complete multi-device sync service, platform adapters and UI
 remain future work.
 These libraries and SQL primitives do not yet form an end-to-end messaging service.
 
@@ -28,6 +28,7 @@ make store-engine
 make build
 make check
 make store-idempotency store-migrations store-maintenance store-recovery
+make sdk-outbox-restart sdk-outbox-retry sdk-outbox-ack sdk-outbox-terminal sdk-outbox-check
 ```
 
 `store-prepare` downloads and verifies the locked official SQLite source;
@@ -63,8 +64,8 @@ image verification, migration, backup and recovery contracts, and its
 
 The GitHub workflow declares the same preparation, build, check, SQLite and
 PostgreSQL suites, the six conversation-sync suites, the three auth suites and
-the three message-send suites on Ubuntu 24.04. A successful local run does not
-establish that a hosted CI job ran.
+the three message-send suites and the explicit SDK outbox gate on Ubuntu 24.04. A successful
+local run does not establish that a hosted CI job ran.
 
 ## Build identity and schema versions
 
