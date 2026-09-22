@@ -1,4 +1,4 @@
-.PHONY: build check toolchain protocol-golden protocol-unknown-fields protocol-unknown-type protocol-limits
+.PHONY: build check toolchain protocol-golden protocol-unknown-fields protocol-unknown-type protocol-limits media-protocol media-db media-security media-authz media-check
 
 export GOTOOLCHAIN := local
 
@@ -48,6 +48,23 @@ send-protocol-errors: toolchain
 send-protocol-limits: toolchain
 	go test -count=1 ./tests/compatibility/send-ack/limits
 	cargo test -p newim-protocol --locked --test send_limits
+
+media-protocol: toolchain
+	go test -count=1 ./tests/compatibility/media
+	cargo test -p newim-protocol --locked --offline --test media_protocol
+	cargo test -p newim-sdk-core --locked --offline --test media_flow
+
+media-db: toolchain
+	python3 -B infra/db/media_suite.py db
+
+media-security: toolchain
+	python3 -B infra/db/media_suite.py security
+
+media-authz: toolchain
+	python3 -B infra/db/media_suite.py authz
+
+media-check: media-protocol media-db media-security media-authz
+
 
 .PHONY: db-prepare db-schema db-migrations db-sequence db-repair
 db-prepare:

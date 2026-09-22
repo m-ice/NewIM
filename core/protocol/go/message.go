@@ -44,7 +44,7 @@ type Message struct {
 
 // Supported reports implemented payload semantics, not permission to deliver. 是否支持该负载语义。
 func (m Message) Supported() bool {
-	return m.ProtocolVersion == 1 && m.Type == "text" && m.Version == 1
+	return m.ProtocolVersion == 1 && m.Version == 1 && (m.Type == "text" || m.Type == "media")
 }
 
 func identifier(s string, limit int, messageType bool) bool {
@@ -125,14 +125,36 @@ func decodeMessage(wire []byte, semantics bool) (Message, error) {
 	if semantics && m.ProtocolVersion != 1 {
 		return Message{}, UnsupportedVersion
 	}
-	if semantics && m.Supported() {
-		var text string
-		if json.Unmarshal(payload["text"], &text) != nil || len(text) == 0 || len(text) > MaxTextBytes {
-			return Message{}, InvalidMessage
+	if semantics {
+		if err := validateKnownPayload(m.Type, m.Version, raw); err != nil {
+			return Message{}, err
 		}
 	}
 	m.Payload = append(json.RawMessage(nil), raw...)
 	return m, nil
+}
+
+// validateKnownPayload applies only registered payload semantics. 仅校验已登记的负载语义。
+func validateKnownPayload(messageType string, version uint32, raw []byte) error {
+	if version != 1 {
+		return nil
+	}
+	switch messageType {
+	case "text":
+		fields, err := objectFields(raw)
+		if err != nil {
+			return err
+		}
+		text, err := stringField(fields, "text")
+		if err != nil || len(text) == 0 || len(text) > MaxTextBytes {
+			return InvalidMessage
+		}
+		return nil
+	case "media":
+		return validateMediaPayload(raw)
+	default:
+		return nil
+	}
 }
 
 // Encode validates outbound objects and preserves opaque payload numbers. 编码同样校验并保留未知负载数字。

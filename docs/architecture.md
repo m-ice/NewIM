@@ -1,16 +1,19 @@
 # NewIM architecture and build provenance
 
-The current implementation contains a Go server build-identity library and
-diagnostic executable, and a Rust SDK build-identity library. They have no network,
-message, persistence or UI behavior. They let support and future packaging tools
-identify artifacts without fabricating unknown source metadata.
+The current implementation contains Go server application/storage packages for
+messages, auth sessions, sync and internal media metadata; Go/Rust protocol
+codecs; a Rust SDK foundation; and a native SQLite adapter. There is still no
+public network server or UI. Build identity lets support and future packaging
+tools identify artifacts without fabricating unknown source metadata.
 
 ## Module boundaries
 
 | Module | Dependency contract |
 |---|---|
 | `core/domain` (planned) | Go server domain rules, independent of HTTP, wire DTOs and SQL. |
-| `core/protocol` (planned) | Versioned language-neutral wire schemas/fixtures and separate Go/Rust codecs; no UI or database authority. |
+| `core/protocol` | Versioned language-neutral wire schemas/fixtures and separate Go/Rust codecs; no UI or database authority. Media v1 is closed metadata-only. |
+| `server/media` | Protocol-neutral media application rules and ports; local filesystem/object-store adapters implement durability without transport policy. |
+| `server/storage/*` | PostgreSQL and SQLite adapters; no wire or UI authority. |
 | `server` | Application services depend on domain rules and ports; transport/storage adapters implement those ports. Build diagnostics use only Go standard libraries. |
 | `sdk/core` | Rust platform-neutral contracts; no Go runtime, platform storage, browser API or UI dependency. |
 | Platform wrappers (planned) | Translate host networking, lifecycle, storage and FFI concerns into SDK contracts; message semantics stay in core. |
@@ -21,6 +24,12 @@ separate lifecycles. Only server/SDK development versions exist today. A build
 revision label is informational and provides neither authenticity nor protocol
 negotiation. The [build ADR](adr/0002-language-toolchain.md) defines exact unknown,
 validation and error behavior.
+
+The internal media flow persists only metadata and SHA-256 grant digests, never
+binary bytes or signed/object URLs. Upload authorization precedes generation;
+message persistence requires a ready/owned/conversation-bound asset; private
+download authorization precedes signer invocation. DEC-003 retention/moderation/
+account-erasure and SEC-001 transport/rate/abuse boundaries remain separate.
 
 The intended recovery design treats server persistence as the reliable-send
 boundary and database/sync as recovery truth. WebSocket is realtime delivery;

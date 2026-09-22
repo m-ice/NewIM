@@ -4,11 +4,13 @@ NewIM is an independently developed messaging platform for 澜遇科技. The cur
 foundation includes Go/Rust message and send/ACK/error protocol v1 codecs,
 PostgreSQL schema, atomic message/outbox persistence primitives, a durable
 internal 1v1 send transaction with idempotent persisted ACKs, a durable internal
-conversation-sync projection and policy-neutral opaque auth-session/token
-primitives, plus a portable SDK local-store contract with a native SQLite adapter.
+conversation-sync projection, policy-neutral opaque auth-session/token
+primitives, an internal provider-neutral media credential/metadata flow, plus a
+portable SDK local-store contract with a native SQLite adapter.
 Storage has real migration, idempotency, pagination, query-plan, concurrency,
 rollback and recovery tests. User credential verification, HTTP/WS/gateway login,
-refresh tokens, multi-device login/kick policy, network delivery, client retry
+refresh tokens, multi-device login/kick policy, public media endpoints, rate
+limiting/moderation/retention/account erasure, network delivery, client retry
 state machines, a complete multi-device sync service, platform adapters and UI
 remain future work.
 These libraries and SQL primitives do not yet form an end-to-end messaging service.
@@ -51,6 +53,7 @@ make db-prepare
 make db-schema db-migrations db-sequence db-repair
 make sync-check
 make auth-check auth-recovery auth-policy
+make media-protocol media-db media-security media-authz media-check
 make message-check message-recovery message-errors
 ```
 
@@ -63,7 +66,7 @@ image verification, migration, backup and recovery contracts, and its
 
 The GitHub workflow declares the same preparation, build, check, SQLite and
 PostgreSQL suites, the six conversation-sync suites, the three auth suites and
-the three message-send suites on Ubuntu 24.04. A successful local run does not
+the four media suites and three message-send suites on Ubuntu 24.04. A successful local run does not
 establish that a hosted CI job ran.
 
 ## Build identity and schema versions
@@ -84,7 +87,7 @@ syntax only. Ordinary SDK builds leave that optional label unset. The SDK does
 not infer clean state or wire compatibility from a revision.
 
 Server and SDK versions are independently maintained at `0.1.0-dev`; the message
-protocol is version 1. PostgreSQL has additive migration stages 001 through 004;
+protocol is version 1. PostgreSQL has additive migration stages 001 through 005;
 SQLite has its separate migration history. They are not interchangeable schemas or
 previously released upgrade histories. See the
 [relational storage ADR](docs/adr/0004-relational-storage.md),

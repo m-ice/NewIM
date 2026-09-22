@@ -1,0 +1,81 @@
+{
+  "golden": {
+    "mediaKey": "Abc_123-xyz",
+    "kind": "image",
+    "contentType": "image/jpeg",
+    "size": "12345",
+    "sha256": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+  },
+  "invalid": [
+    {
+      "name": "url_field",
+      "payload": "{\"mediaKey\":\"Abc_123-xyz\",\"kind\":\"image\",\"contentType\":\"image/jpeg\",\"size\":\"12345\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"url\":\"https://example.invalid/x\"}",
+      "error": "PROTOCOL_INVALID_MESSAGE"
+    },
+    {
+      "name": "signed_url_field",
+      "payload": "{\"mediaKey\":\"Abc_123-xyz\",\"kind\":\"image\",\"contentType\":\"image/jpeg\",\"size\":\"12345\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"signedUrl\":\"https://example.invalid/x\"}",
+      "error": "PROTOCOL_INVALID_MESSAGE"
+    },
+    {
+      "name": "binary_bytes_field",
+      "payload": "{\"mediaKey\":\"Abc_123-xyz\",\"kind\":\"image\",\"contentType\":\"image/jpeg\",\"size\":\"12345\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"bytes\":\"AAEC\"}",
+      "error": "PROTOCOL_INVALID_MESSAGE"
+    },
+    {
+      "name": "unknown_future_field",
+      "payload": "{\"mediaKey\":\"Abc_123-xyz\",\"kind\":\"image\",\"contentType\":\"image/jpeg\",\"size\":\"12345\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\",\"future\":true}",
+      "error": "PROTOCOL_INVALID_MESSAGE"
+    },
+    {
+      "name": "missing_sha256",
+      "payload": "{\"mediaKey\":\"Abc_123-xyz\",\"kind\":\"image\",\"contentType\":\"image/jpeg\",\"size\":\"12345\"}",
+      "error": "PROTOCOL_INVALID_MESSAGE"
+    },
+    {
+      "name": "invalid_kind",
+      "payload": "{\"mediaKey\":\"Abc_123-xyz\",\"kind\":\"document\",\"contentType\":\"image/jpeg\",\"size\":\"12345\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "error": "PROTOCOL_INVALID_MESSAGE"
+    },
+    {
+      "name": "size_plus_one",
+      "payload": "{\"mediaKey\":\"Abc_123-xyz\",\"kind\":\"image\",\"contentType\":\"image/jpeg\",\"size\":\"+1\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "error": "PROTOCOL_INVALID_MESSAGE"
+    },
+    {
+      "name": "size_leading_zero",
+      "payload": "{\"mediaKey\":\"Abc_123-xyz\",\"kind\":\"image\",\"contentType\":\"image/jpeg\",\"size\":\"01\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "error": "PROTOCOL_INVALID_MESSAGE"
+    },
+    {
+      "name": "size_zero",
+      "payload": "{\"mediaKey\":\"Abc_123-xyz\",\"kind\":\"image\",\"contentType\":\"image/jpeg\",\"size\":\"0\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "error": "PROTOCOL_INVALID_MESSAGE"
+    },
+    {
+      "name": "size_over_max",
+      "payload": "{\"mediaKey\":\"Abc_123-xyz\",\"kind\":\"image\",\"contentType\":\"image/jpeg\",\"size\":\"104857601\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "error": "PROTOCOL_INVALID_MESSAGE"
+    },
+    {
+      "name": "mime_uppercase",
+      "payload": "{\"mediaKey\":\"Abc_123-xyz\",\"kind\":\"image\",\"contentType\":\"Image/JPEG\",\"size\":\"1\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "error": "PROTOCOL_INVALID_MESSAGE"
+    },
+    {
+      "name": "mime_parameters",
+      "payload": "{\"mediaKey\":\"Abc_123-xyz\",\"kind\":\"image\",\"contentType\":\"image/jpeg;charset=utf-8\",\"size\":\"1\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "error": "PROTOCOL_INVALID_MESSAGE"
+    },
+    {
+      "name": "sha_uppercase",
+      "payload": "{\"mediaKey\":\"Abc_123-xyz\",\"kind\":\"image\",\"contentType\":\"image/jpeg\",\"size\":\"1\",\"sha256\":\"AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\"}",
+      "error": "PROTOCOL_INVALID_MESSAGE"
+    },
+    {
+      "name": "media_key_slash",
+      "payload": "{\"mediaKey\":\"bad/key\",\"kind\":\"image\",\"contentType\":\"image/jpeg\",\"size\":\"1\",\"sha256\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}",
+      "error": "PROTOCOL_INVALID_MESSAGE"
+    }
+  ]
+}
