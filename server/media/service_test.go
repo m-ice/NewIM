@@ -46,6 +46,14 @@ type fakeObjects struct {
 	err   error
 }
 
+type captureMediaObserver struct {
+	observations []Observation
+}
+
+func (o *captureMediaObserver) Observe(observation Observation) {
+	o.observations = append(o.observations, observation)
+}
+
 func (o *fakeObjects) PutImmutable(_ context.Context, _ string, _ io.Reader, expected ObjectInfo) (ObjectInfo, error) {
 	o.calls++
 	if o.err != nil {
@@ -158,6 +166,68 @@ func TestDownloadFailureDoesNotCallSigner(t *testing.T) {
 	_, err = service.ResolvePrivateDownload(context.Background(), identity, grant.MediaKey, time.Minute)
 	if ErrorCode(err) != MediaStorageUnavailable || signer.calls != 0 {
 		t.Fatalf("error=%v signer=%d", err, signer.calls)
+	}
+}
+
+type invokingStore struct {
+	fakeMediaStore
+}
+
+func (s *invokingStore) BeginUpload(_ context.Context, _ time.Time, _ session.ConnectionIdentity, _ string, create func() (Grant, error)) error {
+	_, err := create()
+	return err
+}
+
+func TestSuccessfulOperationsObserveMediaOK(t *testing.T) {
+	identity := testIdentity(t, "alice")
+	t.Run("begin_upload", func(t *testing.T) {
+		observer := &captureMediaObserver{}
+		store := &invokingStore{}
+		service, err := NewService(store, Config{
+			Objects: &fakeObjects{}, Clock: ClockFunc(func() time.Time { return time.Unix(1000, 0).UTC() }),
+			Entropy: bytes.NewReader(bytes.Repeat([]byte{1}, 256)), Observer: observer,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = service.BeginUpload(context.Background(), identity, BeginUploadRequest{
+			ConversationID: "conversation", Kind: "image", ContentType: "image/jpeg", Size: 3,
+			SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		})
+		if err != nil || len(observer.observations) != 1 || observer.observations[0].Code != mediaOK {
+			t.Fatalf("error=%v observations=%+v", err, observer.observations)
+		}
+	})
+
+	t.Run("complete_upload", func(t *testing.T) {
+		grant, raw := testGrant(t, identity, StateReady, time.Unix(999, 0).UTC())
+		observer := &captureMediaObserver{}
+		service, err := NewService(&fakeMediaStore{grant: grant}, Config{
+			Objects: &fakeObjects{}, Clock: ClockFunc(func() time.Time { return time.Unix(1000, 0).UTC() }),
+			Entropy: bytes.NewReader(bytes.Repeat([]byte{1}, 256)), Observer: observer,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		_, err = service.CompleteUpload(context.Background(), identity, raw, bytes.NewReader([]byte("abc")))
+		if err != nil || len(observer.observations) != 1 || observer.observations[0].Code != mediaOK {
+			t.Fatalf("error=%v observations=%+v", err, observer.observations)
+		}
+	})
+}
+
+func TestFailureOperationObservesStableErrorCode(t *testing.T) {
+	observer := &captureMediaObserver{}
+	service, err := NewService(&fakeMediaStore{}, Config{
+		Objects: &fakeObjects{}, Clock: ClockFunc(func() time.Time { return time.Unix(1000, 0).UTC() }),
+		Entropy: bytes.NewReader(bytes.Repeat([]byte{1}, 256)), Observer: observer,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = service.CompleteUpload(context.Background(), testIdentity(t, "alice"), "bad-token", bytes.NewReader([]byte("abc")))
+	if ErrorCode(err) != MediaInvalidToken || len(observer.observations) != 1 || observer.observations[0].Code != MediaInvalidToken {
+		t.Fatalf("error=%v observations=%+v", err, observer.observations)
 	}
 }
 

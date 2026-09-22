@@ -14,8 +14,9 @@ import (
 )
 
 const (
-	defaultRequestTimeout = 5 * time.Second
-	maxGrantAttempts      = 8
+	defaultRequestTimeout      = 5 * time.Second
+	maxGrantAttempts           = 8
+	mediaOK               Code = "MEDIA_OK"
 )
 
 // Config is trusted service configuration, never request input.
@@ -407,8 +408,8 @@ func (s *Service) observe(operation string, started time.Time, err error) {
 		return
 	}
 	code := ErrorCode(err)
-	if code == "" {
-		code = MediaInvalidInput
+	if err == nil {
+		code = mediaOK
 	}
 	observation := Observation{Operation: operation, Code: code, Elapsed: time.Since(started)}
 	defer func() { _ = recover() }()
