@@ -811,3 +811,26 @@ fn commit_outcome_unknown_requires_authoritative_reload() {
     .unwrap();
     assert!(matches!(found, Response::Found(Some(_))));
 }
+
+#[test]
+fn stale_store_generation_cannot_dispatch() {
+    let directory = Directory::new();
+    let mut store = directory.open();
+    let stale_context = send_context(&store);
+    outbox::enqueue(&mut store, 1, &stale_context, intent(), 1_000).unwrap();
+
+    assert!(matches!(
+        run(&mut store, 2, Action::AdvanceGeneration),
+        Ok(Response::Generation(_))
+    ));
+    let current = send_context(&store);
+    assert_ne!(current.fence, stale_context.fence);
+
+    let row = pending(&mut store, "stable");
+    let rev = revision(&mut store);
+    let transition = outbox::plan_dispatch(&mut store, &row, rev, &stale_context, 1_000).unwrap();
+    assert!(
+        matches!(transition, OutboxTransition::AuthRecovery { ref code } if code == STORE_GENERATION_CHANGED),
+        "stale store generation must not dispatch: {transition:?}"
+    );
+}

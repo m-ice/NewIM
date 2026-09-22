@@ -537,6 +537,10 @@ impl SqliteStore {
 }
 
 impl PendingMutationStore for SqliteStore {
+    fn current_fence(&self) -> &Fence {
+        &self.fence
+    }
+
     fn update_pending(&mut self, mutation: PendingMutation) -> Result<PendingReceipt, StoreError> {
         if self.requires_reopen {
             return Err(StoreError::RecoveryRequired);

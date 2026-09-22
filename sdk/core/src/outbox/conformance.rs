@@ -174,6 +174,10 @@ impl LocalStore for HarnessStore {
 }
 
 impl PendingMutationStore for HarnessStore {
+    fn current_fence(&self) -> &Fence {
+        &self.fence
+    }
+
     fn update_pending(&mut self, mutation: PendingMutation) -> Result<PendingReceipt, StoreError> {
         mutation.validate()?;
         if mutation.expected_revision != self.revision {
@@ -555,6 +559,25 @@ fn generation_terminal_and_explicit_removal() {
 }
 
 #[test]
+fn stale_store_context_cannot_dispatch() {
+    let context = context();
+    let mut store = HarnessStore::new(fence());
+    let created = outbox::enqueue(&mut store, 1, &context, intent(), 1_000).unwrap();
+    let pending = store.pending_item(&identity(&created)).unwrap();
+    store.fence.generation = 2;
+
+    let transition = outbox::plan_dispatch(&mut store, &pending, 1, &context, 1_000).unwrap();
+    assert!(
+        matches!(transition, OutboxTransition::AuthRecovery { ref code } if code == STORE_GENERATION_CHANGED),
+        "stale store context must not dispatch: {transition:?}"
+    );
+    let recovered =
+        OutboxRecord::decode(&store.pending_item(&identity(&created)).unwrap()).unwrap();
+    assert_eq!(recovered.state, OutboxState::AuthRecovery);
+    assert_eq!(recovered.last_code, STORE_GENERATION_CHANGED);
+}
+
+#[test]
 fn store_generation_change_persists_auth_recovery_and_resume_updates_active_fence() {
     let context = context();
     let mut store = HarnessStore::new(fence());
@@ -562,6 +585,7 @@ fn store_generation_change_persists_auth_recovery_and_resume_updates_active_fenc
     let pending = store.pending_item(&identity(&created)).unwrap();
     let mut changed = context.clone();
     changed.fence.generation = 2;
+    store.fence.generation = 2;
 
     let transition = outbox::plan_dispatch(&mut store, &pending, 1, &changed, 1_000).unwrap();
     assert!(matches!(
