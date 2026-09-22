@@ -18,6 +18,7 @@ type Config struct {
 	IDs            IDGenerator
 	Clock          Clock
 	Observer       Observer
+	MediaValidator MediaValidator
 	RequestTimeout time.Duration
 }
 
@@ -28,6 +29,7 @@ type Service struct {
 	ids            IDGenerator
 	clock          Clock
 	observer       Observer
+	mediaValidator MediaValidator
 	requestTimeout time.Duration
 }
 
@@ -44,7 +46,7 @@ func NewService(store Store, config Config) (*Service, error) {
 	if timeout < time.Millisecond || timeout > defaultRequestTimeout {
 		return nil, Fail(SendInvalidInput)
 	}
-	return &Service{store: store, ids: config.IDs, clock: config.Clock, observer: config.Observer, requestTimeout: timeout}, nil
+	return &Service{store: store, ids: config.IDs, clock: config.Clock, observer: config.Observer, mediaValidator: config.MediaValidator, requestTimeout: timeout}, nil
 }
 
 // Send returns a SERVER_PERSISTED ACK only after the storage transaction commits.
@@ -60,6 +62,9 @@ func (s *Service) Send(ctx context.Context, identity session.ConnectionIdentity,
 	}
 	if _, encodeErr := protocol.EncodeSend(request); encodeErr != nil {
 		return protocol.ServerFrame{}, Fail(SendInvalidInput)
+	}
+	if mediaErr := s.validateMedia(ctx, identity, request); mediaErr != nil {
+		return protocol.ServerFrame{}, mediaErr
 	}
 	principal := conversation.Principal{UserID: identity.UserID()}
 	generate := func() (Generated, error) {

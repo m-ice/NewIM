@@ -32,6 +32,7 @@ DURABILITY_TABLES = {'im_outbox_events', 'im_webhook_deliveries', 'im_push_token
 SYNC_TABLES = {'im_conversation_sync_accounts', 'im_conversation_sync_keys',
                'im_conversation_sync_changes'}
 AUTH_TABLES = {'im_auth_tokens'}
+MEDIA_TABLES = {'im_media_assets'}
 
 
 def source_migrations():
@@ -55,8 +56,11 @@ def check_catalog(db, target=None):
     expected = BASE_TABLES | (DURABILITY_TABLES if target >= 2 else set())
     expected |= SYNC_TABLES if target >= 3 else set()
     expected |= AUTH_TABLES if target >= 4 else set()
-    equal(set(db.sql("SELECT tablename FROM pg_tables WHERE schemaname='newim';").splitlines()),
-          expected, 'exact catalog table set')
+    expected |= MEDIA_TABLES if target >= 5 else set()
+    actual_tables = set(db.sql("SELECT tablename FROM pg_tables WHERE schemaname='newim';").splitlines())
+    if actual_tables != expected:
+        raise Failure('exact catalog table set: missing='+repr(sorted(expected-actual_tables))+
+                      ' extra='+repr(sorted(actual_tables-expected)))
     scalar(db, "SELECT count(*) FROM pg_constraint WHERE connamespace='newim'::regnamespace AND contype='f' AND confdeltype<>'a';",
            0, 'no cascading deletes')
     functions = db.sql("SELECT p.oid::regprocedure::text FROM pg_proc p WHERE pronamespace='newim'::regnamespace ORDER BY 1;").splitlines()
@@ -249,6 +253,7 @@ def schema(db, commands):
     equal(snapshot(db), before, 'negative writes preserve database')
     sync_constraints(db)
     auth_constraints(db)
+    media_constraints(db)
     print(f'PASS schema catalogs and {len(negatives)} negative writes', flush=True)
     codec_roundtrips(db, commands)
     db.sql("TRUNCATE newim.im_users CASCADE;")
@@ -349,6 +354,61 @@ def auth_constraints(db):
     print(f'PASS auth schema constraints: {len(negatives)} rejected writes', flush=True)
 
 
+
+def media_constraints(db):
+    # Additive 005 catalog, no-URL assertion and closed pending/ready state.
+    db.sql("INSERT INTO newim.im_devices VALUES ('alice','media_phone',default) ON CONFLICT DO NOTHING; "
+           "INSERT INTO newim.im_sessions(session_id,user_id,device_id) VALUES ('media_session','alice','media_phone') ON CONFLICT DO NOTHING; "
+           "INSERT INTO newim.im_auth_tokens(token_id,token_digest,session_id,created_at,expires_at) "
+           "VALUES ('fedcba9876543210fedcba9876543210',decode(repeat('04',32),'hex'),'media_session',"
+           "'2026-01-01 00:00:00+00','2026-01-01 01:00:00+00') ON CONFLICT DO NOTHING; "
+           "INSERT INTO newim.im_media_assets(media_key,owner_user_id,device_id,session_id,connection_id,token_id,"
+           "conversation_id,media_kind,content_type,declared_size_bytes,actual_size_bytes,sha256,upload_grant_id,"
+           "upload_grant_digest,upload_expires_at,completed_at,state) VALUES "
+           "('media_one','alice','media_phone','media_session','conn_media','fedcba9876543210fedcba9876543210',"
+           "'room','image','image/jpeg',1,NULL,decode(repeat('ab',32),'hex'),"
+           "'0123456789abcdef0123456789abcdef',decode(repeat('cd',32),'hex'),"
+           "'2026-01-01 00:02:00+00',NULL,'pending');")
+    scalar(db, "SELECT string_agg(column_name,',' ORDER BY ordinal_position) FROM information_schema.columns "
+           "WHERE table_schema='newim' AND table_name='im_media_assets';",
+           'media_key,owner_user_id,device_id,session_id,connection_id,token_id,conversation_id,'
+           'media_kind,content_type,declared_size_bytes,actual_size_bytes,sha256,upload_grant_id,'
+           'upload_grant_digest,upload_expires_at,completed_at,state', 'exact media asset columns')
+    scalar(db, "SELECT count(*) FROM information_schema.columns WHERE table_schema='newim' "
+           "AND table_name='im_media_assets' AND (column_name ILIKE '%url%' OR column_name ILIKE '%object%' "
+           "OR column_name ILIKE '%public%' OR column_name ILIKE '%acl%' OR column_name ILIKE '%list%');",
+           0, 'media table has no URL/object/public/list capability')
+    equal(db.sql("SELECT conname||'|'||pg_get_constraintdef(oid) FROM pg_constraint "
+                 "WHERE conrelid='newim.im_media_assets'::regclass AND contype='f' ORDER BY conname;").splitlines(), [
+        'im_media_assets_device_fk|FOREIGN KEY (owner_user_id, device_id) REFERENCES newim.im_devices(user_id, device_id)',
+        'im_media_assets_membership_fk|FOREIGN KEY (conversation_id, owner_user_id) REFERENCES newim.im_conversation_members(conversation_id, user_id)',
+        'im_media_assets_session_identity_fk|FOREIGN KEY (owner_user_id, device_id, session_id) REFERENCES newim.im_sessions(user_id, device_id, session_id)',
+        'im_media_assets_token_session_fk|FOREIGN KEY (token_id, session_id) REFERENCES newim.im_auth_tokens(token_id, session_id)',
+    ], 'media concrete FK bindings')
+    negatives = [
+        ("UPDATE newim.im_media_assets SET media_key='bad/key';", '23514'),
+        ("UPDATE newim.im_media_assets SET media_kind='document';", '23514'),
+        ("UPDATE newim.im_media_assets SET content_type='Image/JPEG';", '23514'),
+        ("UPDATE newim.im_media_assets SET content_type='image/jpeg;charset=utf-8';", '23514'),
+        ("UPDATE newim.im_media_assets SET declared_size_bytes=0;", '23514'),
+        ("UPDATE newim.im_media_assets SET declared_size_bytes=104857601;", '23514'),
+        ("UPDATE newim.im_media_assets SET actual_size_bytes=1;", '23514'),
+        ("UPDATE newim.im_media_assets SET completed_at=now();", '23514'),
+        ("UPDATE newim.im_media_assets SET state='ready';", '23514'),
+        ("UPDATE newim.im_media_assets SET sha256=decode(repeat('01',31),'hex');", '23514'),
+        ("UPDATE newim.im_media_assets SET upload_grant_id='ABCDEF0123456789abcdef0123456789';", '23514'),
+        ("UPDATE newim.im_media_assets SET upload_grant_digest=decode(repeat('01',31),'hex');", '23514'),
+        ("INSERT INTO newim.im_media_assets SELECT 'media_two',owner_user_id,device_id,session_id,connection_id,token_id,conversation_id,media_kind,content_type,declared_size_bytes,actual_size_bytes,sha256,upload_grant_id,upload_grant_digest,upload_expires_at,completed_at,state FROM newim.im_media_assets;", '23505'),
+        ("INSERT INTO newim.im_media_assets(media_key,owner_user_id,device_id,session_id,connection_id,token_id,conversation_id,media_kind,content_type,declared_size_bytes,sha256,upload_grant_id,upload_grant_digest,upload_expires_at,state) VALUES ('media_three','alice','media_phone','media_session','conn_media','fedcba9876543210fedcba9876543210','other','image','image/jpeg',1,decode(repeat('ab',32),'hex'),'11111111111111111111111111111111',decode(repeat('12',32),'hex'),'2026-01-01 00:02:00+00','pending');", '23503'),
+        ("INSERT INTO newim.im_media_assets(media_key,owner_user_id,device_id,session_id,connection_id,token_id,conversation_id,media_kind,content_type,declared_size_bytes,sha256,upload_grant_id,upload_grant_digest,upload_expires_at,state) VALUES ('media_four','alice','media_phone','media_session','conn_media','aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa','room','image','image/jpeg',1,decode(repeat('ab',32),'hex'),'22222222222222222222222222222222',decode(repeat('34',32),'hex'),'2026-01-01 00:02:00+00','pending');", '23503'),
+    ]
+    before = snapshot(db)
+    for sql, error in negatives:
+        db.sql(sql, error=error)
+    equal(snapshot(db), before, 'media constraint failures preserve state')
+    print(f'PASS media schema constraints: {len(negatives)} rejected writes', flush=True)
+
+
 def auth_migration_faults(db, commands):
     # Alter only an owned 004 copy; populated 001-003 bytes must survive every failure.
     marker = '-- AUTH_MIGRATION_FAULT_POINT'
@@ -373,7 +433,7 @@ def auth_migration_faults(db, commands):
         held.finish(error='57P01')
         equal(snapshot(db), before, 'terminated 004 leaves exact populated 003 state')
         check_catalog(db, 3)
-    db.sql(migration_sql())
+    db.sql(migration_sql(4))
     check_catalog(db, 4)
     after = snapshot(db)
     equal({k:after[k] for k in before if k!='migrations'},
@@ -381,6 +441,43 @@ def auth_migration_faults(db, commands):
     for table in AUTH_TABLES:
         scalar(db, 'SELECT count(*) FROM newim.'+table+';', 0, 'auth migration performs no implicit backfill')
     print('PASS populated 004 failure/termination rollback and original-source retry', flush=True)
+
+
+
+def media_migration_faults(db, commands):
+    # Alter only an owned 005 copy; populated 001-004 bytes must survive every failure.
+    marker = '-- MEDIA_MIGRATION_FAULT_POINT'
+    source = DB_DIR/'migrations/005_media_assets.sql'
+    equal(source.read_text().count(marker), 1, 'unique media migration fault injection marker')
+    db.sql("INSERT INTO newim.im_devices VALUES ('alice','migration_media_phone',default) ON CONFLICT DO NOTHING; "
+           "INSERT INTO newim.im_sessions(session_id,user_id,device_id) VALUES ('migration_media_session','alice','migration_media_phone') ON CONFLICT DO NOTHING; "
+           "INSERT INTO newim.im_auth_tokens(token_id,token_digest,session_id,created_at,expires_at) "
+           "VALUES ('abcdef0123456789abcdef0123456789',decode(repeat('05',32),'hex'),'migration_media_session',"
+           "'2026-01-01 00:00:00+00','2026-01-01 01:00:00+00') ON CONFLICT DO NOTHING;")
+    before = snapshot(db)
+    with tempfile.TemporaryDirectory(prefix='media-migration-copy-', dir=commands.directory) as owned:
+        directory = Path(owned)
+        for path in source_migrations():
+            (directory/path.name).write_bytes(path.read_bytes())
+        candidate = directory/source.name
+        candidate.write_text(source.read_text().replace(marker, 'SELECT 1/0;', 1))
+        db.sql(migration_sql(directory=directory), error='22012')
+        equal(snapshot(db), before, 'failed 005 leaves exact populated 004 state')
+        check_catalog(db, 4)
+        candidate.write_text(source.read_text().replace(marker, 'SELECT pg_sleep(30);', 1))
+        held = db.session("SET application_name='newim_media_migration_interrupt'; "+migration_sql(directory=directory))
+        db.wait_sql("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name='newim_media_migration_interrupt' AND wait_event='PgSleep');")
+        db.sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='newim_media_migration_interrupt';")
+        held.finish(error='57P01')
+        equal(snapshot(db), before, 'terminated 005 leaves exact populated 004 state')
+        check_catalog(db, 4)
+    db.sql(migration_sql())
+    check_catalog(db, 5)
+    after = snapshot(db)
+    equal({k:after[k] for k in before if k!='migrations'},
+          {k:v for k,v in before.items() if k!='migrations'}, '005 preserves all historical rows')
+    scalar(db, 'SELECT count(*) FROM newim.im_media_assets;', 0, 'media migration performs no implicit backfill')
+    print('PASS populated 005 failure/termination rollback and original-source retry', flush=True)
 
 
 def migrations(db, commands):
@@ -400,6 +497,7 @@ def migrations(db, commands):
     db.sql(persist('migration_durable'))
     sync_migration_faults(db, commands)
     auth_migration_faults(db, commands)
+    media_migration_faults(db, commands)
     after = snapshot(db)
     db.sql(migration_sql())
     equal(snapshot(db), after, 'head replay stable')

@@ -59,7 +59,9 @@ type ServerFrame struct {
 }
 
 // Supported indicates understood payload semantics, never permission. 语义支持并非发送授权。
-func (s Send) Supported() bool { return s.ProtocolVersion == 1 && s.Type == "text" && s.Version == 1 }
+func (s Send) Supported() bool {
+	return s.ProtocolVersion == 1 && s.Version == 1 && (s.Type == "text" || s.Type == "media")
+}
 
 type frameParts struct {
 	version uint32
@@ -225,14 +227,7 @@ func bodyShape(p frameParts) error {
 	return nil
 }
 func sendSemantics(s Send) error {
-	if s.Supported() {
-		f, _ := objectFields(s.Payload)
-		text, e := stringField(f, "text")
-		if e != nil || len(text) == 0 || len(text) > MaxTextBytes {
-			return InvalidMessage
-		}
-	}
-	return nil
+	return validateKnownPayload(s.Type, s.Version, s.Payload)
 }
 
 // DecodeSend accepts only client-direction frames. 只接受客户端发送方向。

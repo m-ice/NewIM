@@ -4,6 +4,7 @@
 //! authorizes a send. Unknown payload schemas remain opaque and unsupported.
 
 mod intent;
+pub mod media;
 mod scan;
 pub mod send;
 
@@ -71,7 +72,9 @@ pub struct Message {
 impl Message {
     /// 是否识别此消息 schema（非发送授权）/ Whether this schema is understood.
     pub fn supported(&self) -> bool {
-        self.protocol_version == 1 && self.message_type == "text" && self.version == 1
+        self.protocol_version == 1
+            && self.version == 1
+            && matches!(self.message_type.as_str(), "text" | "media")
     }
 }
 
@@ -186,11 +189,18 @@ fn validate_semantics(message: &Message) -> Result<(), Error> {
     if message.protocol_version != 1 {
         return Err(Error::UnsupportedVersion);
     }
-    if message.supported() {
-        let text = string(&object(message.payload.get())?, "text")?;
-        if text.is_empty() || text.len() > MAX_TEXT_BYTES {
-            return Err(Error::InvalidMessage);
+    if message.version != 1 {
+        return Ok(());
+    }
+    match message.message_type.as_str() {
+        "text" => {
+            let text = string(&object(message.payload.get())?, "text")?;
+            if text.is_empty() || text.len() > MAX_TEXT_BYTES {
+                return Err(Error::InvalidMessage);
+            }
         }
+        "media" => media::validate(message.payload.get())?,
+        _ => {}
     }
     Ok(())
 }

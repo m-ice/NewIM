@@ -55,7 +55,9 @@ pub struct Send {
 impl Send {
     /// 是否识别发送 schema（非授权）/ Whether the send schema is understood, not authorized.
     pub fn supported(&self) -> bool {
-        self.protocol_version == 1 && self.message_type == "text" && self.version == 1
+        self.protocol_version == 1
+            && self.version == 1
+            && matches!(self.message_type.as_str(), "text" | "media")
     }
 }
 
@@ -147,11 +149,18 @@ fn send_shape(mut fields: Object, protocol_version: u32) -> Result<Send, Error> 
     Ok(send)
 }
 fn send_semantics(send: &Send) -> Result<(), Error> {
-    if send.message_type == "text" && send.version == 1 {
-        let text = string(&object(send.payload.get())?, "text")?;
-        if text.is_empty() || text.len() > crate::MAX_TEXT_BYTES {
-            return invalid();
+    if send.version != 1 {
+        return Ok(());
+    }
+    match send.message_type.as_str() {
+        "text" => {
+            let text = string(&object(send.payload.get())?, "text")?;
+            if text.is_empty() || text.len() > crate::MAX_TEXT_BYTES {
+                return invalid();
+            }
         }
+        "media" => crate::media::validate(send.payload.get())?,
+        _ => {}
     }
     Ok(())
 }

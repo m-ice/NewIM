@@ -50,6 +50,9 @@ jobs:
       - name: Exercise auth policy boundary
         timeout-minutes: 10
         run: make auth-policy
+      - name: Exercise media protocol, grants, storage and authorization
+        timeout-minutes: 20
+        run: make media-check
       - name: Exercise durable message send transaction
         timeout-minutes: 10
         run: make message-check

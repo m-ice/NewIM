@@ -1,10 +1,12 @@
 # Relational storage v1
 
 This directory implements PostgreSQL constraints, atomic message persistence,
-transactional migrations, the durable message-send transaction and the durable
-auth-session/token storage primitive. It supplies no credential verification,
-network ACK, dispatcher, sync cursor, retention policy or public authentication
-endpoint. See ADRs 0004, 0008 and 0009 for the caller contracts.
+transactional migrations, the durable message-send transaction, the durable
+auth-session/token storage primitive and the digest-only media grant/asset
+storage primitive. It supplies no credential verification, network ACK,
+dispatcher, sync cursor, media endpoint, retention policy or public
+authentication endpoint. See ADRs 0004, 0008, 0009 and 0011 for the caller
+contracts.
 
 Prerequisites: Python 3.11+, Docker (classic or OCI descriptor-aware image store),
 the root pinned Go/Rust tools. No Python package or additional Go database
@@ -16,6 +18,7 @@ been established.
 make db-prepare
 make db-schema db-migrations db-sequence db-repair
 make auth-check auth-recovery auth-policy
+make media-protocol media-db media-security media-authz media-check
 make message-check message-recovery message-errors
 make build check
 ```
@@ -45,7 +48,8 @@ Command/SQL/lock/readiness bounds prevent indefinite waits; CI additionally has
 an 8 minute bound around all four suites. Failures are errors, never skips.
 
 Records under ignored `build/db-runs/<suite>-<unique>/`,
-`build/auth/<suite>-<unique>/` and `build/message/<suite>-<unique>/` contain
+`build/auth/<suite>-<unique>/`, `build/message/<suite>-<unique>/` and
+`build/media/<suite>-<unique>/` contain
 actual argv, working directory, exit code, duration and stdin SHA-256, image
 identity, compilation/test logs and suite result. SQL parameters and raw errors
 are not logged. The test-only codec binary has no production API and no database
@@ -61,6 +65,12 @@ issue/expiry timestamps and nullable revocation timestamp. Restrictive FKs avoid
 implicit account/message deletion. The table stores no raw token or secret and
 does not implement credential verification, token refresh, transport or login
 policy.
+
+Migration 005 adds `im_media_assets` with digest-only upload grants, complete
+trusted identity bindings, a closed `pending`/`ready` state and no URL/object/ACL
+columns. It does not implement retention, deletion, moderation, account erasure
+or cleanup. The media suite uses real PostgreSQL plus the local filesystem
+adapter and bounded process-restart replay tests.
 
 `newim.persist_message` requires a trusted, authorized, protocol-validated caller
 and READ COMMITTED. Invoke it in a transaction and only acknowledge persistence
@@ -145,8 +155,9 @@ or an SDK retry state machine.
    released schemas. Populated 001→002 is a supported staged installation test;
    do not deploy a service with only 001. Migration 002 does not generate events
    for manually populated 001 fixtures. Migration 003 adds the conversation
-   projection and migration 004 adds the opaque token table. Migration 004 keeps
-   all populated 001-003 rows and performs no implicit token backfill. No
+   projection, migration 004 adds the opaque token table and migration 005 adds
+   digest-only media grants/assets. Migration 005 keeps all populated 001-004
+   rows and performs no implicit media backfill. No
    production backlog conversion is claimed and no destructive down migration
    exists.
 5. For backup, use `pg_dump --format=custom --no-owner` with the explicitly
