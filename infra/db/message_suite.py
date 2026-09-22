@@ -80,10 +80,14 @@ def main():
                          label='copy-owned-message-test-binary')
             if args.suite == 'recovery':
                 run_test(db, TESTS[args.suite], 'prepare')
-                commands.run(['docker', 'kill', '--signal=KILL', db.name], label='crash-message-database')
-                commands.run(['docker', 'start', db.name], label='restart-message-database')
+                hold = db.session("SET application_name='message_restart_hold'; BEGIN; SELECT newim.persist_message('recovery_restart_before_user','recovery_restart_before_client','recovery_restart_before_conversation','restart_before_server','text',1,1800000000000,convert_to('{\"text\":\"restart before commit\"}','UTF8'),'restart_before_event'); SELECT pg_sleep(60); COMMIT;")
+                db.wait_sql("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name='message_restart_hold' AND wait_event='PgSleep')")
+                commands.run(['docker', 'kill', '--signal=KILL', db.name], label='crash-message-before-commit')
+                hold.cancel()
+                commands.run(['docker', 'start', db.name], label='restart-message-after-uncommitted')
                 db.ready()
                 run_test(db, TESTS[args.suite], 'restart')
+                run_test(db, TESTS[args.suite], 'restarted')
                 dump = commands.run(['docker', 'exec', db.name, 'pg_dump', '-U', 'newim_test',
                                      '-d', 'newim_test', '--format=custom', '--no-owner'],
                                     timeout=60, label='dump-populated-message')

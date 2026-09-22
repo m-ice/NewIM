@@ -86,9 +86,13 @@ func (g *sequenceIDs) NewID() (string, error) {
 }
 
 func (f *fixture) service(observer app.Observer) *app.Service {
+	return f.serviceWithStore(f.repo, observer)
+}
+
+func (f *fixture) serviceWithStore(store app.Store, observer app.Observer) *app.Service {
 	f.t.Helper()
-	service, err := app.NewService(f.repo, app.Config{
-		IDs:      &sequenceIDs{prefix: fmt.Sprintf("generated_%d", serviceSeq.Add(1))},
+	service, err := app.NewService(store, app.Config{
+		IDs:      &sequenceIDs{prefix: fmt.Sprintf("generated_%d_%d", time.Now().UnixNano(), serviceSeq.Add(1))},
 		Clock:    app.ClockFunc(func() time.Time { return time.UnixMilli(f.now.Load()).UTC() }),
 		Observer: observer,
 	})
@@ -193,6 +197,18 @@ func (o *captureObserver) count() int {
 	defer o.mu.Unlock()
 	return len(o.observations)
 }
+
+type countingStore struct {
+	inner app.Store
+	calls atomic.Int64
+}
+
+func (s *countingStore) Persist(ctx context.Context, principal conversation.Principal, request protocol.Send, generate func() (app.Generated, error)) (app.PersistedMessage, error) {
+	s.calls.Add(1)
+	return s.inner.Persist(ctx, principal, request, generate)
+}
+
+func (s *countingStore) Calls() int { return int(s.calls.Load()) }
 
 type errorStore struct{ err error }
 

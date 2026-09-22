@@ -10,6 +10,7 @@ import (
 	"time"
 
 	protocol "github.com/m-ice/NewIM/core/protocol/go"
+	session "github.com/m-ice/NewIM/server/auth/session"
 	app "github.com/m-ice/NewIM/server/message"
 )
 
@@ -21,6 +22,15 @@ func TestMessageErrors(t *testing.T) {
 		identity := f.identity(user)
 		service := f.service(nil)
 
+		invalidStore := &countingStore{inner: f.repo}
+		invalidIdentityService := f.serviceWithStore(invalidStore, nil)
+		_, err := invalidIdentityService.Send(ctx, session.ConnectionIdentity{}, f.request("errors_invalid_identity", conversationID, "invalid identity"))
+		mustCode(t, err, app.SendInvalidInput)
+		mustDisposition(t, err, protocol.StopAutomaticRetry)
+		if invalidStore.Calls() != 0 {
+			t.Fatalf("invalid identity called storage %d times", invalidStore.Calls())
+		}
+
 		invalid := f.request("errors_invalid", conversationID, "invalid")
 		invalid.Payload = json.RawMessage(`{"text":`)
 		if _, err := f.send(service, identity, invalid); err == nil {
@@ -31,7 +41,7 @@ func TestMessageErrors(t *testing.T) {
 		}
 
 		unauthorizedConversation := f.seedConversation("errors_unauthorized", "other_user")
-		_, err := f.send(service, identity, f.request("errors_unauthorized", unauthorizedConversation, "denied"))
+		_, err = f.send(service, identity, f.request("errors_unauthorized", unauthorizedConversation, "denied"))
 		mustCode(t, err, app.SendUnauthorized)
 		mustDisposition(t, err, protocol.StopAutomaticRetry)
 
@@ -51,6 +61,12 @@ func TestMessageErrors(t *testing.T) {
 		conversationID := f.seedConversation("errors_retry", user)
 		identity := f.identity(user)
 		service := f.service(nil)
+
+		canceledCtx, cancelCanceled := context.WithCancel(ctx)
+		cancelCanceled()
+		_, err := service.Send(canceledCtx, identity, f.request("errors_canceled", conversationID, "canceled"))
+		mustCode(t, err, app.SendStorageUnavailable)
+		mustDisposition(t, err, protocol.RetrySameIntent)
 
 		blocker, err := f.db.Begin(ctx)
 		must(t, err)

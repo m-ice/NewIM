@@ -56,7 +56,7 @@ func (s *Service) Send(ctx context.Context, identity session.ConnectionIdentity,
 		return protocol.ServerFrame{}, Fail(SendInvalidInput)
 	}
 	if !validIdentity(identity) {
-		return protocol.ServerFrame{}, Fail(SendUnauthorized)
+		return protocol.ServerFrame{}, Fail(SendInvalidInput)
 	}
 	if _, encodeErr := protocol.EncodeSend(request); encodeErr != nil {
 		return protocol.ServerFrame{}, Fail(SendInvalidInput)

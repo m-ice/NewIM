@@ -18,6 +18,12 @@ import (
 
 const recoveryStatePath = "/tmp/nim-srv-003-message-recovery.json"
 
+const (
+	restartBeforeUser         = "recovery_restart_before_user"
+	restartBeforeConversation = "recovery_restart_before_conversation"
+	restartBeforeClient       = "recovery_restart_before_client"
+)
+
 type recoveryState struct {
 	UserID       string `json:"user_id"`
 	DeviceID     string `json:"device_id"`
@@ -38,6 +44,8 @@ func TestMessageRecovery(t *testing.T) {
 		prepareMessageRecovery(t)
 	case "restart":
 		recoverMessagePhase(t, false)
+	case "restarted":
+		recoverRestartBeforeCommit(t)
 	case "restore":
 		recoverMessagePhase(t, true)
 	default:
@@ -49,6 +57,7 @@ func prepareMessageRecovery(t *testing.T) {
 	f := openFixture(t)
 	user := "recovery_send_user"
 	conversationID := f.seedConversation("recovery_send", user)
+	f.seedConversation("recovery_restart_before", restartBeforeUser)
 	identity := f.identity(user)
 	service := f.service(nil)
 	request := f.request("recovery_send_client", conversationID, "durable")
@@ -66,6 +75,41 @@ func prepareMessageRecovery(t *testing.T) {
 		Conversation: conversationID, ClientMsgID: request.ClientMsgID, Text: "durable",
 		ServerMsgID: result.ServerMsgID, Sequence: result.ConversationSeq, ServerTime: result.ServerTime,
 	})
+}
+
+func recoverRestartBeforeCommit(t *testing.T) {
+	f := openFixture(t)
+	if got := f.scalarInt64("SELECT count(*) FROM newim.im_messages WHERE server_msg_id='restart_before_server' OR client_msg_id=$1", restartBeforeClient); got != 0 {
+		t.Fatalf("restart-before-commit left %d messages", got)
+	}
+	if got := f.scalarInt64("SELECT count(*) FROM newim.im_outbox_events WHERE event_id='restart_before_event'"); got != 0 {
+		t.Fatalf("restart-before-commit left %d outbox rows", got)
+	}
+	if got := f.scalarInt64("SELECT last_seq FROM newim.im_conversations WHERE conversation_id=$1", restartBeforeConversation); got != 0 {
+		t.Fatalf("restart-before-commit advanced summary to %d", got)
+	}
+	if !f.scalarBool("SELECT latest_server_msg_id IS NULL FROM newim.im_conversations WHERE conversation_id=$1", restartBeforeConversation) {
+		t.Fatal("restart-before-commit advanced latest pointer")
+	}
+	identity := f.identity(restartBeforeUser)
+	service := f.service(nil)
+	request := f.request(restartBeforeClient, restartBeforeConversation, "restart before commit")
+	frame, err := f.send(service, identity, request)
+	must(t, err)
+	first := ack(t, frame)
+	f.assertAtomic(restartBeforeConversation, first.ServerMsgID)
+	retry, err := f.send(service, identity, request)
+	must(t, err)
+	second := ack(t, retry)
+	if second.ServerMsgID != first.ServerMsgID || second.ConversationSeq != first.ConversationSeq || second.ServerTime != first.ServerTime {
+		t.Fatalf("restart-before-commit retry changed result: first=%+v second=%+v", first, second)
+	}
+	if got := f.scalarInt64("SELECT count(*) FROM newim.im_messages WHERE sender_id=$1 AND client_msg_id=$2", restartBeforeUser, restartBeforeClient); got != 1 {
+		t.Fatalf("restart-before-commit retry produced %d messages", got)
+	}
+	if got := f.scalarInt64("SELECT count(*) FROM newim.im_outbox_events WHERE server_msg_id=$1", first.ServerMsgID); got != 1 {
+		t.Fatalf("restart-before-commit retry produced %d outbox rows", got)
+	}
 }
 
 func recoverMessagePhase(t *testing.T, restored bool) {
@@ -154,7 +198,7 @@ func testLostResponseConvergence(t *testing.T, f *fixture, identity session.Conn
 	request := f.request("recovery_lost_client", conversationID, "lost response")
 	lost := &lostResponseStore{inner: f.repo}
 	lostService, err := app.NewService(lost, app.Config{
-		IDs:   &sequenceIDs{prefix: fmt.Sprintf("lost_generated_%d", serviceSeq.Add(1))},
+		IDs:   &sequenceIDs{prefix: fmt.Sprintf("lost_generated_%d_%d", time.Now().UnixNano(), serviceSeq.Add(1))},
 		Clock: app.ClockFunc(func() time.Time { return time.UnixMilli(f.now.Load()).UTC() }),
 	})
 	must(t, err)

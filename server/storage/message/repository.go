@@ -5,6 +5,7 @@ package message
 import (
 	"context"
 	"errors"
+	"io"
 	"net"
 	"time"
 
@@ -282,6 +283,17 @@ func mapStorageError(err error) error {
 		case "08000", "08001", "08003", "08004", "08006", "08007", "57P01", "57P02", "57P03":
 			return app.Fail(app.SendStorageUnavailable)
 		}
+	}
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) || errors.Is(err, io.EOF) || errors.Is(err, net.ErrClosed) {
+		return app.Fail(app.SendStorageUnavailable)
+	}
+	var netErr *net.OpError
+	if errors.As(err, &netErr) {
+		return app.Fail(app.SendStorageUnavailable)
+	}
+	var connectErr *pgconn.ConnectError
+	if errors.As(err, &connectErr) {
+		return app.Fail(app.SendStorageUnavailable)
 	}
 	return app.Fail(app.SendUnknown)
 }
