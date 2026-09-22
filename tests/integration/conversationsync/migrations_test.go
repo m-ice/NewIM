@@ -17,12 +17,12 @@ func TestSyncMigrations(t *testing.T) {
 
 	ledger := f.scalarString("SELECT string_agg(version::text||':'||sha256,',' ORDER BY version) FROM newim_meta.migrations")
 	parts := strings.Split(ledger, ",")
-	if len(parts) != 3 {
-		t.Fatalf("migration ledger got %q want versions 1..3", ledger)
+	if len(parts) != 4 {
+		t.Fatalf("migration ledger got %q want versions 1..4", ledger)
 	}
 	for index, part := range parts {
 		fields := strings.SplitN(part, ":", 2)
-		if len(fields) != 2 || fields[0] != string(rune('1'+index)) || len(fields[1]) != 64 || strings.Trim(fields[1], "0") == "" {
+		if len(fields) != 2 || fields[0] != string(rune('1'+index)) || len(fields[1]) != 64 || strings.Trim(fields[1], "0123456789abcdef") != "" || strings.Trim(fields[1], "0") == "" {
 			t.Fatalf("invalid migration ledger entry %q", part)
 		}
 	}
@@ -30,8 +30,11 @@ func TestSyncMigrations(t *testing.T) {
 	if tables := f.scalarInt64("SELECT count(*) FROM pg_tables WHERE schemaname='newim' AND tablename IN ('im_conversation_sync_accounts','im_conversation_sync_keys','im_conversation_sync_changes')"); tables != 3 {
 		t.Fatalf("sync migration table count got %d want 3", tables)
 	}
-	if tables := f.scalarInt64("SELECT count(*) FROM pg_tables WHERE schemaname='newim';"); tables != 14 {
-		t.Fatalf("head table count got %d want 14", tables)
+	if tables := f.scalarInt64("SELECT count(*) FROM pg_tables WHERE schemaname='newim' AND tablename='im_auth_tokens'"); tables != 1 {
+		t.Fatalf("additive auth table count got %d want 1", tables)
+	}
+	if tables := f.scalarInt64("SELECT count(*) FROM pg_tables WHERE schemaname='newim';"); tables != 15 {
+		t.Fatalf("head table count got %d want 15", tables)
 	}
 	if triggers := f.scalarInt64("SELECT count(*) FROM pg_trigger WHERE tgrelid IN (SELECT oid FROM pg_class WHERE relnamespace='newim'::regnamespace) AND NOT tgisinternal"); triggers != 0 {
 		t.Fatalf("sync migration added %d application triggers", triggers)
