@@ -589,13 +589,209 @@ fn store_generation_change_persists_auth_recovery_and_resume_updates_active_fenc
     assert_eq!(resumed.last_code, AUTH_RECOVERY_RESUMED);
 
     let resumed_pending = store.pending_item(&identity(&created)).unwrap();
-    let sent = outbox::plan_dispatch(&mut store, &resumed_pending, 3, &changed, until_ms).unwrap();
+    let mut rebound_context = changed.clone();
+    rebound_context.connection_generation = ConnectionGeneration(9);
+    let receipt =
+        outbox::rebind_connection(&mut store, &resumed_pending, 3, &rebound_context).unwrap();
+    let rebound = OutboxRecord::decode(&store.pending_item(&identity(&created)).unwrap()).unwrap();
+    assert_eq!(rebound.state, OutboxState::RetryWait);
+    assert_eq!(rebound.fence.generation, 1);
+    assert_eq!(rebound.active_fence.generation, 2);
+    assert_eq!(
+        rebound.active_connection_generation,
+        ConnectionGeneration(9)
+    );
+
+    let rebound_pending = store.pending_item(&identity(&created)).unwrap();
+    let sent = outbox::plan_dispatch(
+        &mut store,
+        &rebound_pending,
+        receipt.revision,
+        &rebound_context,
+        until_ms,
+    )
+    .unwrap();
     assert!(matches!(sent, OutboxTransition::Send { .. }));
     let in_flight = store.pending_item(&identity(&created)).unwrap();
     let in_flight = OutboxRecord::decode(&in_flight).unwrap();
     assert_eq!(in_flight.state, OutboxState::InFlight);
     assert_eq!(in_flight.fence.generation, 1);
     assert_eq!(in_flight.active_fence.generation, 2);
+    assert_eq!(
+        in_flight.active_connection_generation,
+        ConnectionGeneration(9)
+    );
+}
+
+#[test]
+fn rebind_connection_preserves_retry_state_and_enables_dispatch() {
+    let context = context();
+    let mut store = HarnessStore::new(fence());
+    let created = outbox::enqueue(&mut store, 1, &context, intent(), 0).unwrap();
+    let original = store.pending_item(&identity(&created)).unwrap();
+    let mut rebound_context = context.clone();
+    rebound_context.connection_generation = ConnectionGeneration(8);
+
+    let receipt = outbox::rebind_connection(&mut store, &original, 1, &rebound_context).unwrap();
+    assert_eq!(receipt.revision, 2);
+    let ready = OutboxRecord::decode(&store.pending_item(&identity(&created)).unwrap()).unwrap();
+    assert_eq!(ready.state, OutboxState::Ready);
+    assert_eq!(ready.active_connection_generation, ConnectionGeneration(8));
+    assert_eq!(ready.intent, intent());
+    assert_eq!(ready.attempts, 0);
+    assert_eq!(ready.created_at_ms, 0);
+    assert_eq!(ready.deadline_ms, 0);
+    let rebound_pending = store.pending_item(&identity(&created)).unwrap();
+    assert_eq!(
+        outbox::plan_dispatch(&mut store, &rebound_pending, 2, &context, 0).unwrap_err(),
+        OutboxError::GenerationMismatch
+    );
+
+    let ready_pending = store.pending_item(&identity(&created)).unwrap();
+    assert!(matches!(
+        outbox::plan_dispatch(&mut store, &ready_pending, 2, &rebound_context, 0).unwrap(),
+        OutboxTransition::Send { .. }
+    ));
+    let in_flight = store.pending_item(&identity(&created)).unwrap();
+    let failure = SendFailure::from_validated_code(
+        SENTINEL_CLIENT,
+        SENTINEL_CONVERSATION,
+        "SERVER_TEMPORARY_UNAVAILABLE",
+    )
+    .unwrap();
+    let retry =
+        outbox::apply_failure(&mut store, &in_flight, 3, &rebound_context, &failure, 0).unwrap();
+    let OutboxTransition::Wait { until_ms } = retry else {
+        panic!("retry wait expected");
+    };
+    let retry_pending = store.pending_item(&identity(&created)).unwrap();
+    let retry_record = OutboxRecord::decode(&retry_pending).unwrap();
+    assert_eq!(retry_record.attempts, 1);
+    assert_eq!(retry_record.deadline_ms, until_ms);
+
+    let mut rebound_again = rebound_context.clone();
+    rebound_again.connection_generation = ConnectionGeneration(9);
+    let receipt = outbox::rebind_connection(&mut store, &retry_pending, 4, &rebound_again).unwrap();
+    assert_eq!(receipt.revision, 5);
+    let rebound_retry =
+        OutboxRecord::decode(&store.pending_item(&identity(&created)).unwrap()).unwrap();
+    assert_eq!(rebound_retry.state, OutboxState::RetryWait);
+    assert_eq!(rebound_retry.intent, intent());
+    assert_eq!(rebound_retry.attempts, 1);
+    assert_eq!(rebound_retry.deadline_ms, until_ms);
+    assert_eq!(
+        rebound_retry.active_connection_generation,
+        ConnectionGeneration(9)
+    );
+    let rebound_retry_pending = store.pending_item(&identity(&created)).unwrap();
+    assert!(matches!(
+        outbox::plan_dispatch(
+            &mut store,
+            &rebound_retry_pending,
+            5,
+            &rebound_again,
+            until_ms - 1
+        )
+        .unwrap(),
+        OutboxTransition::Wait { .. }
+    ));
+    let rebound_retry_pending = store.pending_item(&identity(&created)).unwrap();
+    assert!(matches!(
+        outbox::plan_dispatch(
+            &mut store,
+            &rebound_retry_pending,
+            5,
+            &rebound_again,
+            until_ms
+        )
+        .unwrap(),
+        OutboxTransition::Send { .. }
+    ));
+    let sent = OutboxRecord::decode(&store.pending_item(&identity(&created)).unwrap()).unwrap();
+    assert_eq!(sent.attempts, 2);
+    assert!(sent.deadline_ms > until_ms);
+    assert_eq!(sent.active_connection_generation, ConnectionGeneration(9));
+}
+
+#[test]
+fn rebind_connection_rejects_cas_and_terminal_or_auth_states() {
+    let context = context();
+    let mut store = HarnessStore::new(fence());
+    let created = outbox::enqueue(&mut store, 1, &context, intent(), 0).unwrap();
+    let pending = store.pending_item(&identity(&created)).unwrap();
+    let mut changed = context.clone();
+    changed.connection_generation = ConnectionGeneration(8);
+    assert_eq!(
+        outbox::rebind_connection(&mut store, &pending, 0, &changed).unwrap_err(),
+        OutboxError::Store(StoreError::StaleRevision)
+    );
+    let unchanged =
+        OutboxRecord::decode(&store.pending_item(&identity(&created)).unwrap()).unwrap();
+    assert_eq!(
+        unchanged.active_connection_generation,
+        context.connection_generation
+    );
+
+    assert!(matches!(
+        outbox::plan_dispatch(&mut store, &pending, 1, &context, 0).unwrap(),
+        OutboxTransition::Send { .. }
+    ));
+    let in_flight = store.pending_item(&identity(&created)).unwrap();
+    let auth =
+        SendFailure::from_validated_code(SENTINEL_CLIENT, SENTINEL_CONVERSATION, "AUTH_REQUIRED")
+            .unwrap();
+    assert!(matches!(
+        outbox::apply_failure(&mut store, &in_flight, 2, &context, &auth, 0).unwrap(),
+        OutboxTransition::AuthRecovery { .. }
+    ));
+    let auth_pending = store.pending_item(&identity(&created)).unwrap();
+    assert_eq!(
+        outbox::rebind_connection(&mut store, &auth_pending, 3, &changed).unwrap_err(),
+        OutboxError::TransitionInvalid
+    );
+    assert!(matches!(
+        outbox::plan_dispatch(&mut store, &auth_pending, 3, &context, 0).unwrap(),
+        OutboxTransition::AuthRecovery { .. }
+    ));
+
+    let mut terminal_store = HarnessStore::new(fence());
+    let terminal_created = outbox::enqueue(&mut terminal_store, 1, &context, intent(), 0).unwrap();
+    let terminal_pending = terminal_store
+        .pending_item(&identity(&terminal_created))
+        .unwrap();
+    assert!(matches!(
+        outbox::plan_dispatch(&mut terminal_store, &terminal_pending, 1, &context, 0).unwrap(),
+        OutboxTransition::Send { .. }
+    ));
+    let terminal_in_flight = terminal_store
+        .pending_item(&identity(&terminal_created))
+        .unwrap();
+    let permanent =
+        SendFailure::from_validated_code(SENTINEL_CLIENT, SENTINEL_CONVERSATION, "SERVER_REJECTED")
+            .unwrap();
+    assert!(matches!(
+        outbox::apply_failure(
+            &mut terminal_store,
+            &terminal_in_flight,
+            2,
+            &context,
+            &permanent,
+            0
+        )
+        .unwrap(),
+        OutboxTransition::Terminal { .. }
+    ));
+    let terminal = terminal_store
+        .pending_item(&identity(&terminal_created))
+        .unwrap();
+    assert_eq!(
+        outbox::rebind_connection(&mut terminal_store, &terminal, 3, &changed).unwrap_err(),
+        OutboxError::TransitionInvalid
+    );
+    assert!(matches!(
+        outbox::plan_dispatch(&mut terminal_store, &terminal, 3, &context, 0).unwrap(),
+        OutboxTransition::Terminal { .. }
+    ));
 }
 
 #[test]

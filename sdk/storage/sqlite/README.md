@@ -40,6 +40,8 @@ The native adapter implements the additive `PendingMutationStore` port in `opera
   `StaleRevision`; success increments the store revision atomically.
 - Corrupt or ambiguous commit outcomes set `requires_reopen`; subsequent pending mutations
   return `RecoveryRequired` until the adapter is reopened and authoritative state is checked.
+- The core `rebind_connection` recovery action uses this port to perform one exact-fence,
+  revision-CAS update of only the active connection generation for a non-terminal pending row.
 
 No schema migration or request-byte change is introduced. The adapter treats pending payload as
 opaque bytes and never guesses or rewrites a legacy envelope. The core outbox owns versioned

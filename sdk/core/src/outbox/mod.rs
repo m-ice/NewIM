@@ -611,6 +611,38 @@ pub fn apply_failure<S: PendingMutationStore>(
     }
 }
 
+/// Explicit host recovery: bind a non-terminal record to the current connection generation.
+///
+/// This is a one-row revision-CAS transition. It requires the same trusted sender and exact
+/// current active store account/instance/generation fence, accepts only Ready/InFlight/RetryWait, and changes
+/// only the active connection binding. The immutable intent, client identity, attempts,
+/// original enqueue time, deadline and last code are preserved. Terminal/auth states must use
+/// their existing resume/remove paths instead.
+pub fn rebind_connection<S: PendingMutationStore>(
+    store: &mut S,
+    pending: &Pending,
+    expected_revision: u64,
+    context: &SendContext,
+) -> Result<PendingReceipt, OutboxError> {
+    let record = OutboxRecord::decode(pending)?;
+    record.ensure_identity(context)?;
+    if record.active_fence != context.fence {
+        return Err(OutboxError::GenerationMismatch);
+    }
+    if !matches!(
+        record.state,
+        OutboxState::Ready | OutboxState::InFlight | OutboxState::RetryWait
+    ) {
+        return Err(OutboxError::TransitionInvalid);
+    }
+    if record.active_connection_generation == context.connection_generation {
+        return Err(OutboxError::TransitionInvalid);
+    }
+    let mut next = record;
+    next.active_connection_generation = context.connection_generation;
+    persist(store, &next, expected_revision)
+}
+
 /// Explicitly resume auth recovery; no automatic retry occurs before this call.
 pub fn resume_auth<S: PendingMutationStore>(
     store: &mut S,

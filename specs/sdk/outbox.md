@@ -54,6 +54,15 @@ record due early. The constants are eight total attempts, 24 hours from enqueue,
 delay, factor 2 and 5 minutes maximum individual delay. Overflow or either cap persists
 `OUTBOX_RETRY_EXHAUSTED`. Terminal/auth states survive restart and never auto-send.
 
+Connection-generation rebinding is an explicit host recovery action through `rebind_connection`.
+It requires the same trusted sender and exact current active store account/instance/generation
+fence and a single revision-CAS update. It accepts only `Ready`, `InFlight` and `RetryWait`, and updates only
+the active connection generation; intent/client identity, attempts, original enqueue age,
+deadline, state and last code are preserved. It rejects `PermanentFailure` and `AuthRecovery`,
+which remain on the explicit resume/remove paths. A successful rebind lets normal dispatch use
+the remaining attempts and persisted deadline with the same `clientMsgId`/intent. Stale
+generations still cannot dispatch, apply a failure, or rebind without the current fence and CAS.
+
 Auth recovery requires an explicit host resume with the current generation. Resume updates the
 active store/connection generation while preserving the original audit fields. A terminal or
 auth-recovery row can be removed only by explicit revision-CAS `remove_pending`; queued work and

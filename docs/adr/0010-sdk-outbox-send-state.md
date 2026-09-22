@@ -48,6 +48,15 @@ factor 2, and a 5 minute maximum delay. Deadline arithmetic is checked; clock ro
 makes a retry early. Overflow, attempt exhaustion or age exhaustion persists
 `PermanentFailure` with `OUTBOX_RETRY_EXHAUSTED` across restart.
 
+A normal reconnect that changes only the connection generation does not auto-rebind a pending
+record. The host calls `rebind_connection` with the exact sender/fence and last observed revision.
+It accepts only `Ready`, `InFlight` and `RetryWait`, requires the exact current active store
+account/instance/generation fence, and updates only the active connection generation. The immutable
+intent/client identity, attempt count, original enqueue age/deadline, state and last code remain
+unchanged. `PermanentFailure` and `AuthRecovery` are rejected; those states remain on the
+existing explicit resume/remove paths. After a successful CAS rebind, normal dispatch can use
+the remaining attempts and persisted deadline with the same `clientMsgId` and intent.
+
 Only `RetrySameIntent` enters `RetryWait`. Auth codes and store-generation changes enter
 `AuthRecovery` and require an explicit host resume with the current generation. Resume replaces
 the active store/connection generation while retaining the original audit fields. Every other

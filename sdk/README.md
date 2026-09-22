@@ -17,8 +17,11 @@ validate wire frames and map them to `SendIntent`, `PersistedAck`, `SendFailure`
 `SendContext`; core does not parse JSON, own a socket or import SQLite.
 
 The additive `PendingMutationStore` port provides revision-CAS pending update/removal without
-changing `LocalStore` or exhaustive `Action`. `remove_pending` is reserved for explicit terminal
-or auth-recovery dismissal. The native SQLite adapter implements this port without schema
+changing `LocalStore` or exhaustive `Action`. The public `rebind_connection` recovery action lets
+the host explicitly bind a non-terminal pending record to a new connection generation while
+preserving intent, attempt/deadline and retry-cap fields; terminal/auth states remain on the
+existing resume/remove paths. `remove_pending` is reserved for explicit terminal or
+auth-recovery dismissal. The native SQLite adapter implements this port without schema
 migrations and does not parse pending bytes.
 
 Run the registered real-binary gates:

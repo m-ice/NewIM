@@ -109,6 +109,163 @@ fn restart_resumes_same_pending() {
 }
 
 #[test]
+fn retry_wait_rebinds_after_reopen_and_dispatches() {
+    let directory = Directory::new();
+    let mut store = directory.open();
+    let context = send_context(&store);
+    outbox::enqueue(&mut store, 1, &context, intent(), 0).unwrap();
+    let row = pending(&mut store, "stable");
+    let rev = revision(&mut store);
+    assert!(matches!(
+        outbox::plan_dispatch(&mut store, &row, rev, &context, 0).unwrap(),
+        OutboxTransition::Send { .. }
+    ));
+    let in_flight = pending(&mut store, "stable");
+    let in_flight_rev = revision(&mut store);
+    let failure =
+        SendFailure::from_validated_code("stable", "room", "SERVER_TEMPORARY_UNAVAILABLE").unwrap();
+    assert!(matches!(
+        outbox::apply_failure(&mut store, &in_flight, in_flight_rev, &context, &failure, 0)
+            .unwrap(),
+        OutboxTransition::Wait { .. }
+    ));
+    let before = OutboxRecord::decode(&pending(&mut store, "stable")).unwrap();
+    assert_eq!(before.state, OutboxState::RetryWait);
+    assert_eq!(before.attempts, 1);
+    drop(store);
+
+    let mut reopened = directory.open();
+    let mut rebound_context = send_context(&reopened);
+    rebound_context.connection_generation = ConnectionGeneration(99);
+    let row = pending(&mut reopened, "stable");
+    let rev = revision(&mut reopened);
+    let receipt = outbox::rebind_connection(&mut reopened, &row, rev, &rebound_context).unwrap();
+    let persisted = OutboxRecord::decode(&pending(&mut reopened, "stable")).unwrap();
+    assert_eq!(persisted.state, OutboxState::RetryWait);
+    assert_eq!(persisted.intent, before.intent);
+    assert_eq!(persisted.attempts, before.attempts);
+    assert_eq!(persisted.created_at_ms, before.created_at_ms);
+    assert_eq!(persisted.deadline_ms, before.deadline_ms);
+    assert_eq!(persisted.last_code, before.last_code);
+    assert_eq!(
+        persisted.active_connection_generation,
+        rebound_context.connection_generation
+    );
+
+    let rev = receipt.revision;
+    let pending_before_deadline = pending(&mut reopened, "stable");
+    assert!(matches!(
+        outbox::plan_dispatch(
+            &mut reopened,
+            &pending_before_deadline,
+            rev,
+            &rebound_context,
+            persisted.deadline_ms - 1
+        )
+        .unwrap(),
+        OutboxTransition::Wait { .. }
+    ));
+    let pending_at_deadline = pending(&mut reopened, "stable");
+    assert!(matches!(
+        outbox::plan_dispatch(
+            &mut reopened,
+            &pending_at_deadline,
+            rev,
+            &rebound_context,
+            persisted.deadline_ms
+        )
+        .unwrap(),
+        OutboxTransition::Send { .. }
+    ));
+    let sent = OutboxRecord::decode(&pending(&mut reopened, "stable")).unwrap();
+    assert_eq!(sent.intent, before.intent);
+    assert_eq!(sent.attempts, 2);
+    assert_eq!(
+        sent.active_connection_generation,
+        rebound_context.connection_generation
+    );
+    drop(reopened);
+
+    let mut final_store = directory.open();
+    let final_record = OutboxRecord::decode(&pending(&mut final_store, "stable")).unwrap();
+    assert_eq!(final_record.state, OutboxState::InFlight);
+    assert_eq!(final_record.intent, before.intent);
+    assert_eq!(final_record.attempts, 2);
+    assert_eq!(
+        final_record.active_connection_generation,
+        ConnectionGeneration(99)
+    );
+}
+
+#[test]
+fn in_flight_rebinds_after_reopen_and_preserves_deadline() {
+    let directory = Directory::new();
+    let mut store = directory.open();
+    let context = send_context(&store);
+    outbox::enqueue(&mut store, 1, &context, intent(), 0).unwrap();
+    let row = pending(&mut store, "stable");
+    let rev = revision(&mut store);
+    assert!(matches!(
+        outbox::plan_dispatch(&mut store, &row, rev, &context, 0).unwrap(),
+        OutboxTransition::Send { .. }
+    ));
+    let before = OutboxRecord::decode(&pending(&mut store, "stable")).unwrap();
+    assert_eq!(before.state, OutboxState::InFlight);
+    assert_eq!(before.attempts, 1);
+    drop(store);
+
+    let mut reopened = directory.open();
+    let mut rebound_context = send_context(&reopened);
+    rebound_context.connection_generation = ConnectionGeneration(100);
+    let row = pending(&mut reopened, "stable");
+    let rev = revision(&mut reopened);
+    let receipt = outbox::rebind_connection(&mut reopened, &row, rev, &rebound_context).unwrap();
+    let persisted = OutboxRecord::decode(&pending(&mut reopened, "stable")).unwrap();
+    assert_eq!(persisted.state, OutboxState::InFlight);
+    assert_eq!(persisted.intent, before.intent);
+    assert_eq!(persisted.attempts, before.attempts);
+    assert_eq!(persisted.created_at_ms, before.created_at_ms);
+    assert_eq!(persisted.deadline_ms, before.deadline_ms);
+    assert_eq!(persisted.last_code, before.last_code);
+    assert_eq!(
+        persisted.active_connection_generation,
+        rebound_context.connection_generation
+    );
+
+    let pending_before_deadline = pending(&mut reopened, "stable");
+    assert!(matches!(
+        outbox::plan_dispatch(
+            &mut reopened,
+            &pending_before_deadline,
+            receipt.revision,
+            &rebound_context,
+            persisted.deadline_ms - 1
+        )
+        .unwrap(),
+        OutboxTransition::Wait { .. }
+    ));
+    let pending_at_deadline = pending(&mut reopened, "stable");
+    assert!(matches!(
+        outbox::plan_dispatch(
+            &mut reopened,
+            &pending_at_deadline,
+            receipt.revision,
+            &rebound_context,
+            persisted.deadline_ms
+        )
+        .unwrap(),
+        OutboxTransition::Send { .. }
+    ));
+    let sent = OutboxRecord::decode(&pending(&mut reopened, "stable")).unwrap();
+    assert_eq!(sent.intent, before.intent);
+    assert_eq!(sent.attempts, 2);
+    assert_eq!(
+        sent.active_connection_generation,
+        rebound_context.connection_generation
+    );
+}
+
+#[test]
 fn ack_after_connection_generation_change_is_reconcilable() {
     let directory = Directory::new();
     let mut store = directory.open();
