@@ -102,9 +102,15 @@ func TestAuthCheck(t *testing.T) {
 		_, err = service.Authenticate(ctx, app.AuthenticateRequest{Token: unknown, Binding: binding, ConnectionID: "connection_1"})
 		mustCode(t, err, app.AuthTokenUnknown)
 
-		tampered := active.RawToken()[:len(active.RawToken())-1] + "A"
+		tampered := active.RawToken()
+		for _, replacement := range []byte("AQgw") {
+			if tampered[len(tampered)-1] != replacement {
+				tampered = tampered[:len(tampered)-1] + string(replacement)
+				break
+			}
+		}
 		if tampered == active.RawToken() {
-			tampered = active.RawToken()[:len(active.RawToken())-1] + "B"
+			t.Fatal("tamper did not change the final canonical base64url character")
 		}
 		_, err = service.Authenticate(ctx, app.AuthenticateRequest{Token: tampered, Binding: binding, ConnectionID: "connection_1"})
 		mustCode(t, err, app.AuthTokenUnknown)
