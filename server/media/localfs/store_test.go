@@ -135,3 +135,38 @@ func TestRejectsNon0700Root(t *testing.T) {
 		t.Fatal("non-0700 root accepted")
 	}
 }
+
+func TestExistingObjectReplaySyncsParentDirectory(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "objects")
+	store, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	value := []byte("durable replay")
+	expected := info(value)
+	if _, err = store.PutImmutable(context.Background(), "media_key", bytes.NewReader(value), expected); err != nil {
+		t.Fatal(err)
+	}
+	syncCalls := 0
+	store.syncHook = func() error {
+		syncCalls++
+		return nil
+	}
+	if _, err = store.PutImmutable(context.Background(), "media_key", bytes.NewReader(value), expected); err != nil {
+		t.Fatal(err)
+	}
+	if syncCalls != 1 {
+		t.Fatalf("existing-object replay sync calls got %d want 1", syncCalls)
+	}
+	store.syncHook = func() error {
+		syncCalls++
+		return errors.New("injected sync failure")
+	}
+	if _, err = store.PutImmutable(context.Background(), "media_key", bytes.NewReader(value), expected); app.ErrorCode(err) != app.MediaStorageUnavailable {
+		t.Fatalf("existing-object replay with sync failure error = %v", err)
+	}
+	if syncCalls != 2 {
+		t.Fatalf("sync failure calls got %d want 2", syncCalls)
+	}
+}
