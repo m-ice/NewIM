@@ -29,6 +29,7 @@ type Store struct {
 	root     *os.Root
 	rootPath string
 	publish  func(string, string) error
+	syncHook func() error
 }
 
 // Open creates or validates an owned mode-0700 object root.
@@ -90,7 +91,7 @@ func (s *Store) PutImmutable(ctx context.Context, key string, content io.Reader,
 		} else if incoming != expected {
 			return app.ObjectInfo{}, app.Fail(app.MediaConflict)
 		}
-		return s.verifyExisting(key, expected)
+		return s.verifyExistingDurable(key, expected)
 	}
 	tempName, temp, err := s.createTemp()
 	if err != nil {
@@ -130,7 +131,7 @@ func (s *Store) PutImmutable(ctx context.Context, key string, content io.Reader,
 				return app.ObjectInfo{}, app.Fail(app.MediaStorageUnavailable)
 			}
 			cleanup = false
-			return s.verifyExisting(key, expected)
+			return s.verifyExistingDurable(key, expected)
 		}
 		return app.ObjectInfo{}, app.Fail(app.MediaStorageUnavailable)
 	}
@@ -153,6 +154,20 @@ func (s *Store) objectExists(key string) (bool, error) {
 		return false, nil
 	}
 	return false, err
+}
+
+func (s *Store) verifyExistingDurable(key string, expected app.ObjectInfo) (app.ObjectInfo, error) {
+	actual, err := s.verifyExisting(key, expected)
+	if err != nil {
+		return app.ObjectInfo{}, err
+	}
+	// A loser may observe the winner's directory entry before the winner's
+	// syncRoot completes. Sync before any caller can commit ready metadata.
+	// 竞争失败方可能先观察到胜出者的目录项；在允许提交 ready 元数据前必须同步父目录。
+	if err = s.syncRoot(); err != nil {
+		return app.ObjectInfo{}, app.Fail(app.MediaStorageUnavailable)
+	}
+	return actual, nil
 }
 
 func (s *Store) verifyExisting(key string, expected app.ObjectInfo) (app.ObjectInfo, error) {
@@ -242,6 +257,9 @@ func finishDigest(hasher hash.Hash) [32]byte {
 }
 
 func (s *Store) syncRoot() error {
+	if s.syncHook != nil {
+		return s.syncHook()
+	}
 	root, err := s.root.Open(".")
 	if err != nil {
 		return err
