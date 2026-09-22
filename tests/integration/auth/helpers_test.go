@@ -79,8 +79,12 @@ func (f *fixture) revokeSessionSQL(binding app.SessionBinding, at time.Time) {
 }
 
 func (f *fixture) service(observer app.Observer, entropy io.Reader, policy app.LoginPolicy) *app.Service {
+	return f.serviceWithStore(f.repo, observer, entropy, policy)
+}
+
+func (f *fixture) serviceWithStore(store app.Store, observer app.Observer, entropy io.Reader, policy app.LoginPolicy) *app.Service {
 	f.t.Helper()
-	service, err := app.NewService(f.repo, app.Config{
+	service, err := app.NewService(store, app.Config{
 		Clock:    app.ClockFunc(func() time.Time { return time.Unix(f.now.Load(), 0).UTC() }),
 		Observer: observer, Entropy: entropy, Policy: policy,
 	})
@@ -200,6 +204,48 @@ func (panicObserver) Observe(app.Observation) { panic("observer failure") }
 type errorReader struct{ err error }
 
 func (r errorReader) Read([]byte) (int, error) { return 0, r.err }
+
+type countingReader struct{ calls atomic.Int64 }
+
+func (r *countingReader) Read([]byte) (int, error) {
+	r.calls.Add(1)
+	return 0, io.ErrUnexpectedEOF
+}
+
+func (r *countingReader) Calls() int { return int(r.calls.Load()) }
+
+type faultIssueStore struct {
+	app.Store
+	db        *pgx.Conn
+	sessionID string
+}
+
+func (s *faultIssueStore) Issue(ctx context.Context, binding app.SessionBinding, generate func() (app.IssuedToken, error)) (app.IssuedToken, error) {
+	if s == nil || s.Store == nil || s.db == nil || binding.SessionID != s.sessionID {
+		if s == nil || s.Store == nil {
+			return app.IssuedToken{}, app.Fail(app.AuthStorageUnavailable)
+		}
+		return s.Store.Issue(ctx, binding, generate)
+	}
+	tx, err := s.db.Begin(ctx)
+	if err != nil {
+		return app.IssuedToken{}, app.Fail(app.AuthStorageUnavailable)
+	}
+	defer func() { _ = tx.Rollback(context.Background()) }()
+	var userID string
+	if err = tx.QueryRow(ctx, "SELECT user_id FROM newim.im_sessions WHERE session_id=$1 FOR UPDATE", binding.SessionID).Scan(&userID); err != nil {
+		return app.IssuedToken{}, app.Fail(app.AuthStorageUnavailable)
+	}
+	return s.Store.Issue(ctx, binding, generate)
+}
+
+func mustObservationCode(t *testing.T, observer *captureObserver, operation string, want app.Code) {
+	t.Helper()
+	observation, ok := observer.latest(operation)
+	if !ok || observation.Code != want {
+		t.Fatalf("%s observation got %+v want %s", operation, observation, want)
+	}
+}
 
 type repeatingReader struct {
 	pattern []byte

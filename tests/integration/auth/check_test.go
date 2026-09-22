@@ -167,11 +167,13 @@ func TestAuthCheck(t *testing.T) {
 		if outcome != app.RevokeOK {
 			t.Fatalf("first revoke outcome=%s", outcome)
 		}
+		mustObservationCode(t, observer, "revoke_token", app.AuthRevokeOK)
 		outcome, err = service.RevokeToken(ctx, alice.UserID, token.TokenID())
 		must(t, err)
 		if outcome != app.RevokeNoop {
 			t.Fatalf("idempotent revoke outcome=%s", outcome)
 		}
+		mustObservationCode(t, observer, "revoke_token", app.AuthRevokeNoop)
 		_, err = f.authenticate(service, token, alice, "connection_1")
 		mustCode(t, err, app.AuthTokenRevoked)
 
@@ -185,11 +187,13 @@ func TestAuthCheck(t *testing.T) {
 		if outcome != app.RevokeOK {
 			t.Fatalf("session revoke outcome=%s", outcome)
 		}
+		mustObservationCode(t, observer, "revoke_session", app.AuthRevokeOK)
 		outcome, err = service.RevokeSession(ctx, alice)
 		must(t, err)
 		if outcome != app.RevokeNoop {
 			t.Fatalf("idempotent session revoke outcome=%s", outcome)
 		}
+		mustObservationCode(t, observer, "revoke_session", app.AuthRevokeNoop)
 		if !f.sessionRevoked(alice) {
 			t.Fatal("session was not durably revoked")
 		}
@@ -200,6 +204,60 @@ func TestAuthCheck(t *testing.T) {
 		if _, err = service.RevokeSession(ctx, missing); app.ErrorCode(err) != app.AuthSessionNotFound {
 			t.Fatalf("missing session revoke got %v", err)
 		}
+	})
+
+	t.Run("issue-session-and-ownership-lookup-failures", func(t *testing.T) {
+		f := openFixture(t)
+
+		missingObserver := &captureObserver{}
+		missingEntropy := &countingReader{}
+		missingService := f.service(missingObserver, missingEntropy, nil)
+		missing := newBinding("check_issue_missing")
+		f.sql("INSERT INTO newim.im_users(user_id) VALUES($1)", missing.UserID)
+		f.sql("INSERT INTO newim.im_devices(user_id,device_id) VALUES($1,$2)", missing.UserID, missing.DeviceID)
+		_, err := missingService.Issue(ctx, app.IssueRequest{Binding: missing, TTL: time.Hour})
+		mustCode(t, err, app.AuthSessionNotFound)
+		if missingEntropy.Calls() != 0 {
+			t.Fatalf("missing-session issue called CSPRNG %d times", missingEntropy.Calls())
+		}
+		if got := f.tokenCountForSession(missing.SessionID); got != 0 {
+			t.Fatalf("missing-session issue inserted %d rows", got)
+		}
+		mustObservationCode(t, missingObserver, "issue", app.AuthSessionNotFound)
+
+		revoked := f.seedBinding("check_issue_revoked")
+		f.revokeSessionSQL(revoked, time.Unix(f.now.Load(), 0).UTC())
+		revokedObserver := &captureObserver{}
+		revokedEntropy := &countingReader{}
+		revokedService := f.service(revokedObserver, revokedEntropy, nil)
+		_, err = revokedService.Issue(ctx, app.IssueRequest{Binding: revoked, TTL: time.Hour})
+		mustCode(t, err, app.AuthSessionRevoked)
+		if revokedEntropy.Calls() != 0 {
+			t.Fatalf("revoked-session issue called CSPRNG %d times", revokedEntropy.Calls())
+		}
+		if got := f.tokenCountForSession(revoked.SessionID); got != 0 {
+			t.Fatalf("revoked-session issue inserted %d rows", got)
+		}
+		mustObservationCode(t, revokedObserver, "issue", app.AuthSessionRevoked)
+
+		lookupFailure := f.seedBinding("check_issue_lookup_failure")
+		lookupObserver := &captureObserver{}
+		lookupEntropy := &countingReader{}
+		faultStore := &faultIssueStore{Store: f.repo, db: f.db, sessionID: lookupFailure.SessionID}
+		lookupService := f.serviceWithStore(faultStore, lookupObserver, lookupEntropy, nil)
+		before := f.tokenCount()
+		_, err = lookupService.Issue(ctx, app.IssueRequest{Binding: lookupFailure, TTL: time.Hour})
+		mustCode(t, err, app.AuthStorageUnavailable)
+		if lookupEntropy.Calls() != 0 {
+			t.Fatalf("ownership-lookup failure called CSPRNG %d times", lookupEntropy.Calls())
+		}
+		if after := f.tokenCount(); after != before {
+			t.Fatalf("ownership-lookup failure changed token count from %d to %d", before, after)
+		}
+		if got := f.tokenCountForSession(lookupFailure.SessionID); got != 0 {
+			t.Fatalf("ownership-lookup failure inserted %d rows", got)
+		}
+		mustObservationCode(t, lookupObserver, "issue", app.AuthStorageUnavailable)
 	})
 
 	t.Run("issue-binding-before-revocation-and-redaction", func(t *testing.T) {

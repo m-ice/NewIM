@@ -163,7 +163,9 @@ func (s *Service) Authenticate(ctx context.Context, request AuthenticateRequest)
 func (s *Service) RevokeSession(ctx context.Context, binding SessionBinding) (outcome RevocationOutcome, err error) {
 	started := time.Now()
 	observedSessionID := ""
-	defer func() { s.observe("revoke_session", started, err, "", observedSessionID, AuthRevokeOK) }()
+	defer func() {
+		s.observe("revoke_session", started, err, "", observedSessionID, revocationObservationCode(outcome))
+	}()
 	if s == nil || s.store == nil {
 		return "", Fail(AuthStorageUnavailable)
 	}
@@ -192,7 +194,9 @@ func (s *Service) RevokeSession(ctx context.Context, binding SessionBinding) (ou
 func (s *Service) RevokeToken(ctx context.Context, userID, tokenID string) (outcome RevocationOutcome, err error) {
 	started := time.Now()
 	observedTokenID := ""
-	defer func() { s.observe("revoke_token", started, err, observedTokenID, "", AuthRevokeOK) }()
+	defer func() {
+		s.observe("revoke_token", started, err, observedTokenID, "", revocationObservationCode(outcome))
+	}()
 	if s == nil || s.store == nil {
 		return "", Fail(AuthStorageUnavailable)
 	}
@@ -214,6 +218,15 @@ func (s *Service) RevokeToken(ctx context.Context, userID, tokenID string) (outc
 		return "", Fail(AuthStorageUnavailable)
 	}
 	return outcome, nil
+}
+
+// revocationObservationCode keeps the observer aligned with the returned outcome.
+// revocationObservationCode 使观测结果与返回的撤销结果保持一致。
+func revocationObservationCode(outcome RevocationOutcome) Code {
+	if outcome == RevokeNoop {
+		return AuthRevokeNoop
+	}
+	return AuthRevokeOK
 }
 
 // PlanLogin requires an injected policy and returns only validated trusted IDs.
