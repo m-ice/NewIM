@@ -1,12 +1,10 @@
-use newim_sdk_core::message::{
-    ConnectionGeneration, PersistedAck, SendContext, SendFailure, SendIntent,
-};
-use newim_sdk_core::outbox::{
+use crate::message::{ConnectionGeneration, PersistedAck, SendContext, SendFailure, SendIntent};
+use crate::outbox::{
     self, AUTH_RECOVERY_RESUMED, AckResolution, MAX_ENVELOPE_BYTES, MAX_RETRY_AGE_MS, OutboxError,
     OutboxOperation, OutboxRecord, OutboxState, OutboxTransition, RETRY_EXHAUSTED,
     STORE_GENERATION_CHANGED,
 };
-use newim_sdk_core::store::*;
+use crate::store::*;
 use std::collections::BTreeMap;
 
 const SENTINEL_CLIENT: &str = "client-sentinel-9f4c";

@@ -821,6 +821,9 @@ fn identity_matches(existing: &Message, expected: &Message) -> bool {
 }
 
 #[cfg(test)]
+mod conformance;
+
+#[cfg(test)]
 mod tests {
     use super::*;
 

@@ -90,28 +90,28 @@ define require-outbox-test
 endef
 
 sdk-outbox-restart: toolchain
-	$(call require-outbox-test,python3 sdk/storage/sqlite/engine.py run cargo test -p newim-sdk-core --locked --offline --test outbox_conformance -- --list,outbox_conformance::restart_resumes_same_intent)
-	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-sdk-core --locked --offline --test outbox_conformance -- --exact outbox_conformance::restart_resumes_same_intent
+	$(call require-outbox-test,python3 sdk/storage/sqlite/engine.py run cargo test -p newim-sdk-core --locked --offline --lib -- --list,outbox::conformance::restart_resumes_same_intent)
+	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-sdk-core --locked --offline --lib -- --exact outbox::conformance::restart_resumes_same_intent
 	$(call require-outbox-test,python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test outbox_flow -- --list,restart_resumes_same_pending)
 	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test outbox_flow -- --exact restart_resumes_same_pending
 
 sdk-outbox-retry: toolchain
-	$(call require-outbox-test,python3 sdk/storage/sqlite/engine.py run cargo test -p newim-sdk-core --locked --offline --test outbox_conformance -- --list,outbox_conformance::retry_deadline_and_exhaustion)
-	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-sdk-core --locked --offline --test outbox_conformance -- --exact outbox_conformance::retry_deadline_and_exhaustion
+	$(call require-outbox-test,python3 sdk/storage/sqlite/engine.py run cargo test -p newim-sdk-core --locked --offline --lib -- --list,outbox::conformance::retry_deadline_and_exhaustion)
+	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-sdk-core --locked --offline --lib -- --exact outbox::conformance::retry_deadline_and_exhaustion
 	$(call require-outbox-test,python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test outbox_flow -- --list,retry_state_survives_reopen_and_exhausts)
 	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test outbox_flow -- --exact retry_state_survives_reopen_and_exhausts
 
 sdk-outbox-ack: toolchain
-	$(call require-outbox-test,python3 sdk/storage/sqlite/engine.py run cargo test -p newim-sdk-core --locked --offline --test outbox_conformance -- --list,outbox_conformance::ack_batch_is_exact_and_recoverable)
-	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-sdk-core --locked --offline --test outbox_conformance -- --exact outbox_conformance::ack_batch_is_exact_and_recoverable
+	$(call require-outbox-test,python3 sdk/storage/sqlite/engine.py run cargo test -p newim-sdk-core --locked --offline --lib -- --list,outbox::conformance::ack_batch_is_exact_and_recoverable)
+	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-sdk-core --locked --offline --lib -- --exact outbox::conformance::ack_batch_is_exact_and_recoverable
 	$(call require-outbox-test,python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test outbox_flow -- --list,ack_is_atomic_and_existing_is_reconciled)
 	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test outbox_flow -- --exact ack_is_atomic_and_existing_is_reconciled
 	$(call require-outbox-test,python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test outbox_flow -- --list,commit_outcome_unknown_requires_authoritative_reload)
 	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test outbox_flow -- --exact commit_outcome_unknown_requires_authoritative_reload
 
 sdk-outbox-terminal: toolchain
-	$(call require-outbox-test,python3 sdk/storage/sqlite/engine.py run cargo test -p newim-sdk-core --locked --offline --test outbox_conformance -- --list,outbox_conformance::generation_terminal_and_explicit_removal)
-	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-sdk-core --locked --offline --test outbox_conformance -- --exact outbox_conformance::generation_terminal_and_explicit_removal
+	$(call require-outbox-test,python3 sdk/storage/sqlite/engine.py run cargo test -p newim-sdk-core --locked --offline --lib -- --list,outbox::conformance::generation_terminal_and_explicit_removal)
+	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-sdk-core --locked --offline --lib -- --exact outbox::conformance::generation_terminal_and_explicit_removal
 	$(call require-outbox-test,python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test outbox_flow -- --list,rollback_preserves_pending_and_terminal_cas_removes_exactly)
 	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test outbox_flow -- --exact rollback_preserves_pending_and_terminal_cas_removes_exactly
 	$(call require-outbox-test,python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test outbox_flow -- --list,pending_cas_is_exact_and_revision_checked)
@@ -119,7 +119,7 @@ sdk-outbox-terminal: toolchain
 
 sdk-outbox-check: sdk-outbox-restart sdk-outbox-retry sdk-outbox-ack sdk-outbox-terminal toolchain
 	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-sdk-core --locked --offline --test store_conformance
-	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-sdk-core --locked --offline --test outbox_conformance
+	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-sdk-core --locked --offline --lib
 	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test idempotency
 	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --lib
 	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test outbox_flow
