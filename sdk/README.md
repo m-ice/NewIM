@@ -11,7 +11,7 @@ in adapters. Run the root `make build` and `make check` commands.
 
 ## Client send outbox
 
-`sdk/core` now exposes the protocol-neutral outbox/send state machine, bounded version-1 pending
+`sdk/core` now exposes the protocol-neutral outbox/send state machine, bounded version-2 pending
 envelope, retry policy and exact persisted-ACK resolution contract. Platform adapters must
 validate wire frames and map them to `SendIntent`, `PersistedAck`, `SendFailure` and
 `SendContext`; core does not parse JSON, own a socket or import SQLite.

@@ -2,8 +2,9 @@ use newim_sdk_core::message::{
     ConnectionGeneration, PersistedAck, SendContext, SendFailure, SendIntent,
 };
 use newim_sdk_core::outbox::{
-    self, AckResolution, MAX_ENVELOPE_BYTES, OutboxError, OutboxOperation, OutboxRecord,
-    OutboxState, OutboxTransition, RETRY_EXHAUSTED,
+    self, AUTH_RECOVERY_RESUMED, AckResolution, MAX_ENVELOPE_BYTES, MAX_RETRY_AGE_MS, OutboxError,
+    OutboxOperation, OutboxRecord, OutboxState, OutboxTransition, RETRY_EXHAUSTED,
+    STORE_GENERATION_CHANGED,
 };
 use newim_sdk_core::store::*;
 use std::collections::BTreeMap;
@@ -276,6 +277,7 @@ fn envelope_bounds_and_redaction() {
 
     for diagnostic in [
         format!("{context:?}"),
+        format!("{:?}", fence()),
         format!("{:?}", record.intent),
         format!("{record:?}"),
         format!("{:?}", record.observation(OutboxOperation::Load, 2_000)),
@@ -336,7 +338,7 @@ fn envelope_bounds_and_redaction() {
         OutboxError::RecordInvalid
     );
     let mut unknown = encoded.0.clone();
-    unknown[4] = 2;
+    unknown[4] = 3;
     assert_eq!(
         OutboxRecord::decode(&Pending {
             payload: Blob(unknown),
@@ -515,11 +517,13 @@ fn generation_terminal_and_explicit_removal() {
         OutboxTransition::AuthRecovery { .. }
     ));
     let resumed = outbox::resume_auth(&mut store, &auth_pending, 3, &context, 0).unwrap();
-    assert!(matches!(resumed, OutboxTransition::Wait { .. }));
+    let OutboxTransition::Wait { until_ms } = resumed else {
+        panic!("resume should persist a retry wait");
+    };
     assert!(store.pending_item(&identity(&created)).is_some());
     let resumed_pending = store.pending_item(&identity(&created)).unwrap();
     assert!(matches!(
-        outbox::plan_dispatch(&mut store, &resumed_pending, 4, &context, 0).unwrap(),
+        outbox::plan_dispatch(&mut store, &resumed_pending, 4, &context, until_ms).unwrap(),
         OutboxTransition::Send { .. }
     ));
     let resumed_pending = store.pending_item(&identity(&created)).unwrap();
@@ -550,6 +554,165 @@ fn generation_terminal_and_explicit_removal() {
     assert!(store.pending_item(&identity(&created)).is_some());
     outbox::remove_terminal(&mut store, &terminal_pending, 6, &context).unwrap();
     assert!(store.pending_item(&identity(&created)).is_none());
+}
+
+#[test]
+fn store_generation_change_persists_auth_recovery_and_resume_updates_active_fence() {
+    let context = context();
+    let mut store = HarnessStore::new(fence());
+    let created = outbox::enqueue(&mut store, 1, &context, intent(), 1_000).unwrap();
+    let pending = store.pending_item(&identity(&created)).unwrap();
+    let mut changed = context.clone();
+    changed.fence.generation = 2;
+
+    let transition = outbox::plan_dispatch(&mut store, &pending, 1, &changed, 1_000).unwrap();
+    assert!(matches!(
+        transition,
+        OutboxTransition::AuthRecovery { ref code } if code == STORE_GENERATION_CHANGED
+    ));
+    let recovered = store.pending_item(&identity(&created)).unwrap();
+    let recovered = OutboxRecord::decode(&recovered).unwrap();
+    assert_eq!(recovered.state, OutboxState::AuthRecovery);
+    assert_eq!(recovered.fence.generation, 1);
+    assert_eq!(recovered.active_fence.generation, 1);
+
+    let recovered_pending = store.pending_item(&identity(&created)).unwrap();
+    let resumed = outbox::resume_auth(&mut store, &recovered_pending, 2, &changed, 1_000).unwrap();
+    let OutboxTransition::Wait { until_ms } = resumed else {
+        panic!("resume should persist retry wait");
+    };
+    let resumed = store.pending_item(&identity(&created)).unwrap();
+    let resumed = OutboxRecord::decode(&resumed).unwrap();
+    assert_eq!(resumed.state, OutboxState::RetryWait);
+    assert_eq!(resumed.fence.generation, 1);
+    assert_eq!(resumed.active_fence.generation, 2);
+    assert_eq!(resumed.last_code, AUTH_RECOVERY_RESUMED);
+
+    let resumed_pending = store.pending_item(&identity(&created)).unwrap();
+    let sent = outbox::plan_dispatch(&mut store, &resumed_pending, 3, &changed, until_ms).unwrap();
+    assert!(matches!(sent, OutboxTransition::Send { .. }));
+    let in_flight = store.pending_item(&identity(&created)).unwrap();
+    let in_flight = OutboxRecord::decode(&in_flight).unwrap();
+    assert_eq!(in_flight.state, OutboxState::InFlight);
+    assert_eq!(in_flight.fence.generation, 1);
+    assert_eq!(in_flight.active_fence.generation, 2);
+}
+
+#[test]
+fn ack_ignores_connection_generation_but_not_store_identity() {
+    let context = context();
+    let mut store = HarnessStore::new(fence());
+    let created = outbox::enqueue(&mut store, 1, &context, intent(), 0).unwrap();
+    let pending = store.pending_item(&identity(&created)).unwrap();
+    let ack = PersistedAck {
+        sender_id: SENTINEL_ACCOUNT.into(),
+        client_id: SENTINEL_CLIENT.into(),
+        conversation_id: SENTINEL_CONVERSATION.into(),
+        server_id: SENTINEL_SERVER.into(),
+        sequence: 1,
+        server_time: 1,
+        protocol_version: 1,
+        schema_version: 1,
+        message_type: "text".into(),
+        payload: Blob(SENTINEL_PAYLOAD.to_vec()),
+    };
+    let mut changed_connection = context.clone();
+    changed_connection.connection_generation = ConnectionGeneration(99);
+    let result =
+        outbox::resolve_ack(&mut store, 2, &pending, 1, &changed_connection, &ack).unwrap();
+    assert!(matches!(result, AckResolution::Resolved(_)));
+    assert!(store.pending_item(&identity(&created)).is_none());
+    assert_eq!(store.messages.len(), 1);
+
+    let mut wrong_identity = context.clone();
+    wrong_identity.sender_id = "mallory".into();
+    wrong_identity.fence.account = "mallory".into();
+    let mut second_store = HarnessStore::new(context.fence.clone());
+    // Enqueue with the original account, then try to resolve under a different trusted identity.
+    let second = outbox::enqueue(&mut second_store, 1, &context, intent(), 0).unwrap();
+    let second_pending = second_store.pending_item(&identity(&second)).unwrap();
+    assert_eq!(
+        outbox::resolve_ack(
+            &mut second_store,
+            2,
+            &second_pending,
+            1,
+            &wrong_identity,
+            &ack
+        )
+        .unwrap_err(),
+        OutboxError::GenerationMismatch
+    );
+    assert!(second_store.pending_item(&identity(&second)).is_some());
+}
+
+#[test]
+fn retry_deadline_overflow_persists_terminal_failure() {
+    let context = context();
+    let created_at = u64::MAX - MAX_RETRY_AGE_MS;
+    let mut record = OutboxRecord::new(intent(), &context, created_at).unwrap();
+    record.state = OutboxState::InFlight;
+    record.attempts = 1;
+    record.deadline_ms = created_at + 1;
+    record.last_code.clear();
+    let pending = Pending {
+        sender_id: context.sender_id.clone(),
+        client_id: record.intent.client_id.clone(),
+        conversation_id: record.intent.conversation_id.clone(),
+        payload: record.encode().unwrap(),
+    };
+    let mut store = HarnessStore::new(fence());
+    store.pending.insert(
+        (context.sender_id.clone(), record.intent.client_id.clone()),
+        pending.clone(),
+    );
+    store.revision = 1;
+    let failure = SendFailure::from_validated_code(
+        SENTINEL_CLIENT,
+        SENTINEL_CONVERSATION,
+        "SERVER_TEMPORARY_UNAVAILABLE",
+    )
+    .unwrap();
+    let transition =
+        outbox::apply_failure(&mut store, &pending, 1, &context, &failure, u64::MAX - 500).unwrap();
+    assert!(
+        matches!(transition, OutboxTransition::Terminal { ref code } if code == RETRY_EXHAUSTED)
+    );
+    let persisted =
+        OutboxRecord::decode(&store.pending_item(&pending_identity(&pending)).unwrap()).unwrap();
+    assert_eq!(persisted.state, OutboxState::PermanentFailure);
+    assert_eq!(persisted.last_code, RETRY_EXHAUSTED);
+}
+
+fn pending_identity(pending: &Pending) -> PendingIdentity {
+    PendingIdentity {
+        sender_id: pending.sender_id.clone(),
+        client_id: pending.client_id.clone(),
+        conversation_id: pending.conversation_id.clone(),
+    }
+}
+
+#[test]
+fn malformed_retry_wait_is_rejected() {
+    let context = context();
+    let mut malformed = OutboxRecord::new(intent(), &context, 1_000).unwrap();
+    malformed.state = OutboxState::RetryWait;
+    malformed.attempts = 1;
+    malformed.deadline_ms = 0;
+    malformed.last_code = "SERVER_TEMPORARY_UNAVAILABLE".into();
+    assert_eq!(malformed.encode().unwrap_err(), OutboxError::RecordInvalid);
+}
+
+#[test]
+fn sender_must_match_store_account() {
+    let mut mismatch = context();
+    mismatch.sender_id = "mallory".into();
+    let mut store = HarnessStore::new(fence());
+    assert_eq!(
+        outbox::enqueue(&mut store, 1, &mismatch, intent(), 0).unwrap_err(),
+        OutboxError::InvalidInput
+    );
+    assert!(store.pending.is_empty());
 }
 
 #[test]

@@ -247,6 +247,7 @@ impl SendContext {
         if !valid_id(&self.sender_id)
             || !valid_id(&self.fence.account)
             || !valid_id(&self.fence.instance)
+            || self.sender_id != self.fence.account
             || self.fence.generation == 0
             || self.fence.generation > i64::MAX as u64
         {

@@ -38,6 +38,8 @@ The native adapter implements the additive `PendingMutationStore` port in `opera
   inserts, renames or edits message rows.
 - Missing/contradictory identity returns `IdentityConflict`; a stale revision returns
   `StaleRevision`; success increments the store revision atomically.
+- Corrupt or ambiguous commit outcomes set `requires_reopen`; subsequent pending mutations
+  return `RecoveryRequired` until the adapter is reopened and authoritative state is checked.
 
 No schema migration or request-byte change is introduced. The adapter treats pending payload as
 opaque bytes and never guesses or rewrites a legacy envelope. The core outbox owns versioned

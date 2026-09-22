@@ -1,4 +1,4 @@
-# SDK Core outbox and send state v1
+# SDK Core outbox and send state v2
 
 This contract is wire-neutral. The platform adapter decodes and validates protocol frames before
 constructing the domain events below. Core contains no JSON parser, transport, SQLite or
@@ -19,18 +19,24 @@ Core classifies `SERVER_TEMPORARY_UNAVAILABLE` as `RetrySameIntent`, `AUTH_REQUI
 `AUTH_TOKEN_EXPIRED` as `AuthRecovery`, and every other valid code as `PermanentFailure`.
 
 `SendContext` supplies the trusted sender, the current LocalStore `Fence`, and a separate opaque
-connection generation. Store generation and connection generation are never interchangeable.
+connection generation. In the accepted single-account model, the trusted sender must equal the
+fence account. Store generation and connection generation are never interchangeable.
 
 ## Envelope
 
-`pending_outbox.payload` is a bounded version-1 binary envelope. It carries the intent, store
-fence, connection generation, state, attempt count, original enqueue time, persisted deadline
-and last stable code. Fields are length-prefixed within the existing pending byte and identifier
-limits. The envelope never contains a decoded JSON object or arbitrary ingress frame.
+`pending_outbox.payload` is a bounded version-2 binary envelope. It carries the intent, the
+original enqueue fence/connection generation, the active dispatch fence/connection generation,
+state, attempt count, original enqueue time, persisted deadline and last stable code. The
+original fields remain immutable audit data; explicit resume may replace only active fields.
+Fields are length-prefixed within the existing pending byte and identifier limits. The envelope
+never contains a decoded JSON object or arbitrary ingress frame.
 
-Unknown versions, truncation, checksum failure, impossible state/deadline combinations, invalid
-codes and oversized encodings return `OUTBOX_RECORD_INVALID` or `OUTBOX_RECORD_TOO_LARGE`.
-Legacy SDK-001 raw payloads fail closed. The SQLite adapter does not parse or convert them.
+Unknown versions, truncation, checksum failure, impossible state/deadline/attempt/code
+combinations and oversized encodings return `OUTBOX_RECORD_INVALID` or
+`OUTBOX_RECORD_TOO_LARGE`. In particular, `RetryWait` requires a positive deadline in the
+future-relative-to-enqueue range and the correct temporary-retry or explicit-resume code.
+Legacy SDK-001 and version-1 payloads fail closed. The SQLite adapter does not parse or convert
+them.
 
 ## State and retry
 
@@ -40,26 +46,34 @@ Legacy SDK-001 raw payloads fail closed. The SQLite adapter does not parse or co
 - `AuthRecovery`: persisted after auth failure; no automatic retry.
 - `PermanentFailure`: terminal, including `OUTBOX_RETRY_EXHAUSTED`.
 
-Dispatch requires matching sender/fence/connection generation. A stale generation is not sent.
-`InFlight`/`RetryWait` are due only at their persisted deadline. Clock rollback cannot make a
+Dispatch requires the trusted sender/account identity and matching active store/connection
+generations. A store-generation change is persisted as `AuthRecovery`; a stale connection
+generation is not sent and does not apply a failure classification. `InFlight`/`RetryWait` are due
+only at their persisted deadline. Clock rollback cannot make a
 record due early. The constants are eight total attempts, 24 hours from enqueue, 1 second base
 delay, factor 2 and 5 minutes maximum individual delay. Overflow or either cap persists
 `OUTBOX_RETRY_EXHAUSTED`. Terminal/auth states survive restart and never auto-send.
 
-Auth recovery requires an explicit host resume with current generations. A terminal or
+Auth recovery requires an explicit host resume with the current generation. Resume updates the
+active store/connection generation while preserving the original audit fields. A terminal or
 auth-recovery row can be removed only by explicit revision-CAS `remove_pending`; queued work and
-non-terminal records cannot be silently removed.
+non-terminal records cannot be silently removed. Resume and removal require the same trusted
+sender and account/instance identity but do not require the original connection generation.
 
 ## ACK resolution
 
-For an exact validated ACK, Core submits one `store::Batch` containing:
+For an exact validated ACK from the same trusted sender and store account/instance, Core submits
+one `store::Batch` containing:
 
 - `MessageWrite::Insert` with server identity, sequence/time, schema/type and original payload;
 - `PendingResolution` for the same sender/client/server identity;
 - the last observed store revision.
 
-`Committed` is the only success; it removes pending and publishes local message identity
-atomically. Every failure/rollback preserves pending and inserts no message.
+The current connection generation may differ from the generation stored with the pending record;
+ACK reconciliation is keyed by account/store identity, trusted sender, client identity and exact
+intent, not by connection generation. `Committed` is the only success; it removes pending and
+publishes local message identity atomically. Every failure/rollback preserves pending and inserts
+no message.
 
 If storage returns an exact present `Existing` snapshot, Core submits a second
 `PreserveExisting`/`PendingResolution` batch bound to the same snapshot. A trimmed payload
@@ -69,8 +83,9 @@ must not report success or blindly resubmit.
 
 ## Observable errors
 
-Stable codes include `OUTBOX_RECORD_INVALID`, `OUTBOX_RETRY_EXHAUSTED`,
-`OUTBOX_ACK_INTENT_UNVERIFIED`, `OUTBOX_ACK_CORRELATION_MISMATCH`, `OUTBOX_ACK_RESULT_CONFLICT`,
+Stable codes/state markers include `OUTBOX_RECORD_INVALID`, `OUTBOX_RETRY_EXHAUSTED`,
+`STORE_GENERATION_CHANGED`, `AUTH_RECOVERY_RESUMED`, `OUTBOX_ACK_INTENT_UNVERIFIED`,
+`OUTBOX_ACK_CORRELATION_MISMATCH`, `OUTBOX_ACK_RESULT_CONFLICT`,
 `OUTBOX_FAILURE_CORRELATION_MISMATCH`,
 `OUTBOX_GENERATION_MISMATCH`, `OUTBOX_TRANSITION_INVALID` and
 `OUTBOX_UNEXPECTED_RESPONSE`. Store errors retain their existing stable `STORE_*` codes.

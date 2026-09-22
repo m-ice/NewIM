@@ -62,8 +62,10 @@ Each request carries the exact `(sender_id, client_id, conversation_id)` identit
 observed revision. The native adapter updates or removes exactly one matching pending row and
 returns `IdentityConflict` on a missing/contradictory identity or `StaleRevision` when the CAS
 revision does not match. Success increments the store revision and commits the mutation and
-receipt atomically. The adapter does not parse the opaque pending payload, does not insert or
-modify message rows, and does not change `pending_outbox` schema or migrations. `remove_pending`
+receipt atomically. Corrupt or ambiguous commit outcomes set the existing `requires_reopen`
+freeze, so subsequent pending mutations return `RecoveryRequired` until an authoritative reopen.
+The adapter does not parse the opaque pending payload, does not insert or modify message rows,
+and does not change `pending_outbox` schema or migrations. `remove_pending`
 is an explicit terminal/auth-recovery dismissal; ordinary queue cleanup cannot call it. The
 wire-neutral coordinator remains responsible for classifying terminal states before requesting
 removal and for all ACK authority checks.

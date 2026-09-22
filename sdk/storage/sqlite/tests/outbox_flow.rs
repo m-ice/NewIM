@@ -5,7 +5,8 @@ use newim_sdk_core::message::{
     ConnectionGeneration, PersistedAck, SendContext, SendFailure, SendIntent,
 };
 use newim_sdk_core::outbox::{
-    self, AckResolution, OutboxError, OutboxRecord, OutboxState, OutboxTransition, RETRY_EXHAUSTED,
+    self, AUTH_RECOVERY_RESUMED, AckResolution, MAX_RETRY_AGE_MS, OutboxError, OutboxRecord,
+    OutboxState, OutboxTransition, RETRY_EXHAUSTED, STORE_GENERATION_CHANGED,
 };
 use newim_sdk_core::store::*;
 use newim_store_sqlite::{Limits, SqliteStore};
@@ -105,6 +106,168 @@ fn restart_resumes_same_pending() {
     assert_eq!(decoded.state, OutboxState::InFlight);
     assert_eq!(decoded.attempts, 1);
     assert_eq!(pending_count(&directory), 1);
+}
+
+#[test]
+fn ack_after_connection_generation_change_is_reconcilable() {
+    let directory = Directory::new();
+    let mut store = directory.open();
+    let context = send_context(&store);
+    let created = outbox::enqueue(&mut store, 1, &context, intent(), 1_000).unwrap();
+    let row = pending(&mut store, "stable");
+    let rev = revision(&mut store);
+    let ack = PersistedAck {
+        sender_id: "alice".into(),
+        client_id: created.intent.client_id.clone(),
+        conversation_id: created.intent.conversation_id.clone(),
+        server_id: "server-after-reconnect".into(),
+        sequence: 1,
+        server_time: 1,
+        protocol_version: created.intent.protocol_version,
+        schema_version: created.intent.schema_version,
+        message_type: created.intent.message_type.clone(),
+        payload: created.intent.payload.clone(),
+    };
+    let mut changed = context.clone();
+    changed.connection_generation = ConnectionGeneration(99);
+    let result = outbox::resolve_ack(&mut store, 2, &row, rev, &changed, &ack).unwrap();
+    assert!(matches!(result, AckResolution::Resolved(_)));
+    assert_eq!(pending_count(&directory), 0);
+    assert_eq!(message_count(&directory, "server-after-reconnect"), 1);
+    drop(store);
+
+    let mut reopened = directory.open();
+    let found = run(
+        &mut reopened,
+        3,
+        Action::Lookup {
+            server_id: "server-after-reconnect".into(),
+        },
+    )
+    .unwrap();
+    assert!(matches!(found, Response::Found(Some(_))));
+}
+
+#[test]
+fn store_generation_change_persists_auth_recovery_and_resume() {
+    let directory = Directory::new();
+    let mut store = directory.open();
+    let original = send_context(&store);
+    outbox::enqueue(&mut store, 1, &original, intent(), 1_000).unwrap();
+    assert!(matches!(
+        run(&mut store, 2, Action::AdvanceGeneration),
+        Ok(Response::Generation(_))
+    ));
+    let current = send_context(&store);
+    let row = pending(&mut store, "stable");
+    let rev = revision(&mut store);
+    let transition = outbox::plan_dispatch(&mut store, &row, rev, &current, 1_000).unwrap();
+    assert!(matches!(
+        transition,
+        OutboxTransition::AuthRecovery { ref code } if code == STORE_GENERATION_CHANGED
+    ));
+    let recovered = pending(&mut store, "stable");
+    let recovered = OutboxRecord::decode(&recovered).unwrap();
+    assert_eq!(recovered.state, OutboxState::AuthRecovery);
+    assert_eq!(recovered.fence.generation, 1);
+    assert_eq!(recovered.active_fence.generation, 1);
+
+    let recovered_rev = revision(&mut store);
+    let recovered_pending = pending(&mut store, "stable");
+    let resumed = outbox::resume_auth(
+        &mut store,
+        &recovered_pending,
+        recovered_rev,
+        &current,
+        1_000,
+    )
+    .unwrap();
+    let OutboxTransition::Wait { until_ms } = resumed else {
+        panic!("resume wait expected");
+    };
+    let resumed = pending(&mut store, "stable");
+    let resumed = OutboxRecord::decode(&resumed).unwrap();
+    assert_eq!(resumed.fence.generation, 1);
+    assert_eq!(resumed.active_fence.generation, 2);
+    assert_eq!(resumed.last_code, AUTH_RECOVERY_RESUMED);
+
+    let resumed_rev = revision(&mut store);
+    let resumed_pending = pending(&mut store, "stable");
+    assert!(matches!(
+        outbox::plan_dispatch(
+            &mut store,
+            &resumed_pending,
+            resumed_rev,
+            &current,
+            until_ms
+        )
+        .unwrap(),
+        OutboxTransition::Send { .. }
+    ));
+    let in_flight = OutboxRecord::decode(&pending(&mut store, "stable")).unwrap();
+    assert_eq!(in_flight.state, OutboxState::InFlight);
+    assert_eq!(in_flight.fence.generation, 1);
+    assert_eq!(in_flight.active_fence.generation, 2);
+}
+
+#[test]
+fn retry_deadline_overflow_persists_terminal_across_reopen() {
+    let directory = Directory::new();
+    let mut store = directory.open();
+    let context = send_context(&store);
+    outbox::enqueue(&mut store, 1, &context, intent(), 0).unwrap();
+    let row = pending(&mut store, "stable");
+    let rev = revision(&mut store);
+    let created_at = u64::MAX - MAX_RETRY_AGE_MS;
+    let mut overflow = OutboxRecord::decode(&row).unwrap();
+    overflow.created_at_ms = created_at;
+    overflow.deadline_ms = created_at + 1;
+    overflow.state = OutboxState::InFlight;
+    overflow.attempts = 1;
+    overflow.last_code.clear();
+    let payload = overflow.encode().unwrap();
+    let receipt = store
+        .update_pending(PendingMutation {
+            expected_revision: rev,
+            identity: overflow.identity(),
+            payload: payload.clone(),
+        })
+        .unwrap();
+    let overflow_pending = Pending { payload, ..row };
+    let failure =
+        SendFailure::from_validated_code("stable", "room", "SERVER_TEMPORARY_UNAVAILABLE").unwrap();
+    let transition = outbox::apply_failure(
+        &mut store,
+        &overflow_pending,
+        receipt.revision,
+        &context,
+        &failure,
+        u64::MAX - 500,
+    )
+    .unwrap();
+    assert!(
+        matches!(transition, OutboxTransition::Terminal { ref code } if code == RETRY_EXHAUSTED)
+    );
+    assert_eq!(pending_count(&directory), 1);
+    drop(store);
+
+    let mut reopened = directory.open();
+    let persisted = OutboxRecord::decode(&pending(&mut reopened, "stable")).unwrap();
+    assert_eq!(persisted.state, OutboxState::PermanentFailure);
+    assert_eq!(persisted.last_code, RETRY_EXHAUSTED);
+}
+
+#[test]
+fn sender_account_mismatch_is_rejected_before_write() {
+    let directory = Directory::new();
+    let mut store = directory.open();
+    let mut mismatch = send_context(&store);
+    mismatch.sender_id = "mallory".into();
+    assert_eq!(
+        outbox::enqueue(&mut store, 1, &mismatch, intent(), 0).unwrap_err(),
+        OutboxError::InvalidInput
+    );
+    assert_eq!(pending_count(&directory), 0);
 }
 
 #[test]

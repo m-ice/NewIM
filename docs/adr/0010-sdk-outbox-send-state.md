@@ -22,33 +22,44 @@ wire frames and maps them to these domain values:
 - `SendFailure` carries the original identity, a validated stable code and the core-owned
   disposition `RetrySameIntent`, `AuthRecovery` or `PermanentFailure`.
 - `SendContext` carries the trusted sender, a LocalStore `Fence`, and an independent opaque
-  connection generation. Core never creates, refreshes or owns a connection.
+  connection generation. The accepted single-account identity model requires the trusted sender
+  to equal the store fence account; core never creates, refreshes or owns a connection.
 - `OutboxObservation` and all public diagnostics use bounded operation/state/error-class,
   attempt and elapsed buckets. They never contain payloads, account IDs, client IDs, tokens,
   server IDs or server error text.
 
-The pending `payload` column stores a versioned, bounded binary envelope. Version 1 records the
-intent, fence, connection generation, state, attempt count, original enqueue time, persisted
-deadline and last stable code with explicit length prefixes and a checksum. Unknown versions,
-truncation, non-canonical lengths, invalid states and oversized values fail closed as
-`OUTBOX_RECORD_INVALID`; legacy/raw SDK-001 payloads are never guessed, converted or deleted.
+The pending `payload` column stores a versioned, bounded binary envelope. Version 2 records the
+intent, the original enqueue fence and connection generation, the active dispatch fence and
+connection generation, state, attempt count, original enqueue time, persisted deadline and last
+stable code with explicit length prefixes and a checksum. The original fields remain immutable
+for audit; explicit resume may replace only the active fields. Unknown versions, truncation,
+non-canonical lengths, invalid state/deadline/code combinations and oversized values fail closed
+as `OUTBOX_RECORD_INVALID`; legacy/raw SDK-001 or version-1 payloads are never guessed,
+converted or deleted.
 
 States are `Ready`, `InFlight`, `RetryWait`, `AuthRecovery` and `PermanentFailure`. A dispatch
 persists `InFlight` with revision CAS before releasing the intent to the transport adapter.
-After restart, `InFlight` and `RetryWait` are eligible only when the persisted store fence and
-the separate connection generation match and the persisted absolute deadline is due. Retry
+After restart, `InFlight` and `RetryWait` are eligible only when the active store and connection
+generations match and the persisted absolute deadline is due. A record whose original store
+generation differs from the current store generation is persisted as `AuthRecovery`; a stale
+connection generation cannot dispatch or apply a failure classification. Retry
 limits are frozen at eight attempts total, 24 hours from original enqueue, 1 second base delay,
 factor 2, and a 5 minute maximum delay. Deadline arithmetic is checked; clock rollback never
 makes a retry early. Overflow, attempt exhaustion or age exhaustion persists
 `PermanentFailure` with `OUTBOX_RETRY_EXHAUSTED` across restart.
 
-Only `RetrySameIntent` enters `RetryWait`. Auth codes enter `AuthRecovery` and require an
-explicit host resume with the current generations. Every other valid code, including unknown
-codes, enters `PermanentFailure`. Terminal and auth-recovery states never auto-send. Only an
-explicit revision-CAS removal may dismiss a terminal/auth-recovery pending row.
+Only `RetrySameIntent` enters `RetryWait`. Auth codes and store-generation changes enter
+`AuthRecovery` and require an explicit host resume with the current generation. Resume replaces
+the active store/connection generation while retaining the original audit fields. Every other
+valid code, including unknown codes, enters `PermanentFailure`. Terminal and auth-recovery
+states never auto-send. Only an explicit revision-CAS removal may dismiss a terminal/auth-
+recovery pending row; removal checks the same trusted sender and account/instance identity.
 
-For a validated ACK, Core builds one existing `store::Batch` with `MessageWrite::Insert` and
-`PendingResolution`, using the last observed revision. `Committed` is the only success. Any
+For a validated ACK, Core requires the same trusted sender and store account/instance identity,
+but does not require the current connection generation to equal the generation that produced
+the pending record. This keeps an exact persisted ACK reconcilable after reconnect. Core builds
+one existing `store::Batch` with `MessageWrite::Insert` and `PendingResolution`, using the last
+observed revision. `Committed` is the only success. Any
 failure or rollback leaves pending present and the message absent. If storage returns an exact
 present `Existing` message, Core may submit a second `PreserveExisting` batch bound to the same
 snapshot; a trimmed payload returns `OUTBOX_ACK_INTENT_UNVERIFIED` and keeps pending, while a
@@ -56,8 +67,9 @@ different payload/result fails closed. `CommitOutcomeUnknown` never reports succ
 authoritative reload before another decision.
 
 `PendingMutationStore` is additive and leaves `LocalStore` and exhaustive `Action` unchanged.
-It performs exact three-field, revision-CAS updates/removals in the SQLite adapter without a
-schema migration or request-byte change.
+The SQLite adapter performs exact three-field, revision-CAS updates/removals without a schema
+migration or request-byte change. It also observes the existing `requires_reopen` freeze: after
+corruption or an ambiguous commit, pending mutations return `RecoveryRequired` until reopen.
 
 ## Consequences
 

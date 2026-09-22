@@ -121,6 +121,7 @@ sdk-outbox-check: sdk-outbox-restart sdk-outbox-retry sdk-outbox-ack sdk-outbox-
 	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-sdk-core --locked --offline --test store_conformance
 	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-sdk-core --locked --offline --test outbox_conformance
 	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test idempotency
+	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --lib
 	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test outbox_flow
 
 .PHONY: sync-bootstrap sync-delta sync-cursor sync-query-plan sync-recovery sync-migrations sync-check

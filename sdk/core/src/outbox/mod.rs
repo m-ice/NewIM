@@ -23,6 +23,8 @@ pub const IN_FLIGHT_TIMEOUT_MS: u64 = 5 * 60 * 1_000;
 pub const RETRY_EXHAUSTED: &str = "OUTBOX_RETRY_EXHAUSTED";
 pub const RECORD_INVALID: &str = "OUTBOX_RECORD_INVALID";
 pub const ACK_INTENT_UNVERIFIED: &str = "OUTBOX_ACK_INTENT_UNVERIFIED";
+pub const STORE_GENERATION_CHANGED: &str = "STORE_GENERATION_CHANGED";
+pub const AUTH_RECOVERY_RESUMED: &str = "AUTH_RECOVERY_RESUMED";
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum OutboxState {
@@ -122,10 +124,17 @@ impl From<StoreError> for OutboxError {
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct OutboxRecord {
+    /// Trusted sender, always equal to the one-account store fence account.
     pub sender_id: String,
     pub intent: SendIntent,
+    /// Original enqueue fence; retained for audit after explicit recovery.
     pub fence: Fence,
+    /// Original enqueue connection generation; retained for audit.
     pub connection_generation: ConnectionGeneration,
+    /// Fence used for dispatch eligibility after an explicit recovery.
+    pub active_fence: Fence,
+    /// Connection generation used for dispatch eligibility after recovery.
+    pub active_connection_generation: ConnectionGeneration,
     pub state: OutboxState,
     pub attempts: u8,
     pub created_at_ms: u64,
@@ -139,6 +148,8 @@ impl fmt::Debug for OutboxRecord {
             .field("intent", &self.intent)
             .field("fence", &"redacted")
             .field("connection_generation", &"redacted")
+            .field("active_fence", &"redacted")
+            .field("active_connection_generation", &"redacted")
             .field("state", &self.state)
             .field("attempts", &self.attempts)
             .field("created_at_ms", &self.created_at_ms)
@@ -155,11 +166,14 @@ impl OutboxRecord {
     ) -> Result<Self, OutboxError> {
         intent.validate().map_err(|_| OutboxError::InvalidInput)?;
         context.validate().map_err(|_| OutboxError::InvalidInput)?;
+        let fence = context.fence.clone();
         Ok(Self {
             sender_id: context.sender_id.clone(),
             intent,
-            fence: context.fence.clone(),
+            fence: fence.clone(),
             connection_generation: context.connection_generation,
+            active_fence: fence,
+            active_connection_generation: context.connection_generation,
             state: OutboxState::Ready,
             attempts: 0,
             created_at_ms: now_ms,
@@ -172,6 +186,9 @@ impl OutboxRecord {
         let record = decode_envelope(&pending.payload.0)?;
         if record.intent.client_id != pending.client_id
             || record.intent.conversation_id != pending.conversation_id
+            || pending.sender_id != record.fence.account
+            || record.active_fence.account != record.fence.account
+            || record.active_fence.instance != record.fence.instance
         {
             return Err(OutboxError::RecordInvalid);
         }
@@ -225,15 +242,27 @@ impl OutboxRecord {
             .ok_or(OutboxError::RetryExhausted)
     }
 
-    fn ensure_context(&self, context: &SendContext) -> Result<(), OutboxError> {
+    /// ACK/resume/removal authority: same account/instance and trusted sender, no connection gen.
+    fn ensure_identity(&self, context: &SendContext) -> Result<(), OutboxError> {
         context.validate().map_err(|_| OutboxError::InvalidInput)?;
         if self.sender_id != context.sender_id
-            || self.fence != context.fence
-            || self.connection_generation != context.connection_generation
+            || self.sender_id != self.fence.account
+            || self.fence.account != context.fence.account
+            || self.fence.instance != context.fence.instance
+            || self.active_fence.account != self.fence.account
+            || self.active_fence.instance != self.fence.instance
         {
             return Err(OutboxError::GenerationMismatch);
         }
         Ok(())
+    }
+
+    fn store_generation_changed(&self, context: &SendContext) -> bool {
+        self.active_fence.generation != context.fence.generation
+    }
+
+    fn connection_generation_matches(&self, context: &SendContext) -> bool {
+        self.active_connection_generation == context.connection_generation
     }
 
     fn with_terminal(&self, code: impl Into<String>) -> Self {
@@ -260,15 +289,35 @@ impl OutboxRecord {
         next
     }
 
+    fn retry_deadline(&self, now_ms: u64, delay_ms: u64) -> Result<u64, OutboxError> {
+        let age_deadline = self.age_deadline()?;
+        let floor = self
+            .created_at_ms
+            .checked_add(1)
+            .ok_or(OutboxError::RetryExhausted)?;
+        let candidate = now_ms
+            .checked_add(delay_ms)
+            .ok_or(OutboxError::RetryExhausted)?;
+        let deadline = candidate.max(floor);
+        if deadline >= age_deadline {
+            Err(OutboxError::RetryExhausted)
+        } else {
+            Ok(deadline)
+        }
+    }
+
     fn with_in_flight(&self, now_ms: u64) -> Result<Self, OutboxError> {
         let age_deadline = self.age_deadline()?;
-        if now_ms >= age_deadline || self.attempts >= MAX_ATTEMPTS {
+        if now_ms < self.created_at_ms || now_ms >= age_deadline || self.attempts >= MAX_ATTEMPTS {
             return Err(OutboxError::RetryExhausted);
         }
         let deadline = now_ms
             .checked_add(IN_FLIGHT_TIMEOUT_MS)
             .ok_or(OutboxError::RetryExhausted)?
             .min(age_deadline);
+        if deadline <= self.created_at_ms {
+            return Err(OutboxError::RetryExhausted);
+        }
         let mut next = self.clone();
         next.state = OutboxState::InFlight;
         next.attempts = self
@@ -281,18 +330,24 @@ impl OutboxRecord {
     }
 
     fn dispatch_plan(&self, context: &SendContext, now_ms: u64) -> Result<Plan, OutboxError> {
-        self.ensure_context(context)?;
+        self.ensure_identity(context)?;
         if self.state == OutboxState::PermanentFailure {
             return Ok(Plan::Terminal(self.last_code.clone()));
         }
         if self.state == OutboxState::AuthRecovery {
             return Ok(Plan::AuthRecovery(self.last_code.clone()));
         }
+        if self.store_generation_changed(context) {
+            return Ok(Plan::PersistAuthRecovery(
+                self.with_auth_recovery(STORE_GENERATION_CHANGED),
+            ));
+        }
+        if !self.connection_generation_matches(context) {
+            return Err(OutboxError::GenerationMismatch);
+        }
         let age_deadline = match self.age_deadline() {
             Ok(deadline) => deadline,
-            Err(_) => {
-                return Ok(Plan::TerminalRecord(self.with_terminal(RETRY_EXHAUSTED)));
-            }
+            Err(_) => return Ok(Plan::TerminalRecord(self.with_terminal(RETRY_EXHAUSTED))),
         };
         if self.attempts >= MAX_ATTEMPTS || now_ms >= age_deadline {
             return Ok(Plan::TerminalRecord(self.with_terminal(RETRY_EXHAUSTED)));
@@ -320,7 +375,7 @@ impl OutboxRecord {
         failure: &SendFailure,
         now_ms: u64,
     ) -> Result<Plan, OutboxError> {
-        self.ensure_context(context)?;
+        self.ensure_identity(context)?;
         failure.validate().map_err(|_| OutboxError::InvalidInput)?;
         if failure.client_id != self.intent.client_id
             || failure.conversation_id != self.intent.conversation_id
@@ -332,6 +387,14 @@ impl OutboxRecord {
         }
         if self.state == OutboxState::AuthRecovery {
             return Ok(Plan::AuthRecovery(self.last_code.clone()));
+        }
+        if self.store_generation_changed(context) {
+            return Ok(Plan::PersistAuthRecovery(
+                self.with_auth_recovery(STORE_GENERATION_CHANGED),
+            ));
+        }
+        if !self.connection_generation_matches(context) {
+            return Err(OutboxError::GenerationMismatch);
         }
         if self.state != OutboxState::InFlight {
             return Err(OutboxError::TransitionInvalid);
@@ -354,14 +417,12 @@ impl OutboxRecord {
             .checked_shl(u32::from(shift))
             .ok_or(OutboxError::RetryExhausted)?
             .min(MAX_RETRY_DELAY_MS);
-        let candidate = now_ms
-            .checked_add(delay)
-            .ok_or(OutboxError::RetryExhausted)?;
-        if candidate >= age_deadline {
-            return Ok(Plan::Persist(self.with_terminal(RETRY_EXHAUSTED)));
-        }
+        let deadline = match self.retry_deadline(now_ms, delay) {
+            Ok(deadline) => deadline,
+            Err(_) => return Ok(Plan::Persist(self.with_terminal(RETRY_EXHAUSTED))),
+        };
         Ok(Plan::Persist(
-            self.with_retry_wait(candidate, failure.code.clone()),
+            self.with_retry_wait(deadline, failure.code.clone()),
         ))
     }
 }
@@ -370,6 +431,7 @@ impl OutboxRecord {
 enum Plan {
     Send(OutboxRecord),
     Persist(OutboxRecord),
+    PersistAuthRecovery(OutboxRecord),
     Wait(u64),
     AuthRecovery(String),
     Terminal(String),
@@ -380,6 +442,7 @@ impl fmt::Debug for Plan {
         match self {
             Self::Send(_) => f.write_str("Send"),
             Self::Persist(_) => f.write_str("Persist"),
+            Self::PersistAuthRecovery(_) => f.write_str("PersistAuthRecovery"),
             Self::Wait(deadline) => f.debug_tuple("Wait").field(deadline).finish(),
             Self::AuthRecovery(code) => f.debug_tuple("AuthRecovery").field(code).finish(),
             Self::Terminal(code) => f.debug_tuple("Terminal").field(code).finish(),
@@ -466,12 +529,7 @@ pub fn enqueue<S: LocalStore>(
                 return Err(OutboxError::InvalidInput);
             }
             let decoded = OutboxRecord::decode(&existing)?;
-            if decoded.sender_id != context.sender_id
-                || decoded.fence != context.fence
-                || decoded.connection_generation != context.connection_generation
-            {
-                return Err(OutboxError::GenerationMismatch);
-            }
+            decoded.ensure_identity(context)?;
             if decoded.intent == record.intent {
                 Ok(decoded)
             } else {
@@ -497,10 +555,12 @@ pub fn plan_dispatch<S: PendingMutationStore>(
             persist(store, &next, expected_revision)?;
             Ok(OutboxTransition::Send { intent })
         }
-        Plan::Persist(next) => {
+        Plan::PersistAuthRecovery(next) => {
+            let code = next.last_code.clone();
             persist(store, &next, expected_revision)?;
-            Err(OutboxError::UnexpectedResponse)
+            Ok(OutboxTransition::AuthRecovery { code })
         }
+        Plan::Persist(_) => Err(OutboxError::UnexpectedResponse),
         Plan::Wait(until_ms) => Ok(OutboxTransition::Wait { until_ms }),
         Plan::AuthRecovery(code) => Ok(OutboxTransition::AuthRecovery { code }),
         Plan::Terminal(code) => Ok(OutboxTransition::Terminal { code }),
@@ -540,6 +600,11 @@ pub fn apply_failure<S: PendingMutationStore>(
             persist(store, &next, expected_revision)?;
             Ok(transition)
         }
+        Plan::PersistAuthRecovery(next) => {
+            let code = next.last_code.clone();
+            persist(store, &next, expected_revision)?;
+            Ok(OutboxTransition::AuthRecovery { code })
+        }
         Plan::Terminal(code) => Ok(OutboxTransition::Terminal { code }),
         Plan::AuthRecovery(code) => Ok(OutboxTransition::AuthRecovery { code }),
         _ => Err(OutboxError::TransitionInvalid),
@@ -555,7 +620,7 @@ pub fn resume_auth<S: PendingMutationStore>(
     now_ms: u64,
 ) -> Result<OutboxTransition, OutboxError> {
     let record = OutboxRecord::decode(pending)?;
-    record.ensure_context(context)?;
+    record.ensure_identity(context)?;
     if record.state != OutboxState::AuthRecovery {
         return if record.state == OutboxState::PermanentFailure {
             Ok(OutboxTransition::Terminal {
@@ -576,9 +641,24 @@ pub fn resume_auth<S: PendingMutationStore>(
             code: RETRY_EXHAUSTED.into(),
         });
     }
-    let next = record.with_retry_wait(now_ms, record.last_code.clone());
+    let deadline = match record.retry_deadline(now_ms, 0) {
+        Ok(deadline) => deadline,
+        Err(_) => {
+            let next = record.with_terminal(RETRY_EXHAUSTED);
+            persist(store, &next, expected_revision)?;
+            return Ok(OutboxTransition::Terminal {
+                code: RETRY_EXHAUSTED.into(),
+            });
+        }
+    };
+    let mut next = record.clone();
+    next.active_fence = context.fence.clone();
+    next.active_connection_generation = context.connection_generation;
+    next.state = OutboxState::RetryWait;
+    next.deadline_ms = deadline;
+    next.last_code = AUTH_RECOVERY_RESUMED.into();
     persist(store, &next, expected_revision)?;
-    Ok(OutboxTransition::Wait { until_ms: now_ms })
+    Ok(OutboxTransition::Wait { until_ms: deadline })
 }
 
 /// Remove only an explicitly terminal/auth-recovery record; queued work cannot be deleted.
@@ -589,7 +669,7 @@ pub fn remove_terminal<S: PendingMutationStore>(
     context: &SendContext,
 ) -> Result<PendingReceipt, OutboxError> {
     let record = OutboxRecord::decode(pending)?;
-    record.ensure_context(context)?;
+    record.ensure_identity(context)?;
     if !matches!(
         record.state,
         OutboxState::PermanentFailure | OutboxState::AuthRecovery
@@ -614,7 +694,8 @@ pub fn resolve_ack<S: LocalStore>(
     ack: &PersistedAck,
 ) -> Result<AckResolution, OutboxError> {
     let record = OutboxRecord::decode(pending)?;
-    record.ensure_context(context)?;
+    // ACKs are authoritative for the same account/instance even after reconnect.
+    record.ensure_identity(context)?;
     ack.validate().map_err(|_| OutboxError::InvalidInput)?;
     if ack.sender_id != context.sender_id
         || ack.client_id != record.intent.client_id

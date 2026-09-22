@@ -21,11 +21,19 @@ impl fmt::Debug for Blob {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, PartialEq, Eq)]
 pub struct Fence {
     pub account: String,
     pub instance: String,
     pub generation: u64,
+}
+impl fmt::Debug for Fence {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.debug_struct("Fence")
+            .field("identity", &"redacted")
+            .field("generation", &self.generation)
+            .finish()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

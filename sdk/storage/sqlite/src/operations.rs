@@ -429,8 +429,11 @@ impl SqliteStore {
     }
 }
 
-impl PendingMutationStore for SqliteStore {
-    fn update_pending(&mut self, mutation: PendingMutation) -> Result<PendingReceipt, StoreError> {
+impl SqliteStore {
+    fn update_pending_inner(
+        &mut self,
+        mutation: PendingMutation,
+    ) -> Result<PendingReceipt, StoreError> {
         mutation.validate()?;
         let tx = self
             .conn
@@ -481,7 +484,10 @@ impl PendingMutationStore for SqliteStore {
         Ok(PendingReceipt { revision: rev + 1 })
     }
 
-    fn remove_pending(&mut self, removal: PendingRemoval) -> Result<PendingReceipt, StoreError> {
+    fn remove_pending_inner(
+        &mut self,
+        removal: PendingRemoval,
+    ) -> Result<PendingReceipt, StoreError> {
         removal.validate()?;
         let tx = self
             .conn
@@ -518,5 +524,76 @@ impl PendingMutationStore for SqliteStore {
         .map_err(db)?;
         tx.commit().map_err(|_| StoreError::CommitOutcomeUnknown)?;
         Ok(PendingReceipt { revision: rev + 1 })
+    }
+
+    fn note_pending_failure(&mut self, result: &Result<PendingReceipt, StoreError>) {
+        if matches!(
+            result,
+            Err(StoreError::Corrupt | StoreError::CommitOutcomeUnknown)
+        ) {
+            self.requires_reopen = true;
+        }
+    }
+}
+
+impl PendingMutationStore for SqliteStore {
+    fn update_pending(&mut self, mutation: PendingMutation) -> Result<PendingReceipt, StoreError> {
+        if self.requires_reopen {
+            return Err(StoreError::RecoveryRequired);
+        }
+        let result = self.update_pending_inner(mutation);
+        self.note_pending_failure(&result);
+        result
+    }
+
+    fn remove_pending(&mut self, removal: PendingRemoval) -> Result<PendingReceipt, StoreError> {
+        if self.requires_reopen {
+            return Err(StoreError::RecoveryRequired);
+        }
+        let result = self.remove_pending_inner(removal);
+        self.note_pending_failure(&result);
+        result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::Limits;
+
+    #[test]
+    fn pending_mutations_fail_closed_after_requires_reopen() {
+        let base = if cfg!(target_os = "macos") {
+            std::path::PathBuf::from("/private/tmp")
+        } else {
+            std::env::temp_dir()
+        };
+        let root = base.join(format!("newim-pending-freeze-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        let mut store = SqliteStore::open(&root, "alice", Limits::default()).unwrap();
+        store.note_pending_failure(&Err(StoreError::CommitOutcomeUnknown));
+        assert!(store.requires_reopen);
+        let identity = PendingIdentity {
+            sender_id: "alice".into(),
+            client_id: "client".into(),
+            conversation_id: "room".into(),
+        };
+        assert_eq!(
+            store.update_pending(PendingMutation {
+                expected_revision: 0,
+                identity: identity.clone(),
+                payload: Blob(vec![1]),
+            }),
+            Err(StoreError::RecoveryRequired)
+        );
+        assert_eq!(
+            store.remove_pending(PendingRemoval {
+                expected_revision: 0,
+                identity,
+            }),
+            Err(StoreError::RecoveryRequired)
+        );
+        drop(store);
+        let _ = std::fs::remove_dir_all(root);
     }
 }
