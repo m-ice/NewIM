@@ -55,10 +55,13 @@ Host/SNI/TLS 校验，禁止 proxy 环境和重定向。超时、响应体、并
 数量、单 endpoint 队列、速率、重试和 backlog 都有硬上限。生产默认 HTTPS；测试 loopback/HTTP policy 只能由
 测试构造器显式传入。
 
+当前部署契约是每个数据库一个 Webhook worker 进程；上述并发和 token-bucket 是该进程内的硬上限。
+多副本共享限流属于后续 HA 任务，不能把本实现描述为跨进程全局限流。
+
 ## Secrets and observability
 
 AES-GCM 材料绑定 destination ID、revision、URL、key ID；resolver 失败 fail-closed，不能回退
-明文；secret nonce 在同一 key id 下不得复用。日志/错误/指标只包含稳定码和有界 operation；不得包含 secret、signature、
+明文；secret nonce 在进程主密钥下不得复用（数据库全局唯一约束）。日志/错误/指标只包含稳定码和有界 operation；不得包含 secret、signature、
 payload、query、userinfo、完整 URL 或响应体。endpoint 配置表可以保存经过校验的 URL，
 但运维日志和 metrics 使用不可逆短标识。提供 pending/retry/dead-letter、attempt、latency、
 endpoint state 观测。

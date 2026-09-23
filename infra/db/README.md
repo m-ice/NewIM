@@ -73,7 +73,8 @@ columns. It does not implement retention, deletion, moderation, account erasure
 or cleanup. The media suite uses real PostgreSQL plus the local filesystem
 adapter and bounded process-restart replay tests.
 
-Migration 006 adds `webhook_fanout_at` with a dedicated pending index, append-only
+Migration 006 adds `webhook_fanout_at` with a dedicated pending index, a durable
+`webhook_fanout_error` quarantine marker, append-only
 `im_webhook_endpoint_revisions` and `im_webhook_endpoints` active/revoked state,
 plus fenced delivery status, lease, attempt, retry and HTTP-outcome columns. The
 migration preserves `(event_id,destination_id)` uniqueness. It marks every

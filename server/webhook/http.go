@@ -196,6 +196,9 @@ func (c *SecureClient) allowed(ip net.IP) bool {
 	if addr.IsPrivate() {
 		return c.policy.AllowPrivate
 	}
+	if !addr.IsGlobalUnicast() {
+		return false
+	}
 	if addr.IsUnspecified() || addr.IsMulticast() || addr.IsLinkLocalUnicast() || addr.IsLinkLocalMulticast() || addr.IsInterfaceLocalMulticast() {
 		return false
 	}
@@ -220,8 +223,11 @@ var blockedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("2001:2::/48"),
 	netip.MustParsePrefix("2001::/32"),
 	netip.MustParsePrefix("2001:10::/28"),
+	netip.MustParsePrefix("2001:20::/28"),
 	netip.MustParsePrefix("2001:db8::/32"),
 	netip.MustParsePrefix("2002::/16"),
+	netip.MustParsePrefix("100::/64"),
+	netip.MustParsePrefix("5f00::/16"),
 	netip.MustParsePrefix("64:ff9b::/96"),
 	netip.MustParsePrefix("64:ff9b:1::/48"),
 	netip.MustParsePrefix("fec0::/10"),

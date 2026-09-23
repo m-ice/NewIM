@@ -14,6 +14,7 @@ import (
 
 	"github.com/m-ice/NewIM/server/api"
 	"github.com/m-ice/NewIM/server/buildinfo"
+	app "github.com/m-ice/NewIM/server/webhook"
 )
 
 func main() {
@@ -85,6 +86,10 @@ func errorCode(err error) string {
 	var known *api.Error
 	if errors.As(err, &known) && known != nil {
 		return string(known.Code)
+	}
+	var webhookErr *app.Error
+	if errors.As(err, &webhookErr) && webhookErr != nil {
+		return string(webhookErr.Code)
 	}
 	return string(api.CodeRuntimeFailed)
 }

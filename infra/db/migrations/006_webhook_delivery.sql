@@ -1,7 +1,9 @@
 -- Additive webhook fan-out, endpoint revision and fenced delivery state.
 -- 追加 Webhook fan-out、endpoint revision 与租约投递状态；不删除或重写历史投递。
 ALTER TABLE newim.im_outbox_events
-  ADD COLUMN webhook_fanout_at timestamptz;
+  ADD COLUMN webhook_fanout_at timestamptz,
+  ADD COLUMN webhook_fanout_error text COLLATE "C"
+    CHECK (webhook_fanout_error IS NULL OR webhook_fanout_error ~ '^[A-Z][A-Z0-9_]{0,63}$');
 
 -- Pre-006 events are cut over as already fanned out; new events remain pending.
 -- 006 前事件按已完成 fan-out 截断；新事件保持 pending。
@@ -17,7 +19,7 @@ CREATE TABLE newim.im_webhook_endpoints (
   destination_id newim.identifier PRIMARY KEY,
   status text COLLATE "C" NOT NULL
     CHECK (status IN ('active', 'revoked')),
-  active_revision bigint NOT NULL CHECK (active_revision > 0),
+  active_revision bigint CHECK (active_revision IS NULL OR active_revision > 0),
   created_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   updated_at timestamptz NOT NULL DEFAULT clock_timestamp(),
   revoked_at timestamptz,
@@ -47,8 +49,14 @@ CREATE TABLE newim.im_webhook_endpoint_revisions (
   PRIMARY KEY (destination_id, revision)
 );
 
-CREATE UNIQUE INDEX im_webhook_endpoint_revisions_key_nonce_idx
-  ON newim.im_webhook_endpoint_revisions (key_id, secret_nonce);
+CREATE UNIQUE INDEX im_webhook_endpoint_revisions_nonce_idx
+  ON newim.im_webhook_endpoint_revisions (secret_nonce);
+
+ALTER TABLE newim.im_webhook_endpoints
+  ADD CONSTRAINT im_webhook_endpoints_active_revision_fk
+  FOREIGN KEY (destination_id, active_revision)
+  REFERENCES newim.im_webhook_endpoint_revisions (destination_id, revision)
+  DEFERRABLE INITIALLY DEFERRED;
 
 ALTER TABLE newim.im_webhook_deliveries
   ADD COLUMN endpoint_revision bigint,

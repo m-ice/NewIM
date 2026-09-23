@@ -90,6 +90,9 @@ func (w *Worker) cycle(ctx context.Context, sem chan struct{}) error {
 	if err != nil {
 		return err
 	}
+	if counts.Total > 0 {
+		w.observeCounts("queue", CodeDeliveryRetry, counts)
+	}
 	if w.paused {
 		if counts.Total > w.cfg.LowWater || counts.MaxDestination > w.cfg.LowWater {
 			w.observe("fanout", CodeBacklogPaused, 0)
@@ -101,7 +104,7 @@ func (w *Worker) cycle(ctx context.Context, sem chan struct{}) error {
 		w.paused = true
 	}
 	if !w.paused {
-		n, err := w.store.Fanout(ctx, now, w.cfg.BatchSize)
+		n, err := w.store.Fanout(ctx, now, w.cfg.BatchSize, w.cfg.MaxDestinationQueue)
 		if err != nil {
 			w.observe("fanout", ErrorCode(err), 0)
 		} else {
@@ -141,7 +144,7 @@ func (w *Worker) cycle(ctx context.Context, sem chan struct{}) error {
 func (w *Worker) deliver(ctx context.Context, delivery Delivery) {
 	started := time.Now()
 	now := w.cfg.Clock.Now()
-	allowed, err := w.store.BeginAttempt(ctx, delivery.ID, delivery.LeaseToken, now, w.cfg.MaxAttempts)
+	allowed, err := w.store.BeginAttempt(ctx, delivery.ID, delivery.LeaseToken, now, w.cfg.MaxAttempts, w.cfg.RequestTimeout+w.cfg.RequestTimeout/2)
 	if err != nil {
 		w.observe("attempt", ErrorCode(err), time.Since(started))
 		return
@@ -207,8 +210,7 @@ func (w *Worker) finish(ctx context.Context, delivery Delivery, now time.Time, o
 }
 
 func (w *Worker) deferDelivery(ctx context.Context, delivery Delivery, now time.Time) {
-	next := now.Add(w.cfg.BaseBackoff)
-	if err := w.store.Finish(ctx, delivery.ID, delivery.LeaseToken, 0, now, Outcome{Status: "retry", NextAttempt: next, ErrorCode: CodeBacklogPaused}); err != nil {
+	if err := w.store.Finish(ctx, delivery.ID, delivery.LeaseToken, 0, now, Outcome{Status: "retry", RetryDelay: w.cfg.BaseBackoff, ErrorCode: CodeBacklogPaused}); err != nil {
 		w.observe("finish", ErrorCode(err), 0)
 	}
 }
@@ -216,6 +218,12 @@ func (w *Worker) deferDelivery(ctx context.Context, delivery Delivery, now time.
 func (w *Worker) observe(operation string, code Code, elapsed time.Duration) {
 	if w.cfg.Observer != nil {
 		w.cfg.Observer.Observe(Observation{Operation: operation, Code: code, Elapsed: elapsed})
+	}
+}
+
+func (w *Worker) observeCounts(operation string, code Code, counts Counts) {
+	if w.cfg.Observer != nil {
+		w.cfg.Observer.Observe(Observation{Operation: operation, Code: code, Total: counts.Total, MaxDestination: counts.MaxDestination})
 	}
 }
 
@@ -323,7 +331,7 @@ func retryOutcome(code Code, attempts int, cfg Config, deliveryID string, now ti
 			delay = cfg.MaxBackoff
 		}
 	}
-	return Outcome{Status: "retry", ErrorCode: code, NextAttempt: now.Add(delay)}
+	return Outcome{Status: "retry", ErrorCode: code, NextAttempt: now.Add(delay), RetryDelay: delay}
 }
 
 func backoff(cfg Config, deliveryID string, attempts int) time.Duration {

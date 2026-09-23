@@ -26,6 +26,8 @@ state and an append-only `active_revision` pointer; immutable
 and encrypted secret material. `im_webhook_deliveries` extends the original
 event/destination identity with status, attempts, next-attempt time, lease
 owner/token/expiry, last HTTP status/error code and timestamps. Pre-006 outbox
-rows are cut over as already fanned out, and pre-006 delivery rows are preserved as
+rows are cut over as already fanned out, `webhook_fanout_error` can durably quarantine
+an event whose trusted endpoint configuration exceeds a hard fan-out bound, and
+pre-006 delivery rows are preserved as
 non-claimable dead-letter legacy rows. No retention, deletion, public endpoint CRUD,
 Push, Bot or login policy is defined by this revision.

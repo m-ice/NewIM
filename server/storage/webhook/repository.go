@@ -148,8 +148,8 @@ WHERE status IN ('pending','retry','leased') GROUP BY destination_id) s`).Scan(&
 
 // Fanout durably creates delivery rows for one bounded page of unmarked outbox events.
 // Fanout 为一个有界未标记 outbox 事件页持久创建 delivery 行。
-func (r *Repository) Fanout(ctx context.Context, now time.Time, limit int) (int, error) {
-	if r == nil || r.pool == nil || ctx == nil || now.IsZero() || limit < 1 || limit > 1000 {
+func (r *Repository) Fanout(ctx context.Context, now time.Time, limit, maxDestinationQueue int) (int, error) {
+	if r == nil || r.pool == nil || ctx == nil || now.IsZero() || limit < 1 || limit > 1000 || maxDestinationQueue < 1 || maxDestinationQueue > 1_000_000 {
 		return 0, app.Fail(app.CodeInvalidConfig)
 	}
 	tx, err := r.begin(ctx)
@@ -158,7 +158,7 @@ func (r *Repository) Fanout(ctx context.Context, now time.Time, limit int) (int,
 	}
 	defer rollback(tx)
 	rows, err := tx.Query(ctx, `SELECT event_id FROM newim.im_outbox_events
-WHERE webhook_fanout_at IS NULL
+WHERE webhook_fanout_at IS NULL AND webhook_fanout_error IS NULL
 ORDER BY created_at,event_id
 LIMIT $1 FOR UPDATE SKIP LOCKED`, limit)
 	if err != nil {
@@ -183,7 +183,8 @@ FROM newim.im_webhook_endpoints e
 JOIN newim.im_webhook_endpoint_revisions r ON r.destination_id=e.destination_id AND r.revision=e.active_revision
 WHERE e.status='active' AND e.revoked_at IS NULL
 ORDER BY e.destination_id
-LIMIT 65`)
+LIMIT 65
+FOR UPDATE`)
 		if err != nil {
 			return 0, mapStorageError(err)
 		}
@@ -205,10 +206,22 @@ LIMIT 65`)
 			return 0, mapStorageError(err)
 		}
 		endpoints.Close()
+		fanoutError := app.Code("")
 		if len(refs) > app.MaxEndpointsPerEvent {
-			return 0, app.Fail(app.CodeFanoutLimit)
+			fanoutError = app.CodeFanoutLimit
 		}
 		for _, ref := range refs {
+			if fanoutError != "" {
+				continue
+			}
+			var pending int
+			if err = tx.QueryRow(ctx, `SELECT count(*)::int FROM newim.im_webhook_deliveries WHERE destination_id=$1 AND status IN ('pending','retry','leased')`, ref.destination).Scan(&pending); err != nil {
+				return 0, mapStorageError(err)
+			}
+			if pending >= maxDestinationQueue {
+				fanoutError = app.CodeBacklogPaused
+				break
+			}
 			deliveryID, idErr := newID()
 			if idErr != nil {
 				return 0, app.Fail(app.CodeStorageUnavailable)
@@ -220,8 +233,14 @@ ON CONFLICT (event_id,destination_id) DO NOTHING`, deliveryID, eventID, ref.dest
 				return 0, mapStorageError(err)
 			}
 		}
-		if _, err = tx.Exec(ctx, `UPDATE newim.im_outbox_events SET webhook_fanout_at=clock_timestamp() WHERE event_id=$1 AND webhook_fanout_at IS NULL`, eventID); err != nil {
-			return 0, mapStorageError(err)
+		if fanoutError != "" {
+			if _, err = tx.Exec(ctx, `UPDATE newim.im_outbox_events SET webhook_fanout_error=$2 WHERE event_id=$1 AND webhook_fanout_at IS NULL`, eventID, string(fanoutError)); err != nil {
+				return 0, mapStorageError(err)
+			}
+		} else {
+			if _, err = tx.Exec(ctx, `UPDATE newim.im_outbox_events SET webhook_fanout_at=clock_timestamp() WHERE event_id=$1 AND webhook_fanout_at IS NULL`, eventID); err != nil {
+				return 0, mapStorageError(err)
+			}
 		}
 	}
 	if err = tx.Commit(ctx); err != nil {
@@ -309,8 +328,8 @@ WHERE delivery_id=$4`, owner, delivery.LeaseToken, leaseTTL.Seconds(), delivery.
 
 // BeginAttempt increments the HTTP-attempt counter only while the caller still owns a live lease.
 // BeginAttempt 仅在调用方仍持有有效租约时递增 HTTP attempt 计数器。
-func (r *Repository) BeginAttempt(ctx context.Context, deliveryID, leaseToken string, now time.Time, maxAttempts int) (bool, error) {
-	if r == nil || r.pool == nil || ctx == nil || deliveryID == "" || leaseToken == "" || now.IsZero() || maxAttempts < 1 || maxAttempts > 8 {
+func (r *Repository) BeginAttempt(ctx context.Context, deliveryID, leaseToken string, now time.Time, maxAttempts int, required time.Duration) (bool, error) {
+	if r == nil || r.pool == nil || ctx == nil || deliveryID == "" || leaseToken == "" || now.IsZero() || maxAttempts < 1 || maxAttempts > 8 || required <= 0 || required > 2*time.Minute {
 		return false, app.Fail(app.CodeInvalidConfig)
 	}
 	tx, err := r.begin(ctx)
@@ -319,11 +338,11 @@ func (r *Repository) BeginAttempt(ctx context.Context, deliveryID, leaseToken st
 	}
 	defer rollback(tx)
 	tag, err := tx.Exec(ctx, `UPDATE newim.im_webhook_deliveries d
-SET attempts=attempts+1,updated_at=clock_timestamp()
+SET attempts=attempts+1,lease_expires_at=GREATEST(lease_expires_at,clock_timestamp()+make_interval(secs=>$4)),updated_at=clock_timestamp()
 FROM newim.im_webhook_endpoints e
 WHERE d.delivery_id=$1 AND d.lease_token=$2 AND d.status='leased'
-  AND d.lease_expires_at > clock_timestamp() AND d.attempts < $3
-  AND d.destination_id=e.destination_id AND e.status='active' AND e.revoked_at IS NULL`, deliveryID, leaseToken, maxAttempts)
+  AND d.lease_expires_at >= clock_timestamp()+make_interval(secs=>$4) AND d.attempts < $3
+  AND d.destination_id=e.destination_id AND e.status='active' AND e.revoked_at IS NULL`, deliveryID, leaseToken, maxAttempts, required.Seconds())
 	if err != nil {
 		return false, mapStorageError(err)
 	}
@@ -361,8 +380,8 @@ func (r *Repository) Finish(ctx context.Context, deliveryID, leaseToken string, 
 	if r == nil || r.pool == nil || ctx == nil || deliveryID == "" || leaseToken == "" || attempts < 0 || now.IsZero() {
 		return app.Fail(app.CodeInvalidConfig)
 	}
-	if outcome.NextAttempt.IsZero() {
-		outcome.NextAttempt = now
+	if outcome.Status == "retry" && outcome.RetryDelay <= 0 {
+		outcome.RetryDelay = time.Millisecond
 	}
 	if outcome.CompletedAt.IsZero() {
 		outcome.CompletedAt = now
@@ -373,12 +392,13 @@ func (r *Repository) Finish(ctx context.Context, deliveryID, leaseToken string, 
 	}
 	defer rollback(tx)
 	tag, err := tx.Exec(ctx, `UPDATE newim.im_webhook_deliveries
-SET status=$2::text,next_attempt_at=GREATEST($3::timestamptz,clock_timestamp()),
+SET status=$2::text,
+    next_attempt_at=CASE WHEN $2::text='retry' THEN clock_timestamp()+make_interval(secs=>$3) ELSE clock_timestamp() END,
     completed_at=CASE WHEN $2::text IN ('delivered','dead_letter','cancelled') THEN clock_timestamp() ELSE NULL END,
     lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,
     last_http_status=NULLIF($4,0),last_error_code=NULLIF($5::text,''),updated_at=clock_timestamp()
 WHERE delivery_id=$1 AND lease_token=$6 AND status='leased' AND lease_expires_at > clock_timestamp()`,
-		deliveryID, outcome.Status, outcome.NextAttempt, outcome.HTTPStatus, string(outcome.ErrorCode), leaseToken)
+		deliveryID, outcome.Status, outcome.RetryDelay.Seconds(), outcome.HTTPStatus, string(outcome.ErrorCode), leaseToken)
 	if err != nil {
 		return mapStorageError(err)
 	}

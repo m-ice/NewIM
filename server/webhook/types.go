@@ -78,9 +78,11 @@ type JitterFunc func(string, time.Duration) time.Duration
 // Observation contains only bounded operation and code labels.
 // Observation 只包含有界操作和码标签。
 type Observation struct {
-	Operation string
-	Code      Code
-	Elapsed   time.Duration
+	Operation      string
+	Code           Code
+	Elapsed        time.Duration
+	Total          int
+	MaxDestination int
 }
 
 // Observer receives best-effort observations.
@@ -148,6 +150,7 @@ type Counts struct {
 type Outcome struct {
 	Status      string
 	NextAttempt time.Time
+	RetryDelay  time.Duration
 	HTTPStatus  int
 	ErrorCode   Code
 	CompletedAt time.Time
@@ -158,9 +161,9 @@ type Outcome struct {
 type Store interface {
 	CancelRevoked(context.Context, time.Time) (int, error)
 	Counts(context.Context) (Counts, error)
-	Fanout(context.Context, time.Time, int) (int, error)
+	Fanout(context.Context, time.Time, int, int) (int, error)
 	Claim(context.Context, time.Time, string, time.Duration, int) ([]Delivery, error)
-	BeginAttempt(context.Context, string, string, time.Time, int) (bool, error)
+	BeginAttempt(context.Context, string, string, time.Time, int, time.Duration) (bool, error)
 	Finish(context.Context, string, string, int, time.Time, Outcome) error
 }
 
@@ -209,7 +212,7 @@ func (c Config) Validate() error {
 		c.MaxConcurrent < 1 || c.MaxConcurrent > 64 || c.MaxPerDestination < 1 || c.MaxPerDestination > c.MaxConcurrent ||
 		c.MaxAttempts < 1 || c.MaxAttempts > 8 ||
 		c.MaxResponseBytes < 1 || c.MaxResponseBytes > 1<<20 ||
-		c.LeaseTTL <= c.RequestTimeout || c.LeaseTTL > 10*time.Minute ||
+		c.LeaseTTL <= c.RequestTimeout+c.RequestTimeout/2 || c.LeaseTTL > 10*time.Minute ||
 		c.RequestTimeout < time.Millisecond || c.RequestTimeout > time.Minute ||
 		c.BaseBackoff < time.Millisecond || c.BaseBackoff > time.Minute ||
 		c.MaxBackoff < c.BaseBackoff || c.MaxBackoff > time.Hour ||

@@ -98,7 +98,7 @@ func TestWebhookRecovery(t *testing.T) {
 	conversation := f.id("webhook_recovery_room")
 	eventID := f.seedEvent(conversation)
 	oldDestination, _ := f.insertEndpoint(1, "https://example.invalid/hook", []byte("0123456789abcdef0123456789abcdef"))
-	if n, err := f.repo.Fanout(ctx, f.now, 10); err != nil || n != 1 {
+	if n, err := f.repo.Fanout(ctx, f.now, 10, 1000); err != nil || n != 1 {
 		t.Fatalf("fanout = %d, %v", n, err)
 	}
 	if f.scalarString("SELECT webhook_fanout_at::text FROM newim.im_outbox_events WHERE event_id=$1", eventID) == "" {
@@ -112,7 +112,7 @@ func TestWebhookRecovery(t *testing.T) {
 	if len(claimed) != 1 || claimed[0].Attempts != 0 {
 		t.Fatalf("initial claim = %+v", claimed)
 	}
-	ok, err := f.repo.BeginAttempt(ctx, claimed[0].ID, claimed[0].LeaseToken, f.now, 3)
+	ok, err := f.repo.BeginAttempt(ctx, claimed[0].ID, claimed[0].LeaseToken, f.now, 3, time.Second)
 	must(t, err)
 	if !ok {
 		t.Fatal("first attempt was not admitted")
@@ -125,12 +125,12 @@ func TestWebhookRecovery(t *testing.T) {
 	if len(claimed) != 1 || claimed[0].Attempts != 1 {
 		t.Fatalf("claim-after-crash attempts = %+v", claimed)
 	}
-	ok, err = f.repo.BeginAttempt(ctx, claimed[0].ID, "wrong_token", f.now, 3)
+	ok, err = f.repo.BeginAttempt(ctx, claimed[0].ID, "wrong_token", f.now, 3, time.Second)
 	must(t, err)
 	if ok {
 		t.Fatal("stale lease token was admitted")
 	}
-	ok, err = f.repo.BeginAttempt(ctx, claimed[0].ID, claimed[0].LeaseToken, f.now, 3)
+	ok, err = f.repo.BeginAttempt(ctx, claimed[0].ID, claimed[0].LeaseToken, f.now, 3, time.Second)
 	must(t, err)
 	if !ok {
 		t.Fatal("live lease was not admitted")
@@ -148,7 +148,7 @@ func TestWebhookRecovery(t *testing.T) {
 	f.sql("UPDATE newim.im_webhook_endpoints SET status='revoked',revoked_at=clock_timestamp(),updated_at=clock_timestamp() WHERE destination_id=$1", oldDestination)
 	revokedEvent := f.seedEvent(f.id("webhook_revocation_room"))
 	destination, _ := f.insertEndpoint(1, "https://example.invalid/revoked", []byte("0123456789abcdef0123456789abcdef"))
-	if n, err := f.repo.Fanout(ctx, time.Now(), 10); err != nil || n != 1 {
+	if n, err := f.repo.Fanout(ctx, time.Now(), 10, 1000); err != nil || n != 1 {
 		t.Fatalf("revocation fanout = %d, %v", n, err)
 	}
 	claimed, err = f.repo.Claim(ctx, time.Now(), "owner_c", 2*time.Second, 10)
@@ -157,7 +157,7 @@ func TestWebhookRecovery(t *testing.T) {
 		t.Fatalf("revocation claim = %+v", claimed)
 	}
 	f.sql("UPDATE newim.im_webhook_endpoints SET status='revoked',revoked_at=clock_timestamp(),updated_at=clock_timestamp() WHERE destination_id=$1", destination)
-	ok, err = f.repo.BeginAttempt(ctx, claimed[0].ID, claimed[0].LeaseToken, time.Now(), 3)
+	ok, err = f.repo.BeginAttempt(ctx, claimed[0].ID, claimed[0].LeaseToken, time.Now(), 3, time.Second)
 	must(t, err)
 	if ok {
 		t.Fatal("revoked endpoint was admitted at request start")

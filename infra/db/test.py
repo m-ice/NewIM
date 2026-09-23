@@ -102,13 +102,13 @@ def snapshot(db):
 
 
 def ensure_webhook_endpoint(db):
-    # Integration fixtures insert endpoint then revision; the pointer is checked by joins.
+    # Provision a revision and pointer without a circular-FK violation.
     db.sql("INSERT INTO newim.im_webhook_endpoints(destination_id,status,active_revision) "
-           "VALUES ('destination','active',1) ON CONFLICT DO NOTHING; "
-           )
+           "VALUES ('destination','active',NULL) ON CONFLICT DO NOTHING; ")
     db.sql("INSERT INTO newim.im_webhook_endpoint_revisions(destination_id,revision,url,key_id,secret_nonce,secret_ciphertext) "
            "VALUES ('destination',1,'https://webhook.internal.test/hook','webhook-key-1',"
            "decode(repeat('11',12),'hex'),decode(repeat('22',64),'hex')) ON CONFLICT DO NOTHING;")
+    db.sql("UPDATE newim.im_webhook_endpoints SET active_revision=1 WHERE destination_id='destination';")
 
 
 def codec_roundtrips(db, commands):
@@ -438,7 +438,7 @@ def webhook_constraints(db):
     ensure_webhook_endpoint(db)
     scalar(db, "SELECT string_agg(column_name,',' ORDER BY ordinal_position) FROM information_schema.columns "
            "WHERE table_schema='newim' AND table_name='im_outbox_events';",
-           'event_id,server_msg_id,created_at,available_at,completed_at,webhook_fanout_at',
+           'event_id,server_msg_id,created_at,available_at,completed_at,webhook_fanout_at,webhook_fanout_error',
            'exact outbox columns with webhook fan-out marker')
     scalar(db, "SELECT string_agg(column_name,',' ORDER BY ordinal_position) FROM information_schema.columns "
            "WHERE table_schema='newim' AND table_name='im_webhook_endpoints';",

@@ -6,6 +6,7 @@ import (
 	"context"
 	"crypto/aes"
 	"crypto/cipher"
+	"crypto/rand"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -69,7 +70,10 @@ func (f *fixture) insertEndpoint(activeRevision int64, url string, secret []byte
 	f.t.Helper()
 	destination := f.id("webhook_destination")
 	keyID := f.id("webhook_key")
-	nonce := []byte("0123456789ab")
+	nonce := make([]byte, 12)
+	if _, err := rand.Read(nonce); err != nil {
+		f.t.Fatal(err)
+	}
 	master := []byte("0123456789abcdef0123456789abcdef")
 	block, err := aes.NewCipher(master)
 	must(f.t, err)
@@ -78,9 +82,17 @@ func (f *fixture) insertEndpoint(activeRevision int64, url string, secret []byte
 	material := app.SecretMaterial{DestinationID: destination, Revision: activeRevision, URL: url, KeyID: keyID, Nonce: nonce}
 	ciphertext, err := app.SealSecret(aead, material, secret)
 	must(f.t, err)
-	f.sql("INSERT INTO newim.im_webhook_endpoints(destination_id,status,active_revision) VALUES($1,'active',$2)", destination, activeRevision)
-	f.sql(`INSERT INTO newim.im_webhook_endpoint_revisions(destination_id,revision,url,key_id,secret_nonce,secret_ciphertext)
+	tx, err := f.db.Begin(ctx)
+	must(f.t, err)
+	defer tx.Rollback(ctx)
+	_, err = tx.Exec(ctx, "INSERT INTO newim.im_webhook_endpoints(destination_id,status,active_revision) VALUES($1,'active',NULL)", destination)
+	must(f.t, err)
+	_, err = tx.Exec(ctx, `INSERT INTO newim.im_webhook_endpoint_revisions(destination_id,revision,url,key_id,secret_nonce,secret_ciphertext)
 VALUES($1,$2,$3,$4,$5,$6)`, destination, activeRevision, url, keyID, nonce, ciphertext)
+	must(f.t, err)
+	_, err = tx.Exec(ctx, "UPDATE newim.im_webhook_endpoints SET active_revision=$2 WHERE destination_id=$1", destination, activeRevision)
+	must(f.t, err)
+	must(f.t, tx.Commit(ctx))
 	return destination, master
 }
 

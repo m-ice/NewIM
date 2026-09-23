@@ -56,6 +56,10 @@ codes, never URLs, secrets, signatures, payloads or response bodies.
 Global and per-destination pending counts gate new fan-out with high/low-water
 thresholds. Backlog pressure pauses new fan-out without deleting outbox rows or
 delivery history; no transient secret or storage failure is reported as success.
+The current deployment contract is one Webhook worker process per database. Its
+global/per-destination concurrency and token-bucket limits are hard within that
+process; a later HA task must provide a shared limiter before running multiple
+delivery replicas.
 SIGTERM stops new claims, cancels/waits for bounded in-flight work and leaves
 lease-recoverable state. Runtime storage errors use bounded idle retry.
 

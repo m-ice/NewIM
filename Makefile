@@ -63,15 +63,15 @@ webhook-protocol: toolchain
 	python3 -B infra/db/webhook_suite.py protocol
 
 webhook-recovery: toolchain
-	go test -race -shuffle=on -count=1 ./server/webhook -run '^(TestWorkerRunStopsOnCancellation|TestWorkerRetryBackoffBounds|TestWorkerStorageFailureIsReturned)$$'
+	go test -race -shuffle=on -count=1 ./server/webhook -run '^(TestWorkerRunStopsOnCancellation|TestWorkerRetryBackoffBounds|TestWorkerStorageFailureIsReturned|TestWorkerDrainsAboveHighWater|TestRetryOutcomeDeadLettersAtMax)$$'
 	python3 -B infra/db/webhook_suite.py recovery
 
 webhook-security: toolchain
-	go test -race -shuffle=on -count=1 ./server/webhook -run '^(TestSecureClient.*|TestWorkerConfigRejectsLeaseShorterThanRequest)$$'
+	go test -race -shuffle=on -count=1 ./server/webhook -run '^(TestSecureClient.*|TestWorkerConfigRejectsLeaseShorterThanRequest|TestRetryAfterParsing)$$'
 	python3 -B infra/db/webhook_suite.py security
 
 webhook-redaction: toolchain
-	go test -race -shuffle=on -count=1 ./server/webhook -run '^TestWorkerRedactsDoerError$$'
+	go test -race -shuffle=on -count=1 ./server/webhook -run '^(TestWorkerRedactsDoerError|TestLogObserverRedactsSensitiveFields)$$'
 	python3 -B infra/db/webhook_suite.py redaction
 
 .PHONY: send-protocol-golden send-protocol-errors send-protocol-limits

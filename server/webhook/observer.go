@@ -24,5 +24,7 @@ func (o *LogObserver) Observe(observation Observation) {
 		"operation", observation.Operation,
 		"code", string(observation.Code),
 		"elapsed_ms", observation.Elapsed.Milliseconds(),
+		"pending_total", observation.Total,
+		"pending_max_destination", observation.MaxDestination,
 	)
 }

@@ -28,7 +28,7 @@ type testStore struct {
 
 func (s *testStore) CancelRevoked(context.Context, time.Time) (int, error) { return 0, nil }
 func (s *testStore) Counts(context.Context) (Counts, error)                { return s.counts, nil }
-func (s *testStore) Fanout(context.Context, time.Time, int) (int, error) {
+func (s *testStore) Fanout(context.Context, time.Time, int, int) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.fanoutCalls++
@@ -40,7 +40,7 @@ func (s *testStore) Claim(context.Context, time.Time, string, time.Duration, int
 	}
 	return []Delivery{s.delivery}, nil
 }
-func (s *testStore) BeginAttempt(context.Context, string, string, time.Time, int) (bool, error) {
+func (s *testStore) BeginAttempt(context.Context, string, string, time.Time, int, time.Duration) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.attempts++
