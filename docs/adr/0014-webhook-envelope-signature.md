@@ -49,7 +49,9 @@ The outbound contract is `webhook-v1`:
   callers that use multiple key IDs must resolve the secret through an explicit
   `WebhookKeyResolver`. Replay reservation failure is fail-closed; capacity
   exhaustion must not evict an unexpired nonce. A bounded single-process reference
-  guard is provided for tests, not as the production shared cache.
+  guard is provided for tests, not as the production shared cache. The guard treats
+  `expiresAt` itself as still reserved and reclaims only after `now > expiresAt`;
+  a short resolver key is a signature/configuration failure, not replay unavailability.
 - Stable webhook errors are separate from persisted-message errors:
   `WEBHOOK_INVALID_JSON`, `WEBHOOK_INVALID_ENVELOPE`, `WEBHOOK_ENVELOPE_TOO_LARGE`,
   `WEBHOOK_ENVELOPE_TOO_DEEP`, `WEBHOOK_UNSUPPORTED_SCHEMA`,

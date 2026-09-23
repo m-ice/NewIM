@@ -323,8 +323,11 @@ func SignWebhook(secret []byte, headers WebhookHeaders, body []byte) (string, er
 // VerifyWebhookSignature validates the signature, timestamp window and atomic nonce reservation.
 // VerifyWebhookSignature 校验签名、时间窗与原子 nonce reservation。
 func VerifyWebhookSignature(ctx context.Context, secret []byte, headers WebhookHeaders, body []byte, now time.Time, replay WebhookReplayGuard) error {
-	if ctx == nil || now.IsZero() || replay == nil || len(secret) < WebhookMinSecretBytes {
+	if ctx == nil || now.IsZero() || replay == nil {
 		return webhookFail(WebhookReplayUnavailable)
+	}
+	if len(secret) < WebhookMinSecretBytes {
+		return webhookFail(WebhookInvalidSignature)
 	}
 	if err := validateWebhookHeaders(headers); err != nil {
 		return err
@@ -454,15 +457,15 @@ func (g *MemoryWebhookReplayGuard) ReserveWebhookNonce(ctx context.Context, keyI
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	for key, expiry := range g.entries {
-		if !expiry.After(now) {
+		if now.After(expiry) {
 			delete(g.entries, key)
 		}
 	}
 	key := keyID + "\n" + nonce
-	if expiry, ok := g.entries[key]; ok && expiry.After(now) {
+	if expiry, ok := g.entries[key]; ok && !now.After(expiry) {
 		return false, nil
 	}
-	if !expiresAt.After(now) {
+	if expiresAt.Before(now) {
 		return false, webhookFail(WebhookReplayUnavailable)
 	}
 	if len(g.entries) >= g.limit {

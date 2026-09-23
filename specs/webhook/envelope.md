@@ -71,7 +71,8 @@ reservation；失败不得回显 secret、body、signature 或完整 URL。
 
 - 可信时钟的默认允许窗口为 5 分钟，包含边界。
 - 最老边界的 nonce 有效期必须至少覆盖到 `timestamp + window + 1ms`，避免刚好落在
-  inclusive 边界时被 guard 当作已过期。
+  inclusive 边界时被 guard 当作已过期；guard 对 `expiresAt` 本身必须仍视为未过期，
+  只在 `now > expiresAt` 时回收。
 - 只有签名正确且时间戳在窗口内的请求才能调用 replay guard。
 - replay guard 必须原子返回“首次预留/已重放/容量失败”；不得 check-then-insert，
   不得因容量压力淘汰仍在有效期内的 nonce。容量失败返回
@@ -79,6 +80,7 @@ reservation；失败不得回显 secret、body、signature 或完整 URL。
 - 业务幂等以 `deliveryId`（或稳定的 `eventId`）为准；nonce 只用于网络重放拒绝。
 - `keyId` 必须由显式 `WebhookKeyResolver` 解析；未知或退役 key 返回
   `WEBHOOK_UNKNOWN_KEY`，临时 secret-store 故障返回 `WEBHOOK_KEY_UNAVAILABLE`。
+  resolver 返回短于 32 bytes 的 key 是配置/签名错误，返回 `WEBHOOK_INVALID_SIGNATURE`。
   resolver 必须在 header/envelope/签名格式校验通过后才调用。header 与 body 的
   event ID 不一致返回 `WEBHOOK_IDENTITY_MISMATCH`，不得只验证其中一处。
 

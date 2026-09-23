@@ -313,6 +313,33 @@ func TestWebhookSecurity(t *testing.T) {
 		err := protocol.VerifyWebhookRequest(context.Background(), headers(c), []byte(c.Wire), time.UnixMilli(c.Now), guard, r)
 		assertCode(t, err, protocol.WebhookKeyUnavailable)
 	})
+	t.Run("short_resolver_secret", func(t *testing.T) {
+		c := fixtures.Positive[0]
+		guard, _ := protocol.NewMemoryWebhookReplayGuard(4)
+		r := resolverFunc(func(context.Context, string) ([]byte, error) {
+			return []byte("short"), nil
+		})
+		err := protocol.VerifyWebhookRequest(context.Background(), headers(c), []byte(c.Wire), time.UnixMilli(c.Now), guard, r)
+		assertCode(t, err, protocol.WebhookInvalidSignature)
+	})
+	t.Run("inclusive_replay_expiry", func(t *testing.T) {
+		guard, _ := protocol.NewMemoryWebhookReplayGuard(4)
+		now := time.UnixMilli(1790189001000)
+		expires := now.Add(time.Millisecond)
+		accepted, err := guard.ReserveWebhookNonce(context.Background(), "key", "AAECAwQFBgcICQoLDA0ODw", now, expires)
+		if err != nil || !accepted {
+			t.Fatalf("initial reservation = %v, %v", accepted, err)
+		}
+		accepted, err = guard.ReserveWebhookNonce(context.Background(), "key", "AAECAwQFBgcICQoLDA0ODw", expires, expires)
+		if err != nil || accepted {
+			t.Fatalf("exact expiry reservation = %v, %v", accepted, err)
+		}
+		postExpiry := expires.Add(time.Millisecond)
+		accepted, err = guard.ReserveWebhookNonce(context.Background(), "key", "AAECAwQFBgcICQoLDA0ODw", postExpiry, postExpiry.Add(time.Millisecond))
+		if err != nil || !accepted {
+			t.Fatalf("post-expiry reclamation = %v, %v", accepted, err)
+		}
+	})
 	t.Run("error_code_preservation", func(t *testing.T) {
 		if got := protocol.WebhookErrorCode(protocol.WebhookCapacityExceeded); got != protocol.WebhookCapacityExceeded {
 			t.Fatalf("direct code got %q", got)
