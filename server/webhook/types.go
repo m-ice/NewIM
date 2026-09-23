@@ -161,7 +161,7 @@ type Outcome struct {
 type Store interface {
 	CancelRevoked(context.Context, time.Time) (int, error)
 	Counts(context.Context) (Counts, error)
-	Fanout(context.Context, time.Time, int, int) (int, error)
+	Fanout(context.Context, time.Time, int, int, int) (int, error)
 	Claim(context.Context, time.Time, string, time.Duration, int) ([]Delivery, error)
 	BeginAttempt(context.Context, string, string, time.Time, int, time.Duration) (bool, error)
 	Finish(context.Context, string, string, int, time.Time, Outcome) error

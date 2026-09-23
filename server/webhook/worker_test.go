@@ -28,7 +28,7 @@ type testStore struct {
 
 func (s *testStore) CancelRevoked(context.Context, time.Time) (int, error) { return 0, nil }
 func (s *testStore) Counts(context.Context) (Counts, error)                { return s.counts, nil }
-func (s *testStore) Fanout(context.Context, time.Time, int, int) (int, error) {
+func (s *testStore) Fanout(context.Context, time.Time, int, int, int) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.fanoutCalls++
@@ -380,5 +380,27 @@ func TestBuildEnvelopePayloadContract(t *testing.T) {
 	var version int
 	if err = json.Unmarshal(payload["version"], &version); err != nil || version != delivery.Event.SchemaVersion {
 		t.Fatalf("payload version = %d, %v", version, err)
+	}
+
+	delivery.Event.Payload = json.RawMessage(`{"data":"` + strings.Repeat("a", 70000) + `"}`)
+	body, err = buildEnvelope(delivery.Event)
+	if err != nil {
+		t.Fatalf("fallback envelope rejected: %v", err)
+	}
+	envelope, err = protocol.DecodeWebhookEnvelope(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	payload = nil
+	if err = json.Unmarshal(envelope.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	var omitted bool
+	var digest string
+	if err = json.Unmarshal(payload["payloadOmitted"], &omitted); err != nil || !omitted {
+		t.Fatalf("payloadOmitted = %v, %v", omitted, err)
+	}
+	if err = json.Unmarshal(payload["payloadSha256"], &digest); err != nil || len(digest) != 64 {
+		t.Fatalf("payloadSha256 = %q, %v", digest, err)
 	}
 }

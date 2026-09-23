@@ -33,7 +33,12 @@ type Repository struct{ pool *pgxpool.Pool }
 
 // AcquireWorkerLock enforces one webhook worker process per database.
 // AcquireWorkerLock 强制每个数据库只有一个 Webhook worker 进程。
-func (r *Repository) AcquireWorkerLock(ctx context.Context) (func(), error) {
+type WorkerLock struct {
+	conn     *pgxpool.Conn
+	released bool
+}
+
+func (r *Repository) AcquireWorkerLock(ctx context.Context) (*WorkerLock, error) {
 	if r == nil || r.pool == nil || ctx == nil {
 		return nil, app.Fail(app.CodeStorageUnavailable)
 	}
@@ -49,10 +54,31 @@ func (r *Repository) AcquireWorkerLock(ctx context.Context) (func(), error) {
 		}
 		return nil, app.Fail(app.CodeBacklogPaused)
 	}
-	return func() {
-		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock(hashtext('newim.webhook.worker'))`)
-		conn.Release()
-	}, nil
+	return &WorkerLock{conn: conn}, nil
+}
+
+// Check verifies the lock is still held by the same live backend connection.
+// Check 校验同一存活 backend 连接仍持有锁；连接丢失或锁消失返回错误。
+func (l *WorkerLock) Check(ctx context.Context) error {
+	if l == nil || l.conn == nil || l.released || ctx == nil {
+		return app.Fail(app.CodeBacklogPaused)
+	}
+	var held bool
+	if err := l.conn.QueryRow(ctx, `SELECT EXISTS (SELECT 1 FROM pg_locks WHERE locktype='advisory' AND pid=pg_backend_pid() AND granted)`).Scan(&held); err != nil || !held {
+		return app.Fail(app.CodeBacklogPaused)
+	}
+	return nil
+}
+
+// Release unlocks the advisory lock and returns its dedicated connection.
+// Release 释放 advisory lock 并归还其专用连接。
+func (l *WorkerLock) Release() {
+	if l == nil || l.conn == nil || l.released {
+		return
+	}
+	l.released = true
+	_, _ = l.conn.Exec(context.Background(), `SELECT pg_advisory_unlock(hashtext('newim.webhook.worker'))`)
+	l.conn.Release()
 }
 
 // Open requires verified TLS for TCP or explicitly enabled local sockets.
@@ -172,8 +198,8 @@ WHERE status IN ('pending','retry','leased') GROUP BY destination_id) s`).Scan(&
 
 // Fanout durably creates delivery rows for one bounded page of unmarked outbox events.
 // Fanout 为一个有界未标记 outbox 事件页持久创建 delivery 行。
-func (r *Repository) Fanout(ctx context.Context, now time.Time, limit, maxDestinationQueue int) (int, error) {
-	if r == nil || r.pool == nil || ctx == nil || now.IsZero() || limit < 1 || limit > 1000 || maxDestinationQueue < 1 || maxDestinationQueue > 1_000_000 {
+func (r *Repository) Fanout(ctx context.Context, now time.Time, limit, maxDestinationQueue, maxGlobalQueue int) (int, error) {
+	if r == nil || r.pool == nil || ctx == nil || now.IsZero() || limit < 1 || limit > 1000 || maxDestinationQueue < 1 || maxDestinationQueue > 1_000_000 || maxGlobalQueue < 1 || maxGlobalQueue > 1_000_000 {
 		return 0, app.Fail(app.CodeInvalidConfig)
 	}
 	tx, err := r.begin(ctx)
@@ -181,6 +207,13 @@ func (r *Repository) Fanout(ctx context.Context, now time.Time, limit, maxDestin
 		return 0, err
 	}
 	defer rollback(tx)
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('newim.webhook.fanout'))`); err != nil {
+		return 0, mapStorageError(err)
+	}
+	var globalPending int
+	if err = tx.QueryRow(ctx, `SELECT count(*)::int FROM newim.im_webhook_deliveries WHERE status IN ('pending','retry','leased')`).Scan(&globalPending); err != nil {
+		return 0, mapStorageError(err)
+	}
 	rows, err := tx.Query(ctx, `SELECT event_id FROM newim.im_outbox_events
 WHERE webhook_fanout_at IS NULL AND webhook_fanout_error IS NULL
 ORDER BY created_at,event_id
@@ -264,6 +297,9 @@ FOR UPDATE`)
 		if queueFull {
 			continue
 		}
+		if globalPending+len(refs) > maxGlobalQueue {
+			continue
+		}
 		for _, ref := range refs {
 			deliveryID, idErr := newID()
 			if idErr != nil {
@@ -276,6 +312,7 @@ ON CONFLICT (event_id,destination_id) DO NOTHING`, deliveryID, eventID, ref.dest
 				return 0, mapStorageError(err)
 			}
 		}
+		globalPending += len(refs)
 		if _, err = tx.Exec(ctx, `UPDATE newim.im_outbox_events SET webhook_fanout_at=clock_timestamp() WHERE event_id=$1 AND webhook_fanout_at IS NULL`, eventID); err != nil {
 			return 0, mapStorageError(err)
 		}

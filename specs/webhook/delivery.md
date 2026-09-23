@@ -20,6 +20,11 @@ schema version（与持久消息的 `version` 一致），`protocolVersion` 是�
 消费者必须忽略未来新增字段。该映射由 `make webhook-protocol` 的真实 HTTP receiver
 测试验证，不允许实现端另建未登记的私有事件格式。
 
+若完整消息 payload 加上信封元数据会超过 Webhook v1 的 65,536-byte 或 depth-32 上限，
+worker 使用同一 schema 的 bounded fallback：内层 `payload` 置为 `{}`，并新增
+`payloadOmitted=true`、`payloadSha256` 和 `payloadSize`（十进制字符串）。事件身份、
+签名、尝试语义不变；消费者必须显式处理 omitted payload，不得把它当作完整正文。
+
 ## Fan-out
 
 worker 在一个 PostgreSQL 事务内领取未标记 outbox 事件，为 active endpoint 的

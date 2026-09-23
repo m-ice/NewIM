@@ -4,7 +4,9 @@ import (
 	"bytes"
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"hash/fnv"
 	"strconv"
@@ -104,7 +106,7 @@ func (w *Worker) cycle(ctx context.Context, sem chan struct{}) error {
 		w.paused = true
 	}
 	if !w.paused {
-		n, err := w.store.Fanout(ctx, now, w.cfg.BatchSize, w.cfg.MaxDestinationQueue)
+		n, err := w.store.Fanout(ctx, now, w.cfg.BatchSize, w.cfg.MaxDestinationQueue, w.cfg.HighWater)
 		if err != nil {
 			w.observe("fanout", ErrorCode(err), 0)
 		} else {
@@ -231,7 +233,49 @@ func buildEnvelope(event Event) ([]byte, error) {
 	if event.ID == "" || event.ServerMsgID == "" || event.ClientMsgID == "" || event.SenderID == "" || event.ConversationID == "" || event.MessageType == "" || len(event.Payload) == 0 {
 		return nil, Fail(CodeProtocolInvalid)
 	}
-	payload, err := marshalWebhookPayload(struct {
+	payload, err := marshalWebhookPayload(messagePayload(event, false))
+	if err != nil {
+		return nil, Fail(CodeProtocolInvalid)
+	}
+	envelope := protocol.WebhookEnvelope{
+		EventID:       event.ID,
+		EventType:     "message.persisted",
+		OccurredAt:    strconv.FormatInt(event.ServerTime, 10),
+		SchemaVersion: protocol.WebhookSchemaVersion,
+		Payload:       payload,
+	}
+	body, err := protocol.EncodeWebhookEnvelope(envelope)
+	if err == nil {
+		return body, nil
+	}
+	if code := protocol.WebhookErrorCode(err); code != protocol.WebhookEnvelopeTooLarge && code != protocol.WebhookEnvelopeTooDeep {
+		return nil, err
+	}
+	compact, compactErr := marshalWebhookPayload(messagePayload(event, true))
+	if compactErr != nil {
+		return nil, Fail(CodeProtocolInvalid)
+	}
+	return protocol.EncodeWebhookEnvelope(protocol.WebhookEnvelope{
+		EventID:       event.ID,
+		EventType:     "message.persisted",
+		OccurredAt:    strconv.FormatInt(event.ServerTime, 10),
+		SchemaVersion: protocol.WebhookSchemaVersion,
+		Payload:       compact,
+	})
+}
+
+func messagePayload(event Event, omitBody bool) any {
+	payload := json.RawMessage(`{}`)
+	digest := ""
+	size := 0
+	if omitBody {
+		sum := sha256.Sum256(event.Payload)
+		digest = hex.EncodeToString(sum[:])
+		size = len(event.Payload)
+	} else {
+		payload = event.Payload
+	}
+	return struct {
 		ClientMsgID     string          `json:"clientMsgId"`
 		ServerMsgID     string          `json:"serverMsgId"`
 		ConversationID  string          `json:"conversationId"`
@@ -242,6 +286,9 @@ func buildEnvelope(event Event) ([]byte, error) {
 		Type            string          `json:"type"`
 		ServerTime      string          `json:"serverTime"`
 		Payload         json.RawMessage `json:"payload"`
+		PayloadOmitted  bool            `json:"payloadOmitted,omitempty"`
+		PayloadSHA256   string          `json:"payloadSha256,omitempty"`
+		PayloadSize     int             `json:"payloadSize,omitempty"`
 	}{
 		ClientMsgID:     event.ClientMsgID,
 		ServerMsgID:     event.ServerMsgID,
@@ -252,18 +299,11 @@ func buildEnvelope(event Event) ([]byte, error) {
 		SchemaVersion:   event.SchemaVersion,
 		Type:            event.MessageType,
 		ServerTime:      strconv.FormatInt(event.ServerTime, 10),
-		Payload:         event.Payload,
-	})
-	if err != nil {
-		return nil, Fail(CodeProtocolInvalid)
+		Payload:         payload,
+		PayloadOmitted:  omitBody,
+		PayloadSHA256:   digest,
+		PayloadSize:     size,
 	}
-	return protocol.EncodeWebhookEnvelope(protocol.WebhookEnvelope{
-		EventID:       event.ID,
-		EventType:     "message.persisted",
-		OccurredAt:    strconv.FormatInt(event.ServerTime, 10),
-		SchemaVersion: protocol.WebhookSchemaVersion,
-		Payload:       payload,
-	})
 }
 
 func marshalWebhookPayload(value any) ([]byte, error) {

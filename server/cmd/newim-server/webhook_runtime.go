@@ -15,9 +15,9 @@ import (
 // webhookRuntime owns the optional in-process webhook worker and its database pool.
 // webhookRuntime 持有可选的进程内 Webhook worker 及其数据库池。
 type webhookRuntime struct {
-	repo        *store.Repository
-	releaseLock func()
-	worker      *app.Worker
+	repo   *store.Repository
+	lock   *store.WorkerLock
+	worker *app.Worker
 }
 
 // newWebhookRuntimeFromEnv creates no runtime when the DSN is absent.
@@ -40,20 +40,20 @@ func newWebhookRuntimeFromEnv(ctx context.Context, logger *slog.Logger) (*webhoo
 	if err != nil {
 		return nil, err
 	}
-	releaseLock, err := repo.AcquireWorkerLock(ctx)
+	lock, err := repo.AcquireWorkerLock(ctx)
 	if err != nil {
 		repo.Close()
 		return nil, err
 	}
 	resolver, err := app.NewLocalSecretResolver(masterKey)
 	if err != nil {
-		releaseLock()
+		lock.Release()
 		repo.Close()
 		return nil, err
 	}
 	client, err := app.NewSecureClient(nil, app.Policy{}, 10*time.Second, 64*1024)
 	if err != nil {
-		releaseLock()
+		lock.Release()
 		repo.Close()
 		return nil, err
 	}
@@ -77,12 +77,12 @@ func newWebhookRuntimeFromEnv(ctx context.Context, logger *slog.Logger) (*webhoo
 		Observer:            app.NewLogObserver(logger),
 	}, repo, client, resolver)
 	if err != nil {
-		releaseLock()
+		lock.Release()
 		repo.Close()
 		return nil, err
 	}
 	clear(masterKey)
-	return &webhookRuntime{repo: repo, releaseLock: releaseLock, worker: worker}, nil
+	return &webhookRuntime{repo: repo, lock: lock, worker: worker}, nil
 }
 
 // Run runs the worker until the process context is cancelled.
@@ -91,15 +91,35 @@ func (r *webhookRuntime) Run(ctx context.Context) error {
 	if r == nil || r.worker == nil {
 		return nil
 	}
-	return r.worker.Run(ctx)
+	workerCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan error, 1)
+	go func() { done <- r.worker.Run(workerCtx) }()
+	ticker := time.NewTicker(time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case err := <-done:
+			return err
+		case <-ctx.Done():
+			cancel()
+			return <-done
+		case <-ticker.C:
+			if err := r.lock.Check(ctx); err != nil {
+				cancel()
+				<-done
+				return err
+			}
+		}
+	}
 }
 
 // Close releases the webhook database pool.
 // Close 释放 Webhook 数据库池。
 func (r *webhookRuntime) Close() {
 	if r != nil && r.repo != nil {
-		if r.releaseLock != nil {
-			r.releaseLock()
+		if r.lock != nil {
+			r.lock.Release()
 		}
 		r.repo.Close()
 	}
