@@ -73,6 +73,7 @@ func run(args []string, stdout, stderr io.Writer, read func() (buildinfo.Info, e
 		select {
 		case serverErr = <-serverDone:
 			serverFinished = true
+			cancelWorker()
 		case workerErr = <-runtimeDone:
 			workerFinished = true
 			if serverErr == nil && workerErr != nil {
@@ -80,6 +81,8 @@ func run(args []string, stdout, stderr io.Writer, read func() (buildinfo.Info, e
 			}
 			cancelServer()
 		case <-deadline.C:
+			cancelServer()
+			cancelWorker()
 			fmt.Fprintln(stderr, api.CodeShutdownFailed)
 			return 1
 		}
