@@ -1,9 +1,12 @@
-.PHONY: build check toolchain protocol-golden protocol-unknown-fields protocol-unknown-type protocol-limits media-protocol media-db media-security media-authz media-check
+.PHONY: build check docs-check toolchain protocol-golden protocol-unknown-fields protocol-unknown-type protocol-limits media-protocol media-db media-security media-authz media-check
 
 export GOTOOLCHAIN := local
 
 toolchain:
 	@sh infra/build/verify-toolchain.sh
+
+docs-check:
+	python3 -B tests/docs/check_current_docs.py
 
 build: toolchain
 	mkdir -p build
@@ -11,7 +14,7 @@ build: toolchain
 	python3 sdk/storage/sqlite/engine.py run cargo build --workspace --locked --offline
 	cargo build -p newim-sdk-core -p newim-protocol --locked --offline --target wasm32-unknown-unknown
 
-check: toolchain
+check: toolchain docs-check
 	@set -eu; unformatted=$$(gofmt -l core server tests); if [ -n "$$unformatted" ]; then printf '%s\n' "$$unformatted"; exit 1; fi
 	go vet ./...
 	go test -race -shuffle=on -count=1 ./...
