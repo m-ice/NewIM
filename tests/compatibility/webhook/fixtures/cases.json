@@ -1,14 +1,178 @@
-[
-  {
-    "name": "message_persisted",
+{
+  "positive": [
+    {
+      "name": "message_persisted",
+      "wire": "{\"eventId\":\"evt_01JABCDEF0123456789\",\"eventType\":\"message.persisted\",\"occurredAt\":\"1790189000000\",\"schemaVersion\":1,\"payload\":{\"conversationId\":\"conv_alpha\",\"conversationSeq\":\"42\",\"serverMsgId\":\"msg_alpha\",\"serverTime\":\"1790189000000\",\"senderId\":\"alice\",\"type\":\"text\",\"version\":1}}",
+      "secret": "0123456789abcdef0123456789abcdef",
+      "now": 1790189001000,
+      "eventId": "evt_01JABCDEF0123456789",
+      "deliveryId": "dlv_01JABCDEF0123456789",
+      "timestamp": "1790189001000",
+      "nonce": "AAECAwQFBgcICQoLDA0ODw",
+      "keyId": "key_current",
+      "signature": "v1=9aDOTjbNZeXLPlPzU2TXFgN34XQ6itdQGBH5K9lgahU"
+    },
+    {
+      "name": "oldest_inclusive_boundary",
+      "wire": "{\"eventId\":\"evt_01JABCDEF0123456789\",\"eventType\":\"message.persisted\",\"occurredAt\":\"1790189000000\",\"schemaVersion\":1,\"payload\":{\"conversationId\":\"conv_alpha\",\"conversationSeq\":\"42\",\"serverMsgId\":\"msg_alpha\",\"serverTime\":\"1790189000000\",\"senderId\":\"alice\",\"type\":\"text\",\"version\":1}}",
+      "secret": "0123456789abcdef0123456789abcdef",
+      "now": 1790189001000,
+      "eventId": "evt_01JABCDEF0123456789",
+      "deliveryId": "dlv_01JABCDEF0123456789",
+      "timestamp": "1790188701000",
+      "nonce": "AAECAwQFBgcICQoLDA0ODw",
+      "keyId": "key_current",
+      "signature": "v1=cCDdtOBCyPenTkIhKRWYR2_bkyTWGkw8z3aU95MxIgM"
+    },
+    {
+      "name": "newest_inclusive_boundary",
+      "wire": "{\"eventId\":\"evt_01JABCDEF0123456789\",\"eventType\":\"message.persisted\",\"occurredAt\":\"1790189000000\",\"schemaVersion\":1,\"payload\":{\"conversationId\":\"conv_alpha\",\"conversationSeq\":\"42\",\"serverMsgId\":\"msg_alpha\",\"serverTime\":\"1790189000000\",\"senderId\":\"alice\",\"type\":\"text\",\"version\":1}}",
+      "secret": "0123456789abcdef0123456789abcdef",
+      "now": 1790189001000,
+      "eventId": "evt_01JABCDEF0123456789",
+      "deliveryId": "dlv_01JABCDEF0123456789",
+      "timestamp": "1790189301000",
+      "nonce": "AAECAwQFBgcICQoLDA0ODw",
+      "keyId": "key_current",
+      "signature": "v1=Rj5xkBT-1nHeBttG6fBJ_v0mpd5Kld27Cwi8sJpofac"
+    },
+    {
+      "name": "old_key_rotation",
+      "wire": "{\"eventId\":\"evt_01JABCDEF0123456789\",\"eventType\":\"message.persisted\",\"occurredAt\":\"1790189000000\",\"schemaVersion\":1,\"payload\":{\"conversationId\":\"conv_alpha\",\"conversationSeq\":\"42\",\"serverMsgId\":\"msg_alpha\",\"serverTime\":\"1790189000000\",\"senderId\":\"alice\",\"type\":\"text\",\"version\":1}}",
+      "secret": "old-secret-0123456789abcdef012345",
+      "now": 1790189001000,
+      "eventId": "evt_01JABCDEF0123456789",
+      "deliveryId": "dlv_01JABCDEF0123456789",
+      "timestamp": "1790189001000",
+      "nonce": "EBESExQVFhcYGRobHB0eHw",
+      "keyId": "key_old",
+      "signature": "v1=h0u__SqzV9Ka-0ctMsA4przUNY4he6BK9W0w5e10DSg"
+    },
+    {
+      "name": "new_key_rotation",
+      "wire": "{\"eventId\":\"evt_01JABCDEF0123456789\",\"eventType\":\"message.persisted\",\"occurredAt\":\"1790189000000\",\"schemaVersion\":1,\"payload\":{\"conversationId\":\"conv_alpha\",\"conversationSeq\":\"42\",\"serverMsgId\":\"msg_alpha\",\"serverTime\":\"1790189000000\",\"senderId\":\"alice\",\"type\":\"text\",\"version\":1}}",
+      "secret": "new-secret-0123456789abcdef012345",
+      "now": 1790189001000,
+      "eventId": "evt_01JABCDEF0123456789",
+      "deliveryId": "dlv_01JABCDEF0123456789",
+      "timestamp": "1790189001000",
+      "nonce": "ICEiIyQlJicoKSorLC0uLw",
+      "keyId": "key_new",
+      "signature": "v1=nNuGoRKvsWfzZKLmTiFb7_kd2dLHzeD8q0dLrPRjjBE"
+    },
+    {
+      "name": "additive_unknown_field",
+      "wire": "{\"eventId\":\"evt_01JABCDEF0123456789\",\"eventType\":\"message.persisted\",\"occurredAt\":\"1790189000000\",\"schemaVersion\":1,\"payload\":{\"conversationId\":\"conv_alpha\",\"conversationSeq\":\"42\",\"serverMsgId\":\"msg_alpha\",\"serverTime\":\"1790189000000\",\"senderId\":\"alice\",\"type\":\"text\",\"version\":1},\"futureField\":true}",
+      "secret": "0123456789abcdef0123456789abcdef",
+      "now": 1790189001000,
+      "eventId": "evt_01JABCDEF0123456789",
+      "deliveryId": "dlv_01JABCDEF0123456789",
+      "timestamp": "1790189001000",
+      "nonce": "AAECAwQFBgcICQoLDA0ODw",
+      "keyId": "key_current",
+      "signature": "v1=gVLz6B3YLYhneykxM8lXEn-KI3Jrh1Ym4VhOQbRrtXU"
+    }
+  ],
+  "negative": [
+    {
+      "name": "wrong_secret",
+      "wire": "{\"eventId\":\"evt_01JABCDEF0123456789\",\"eventType\":\"message.persisted\",\"occurredAt\":\"1790189000000\",\"schemaVersion\":1,\"payload\":{\"conversationId\":\"conv_alpha\",\"conversationSeq\":\"42\",\"serverMsgId\":\"msg_alpha\",\"serverTime\":\"1790189000000\",\"senderId\":\"alice\",\"type\":\"text\",\"version\":1}}",
+      "secret": "xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx",
+      "now": 1790189001000,
+      "eventId": "evt_01JABCDEF0123456789",
+      "deliveryId": "dlv_01JABCDEF0123456789",
+      "timestamp": "1790189001000",
+      "nonce": "AAECAwQFBgcICQoLDA0ODw",
+      "keyId": "key_current",
+      "signature": "v1=9aDOTjbNZeXLPlPzU2TXFgN34XQ6itdQGBH5K9lgahU",
+      "expected": "WEBHOOK_INVALID_SIGNATURE"
+    },
+    {
+      "name": "noncanonical_signature",
+      "wire": "{\"eventId\":\"evt_01JABCDEF0123456789\",\"eventType\":\"message.persisted\",\"occurredAt\":\"1790189000000\",\"schemaVersion\":1,\"payload\":{\"conversationId\":\"conv_alpha\",\"conversationSeq\":\"42\",\"serverMsgId\":\"msg_alpha\",\"serverTime\":\"1790189000000\",\"senderId\":\"alice\",\"type\":\"text\",\"version\":1}}",
+      "secret": "0123456789abcdef0123456789abcdef",
+      "now": 1790189001000,
+      "eventId": "evt_01JABCDEF0123456789",
+      "deliveryId": "dlv_01JABCDEF0123456789",
+      "timestamp": "1790189001000",
+      "nonce": "AAECAwQFBgcICQoLDA0ODw",
+      "keyId": "key_current",
+      "signature": "v1=9aDOTjbNZeXLPlPzU2TXFgN34XQ6itdQGBH5K9lgahB",
+      "expected": "WEBHOOK_INVALID_SIGNATURE"
+    },
+    {
+      "name": "identity_mismatch",
+      "wire": "{\"eventId\":\"evt_body_identity\",\"eventType\":\"message.persisted\",\"occurredAt\":\"1790189000000\",\"schemaVersion\":1,\"payload\":{\"conversationId\":\"conv_alpha\",\"conversationSeq\":\"42\",\"serverMsgId\":\"msg_alpha\",\"serverTime\":\"1790189000000\",\"senderId\":\"alice\",\"type\":\"text\",\"version\":1}}",
+      "secret": "0123456789abcdef0123456789abcdef",
+      "now": 1790189001000,
+      "eventId": "evt_header_identity",
+      "deliveryId": "dlv_01JABCDEF0123456789",
+      "timestamp": "1790189001000",
+      "nonce": "ICEiIyQlJicoKSorLC0uLw",
+      "keyId": "key_current",
+      "signature": "v1=riJay1oR0uTXJxw_B2lDT5_bG6qr_UkvhsR4ASsT3SU",
+      "expected": "WEBHOOK_IDENTITY_MISMATCH"
+    },
+    {
+      "name": "unknown_schema",
+      "wire": "{\"eventId\":\"evt_01JABCDEF0123456789\",\"eventType\":\"message.persisted\",\"occurredAt\":\"1790189000000\",\"schemaVersion\":2,\"payload\":{\"conversationId\":\"conv_alpha\",\"conversationSeq\":\"42\",\"serverMsgId\":\"msg_alpha\",\"serverTime\":\"1790189000000\",\"senderId\":\"alice\",\"type\":\"text\",\"version\":1}}",
+      "secret": "0123456789abcdef0123456789abcdef",
+      "now": 1790189001000,
+      "eventId": "evt_01JABCDEF0123456789",
+      "deliveryId": "dlv_01JABCDEF0123456789",
+      "timestamp": "1790189001000",
+      "nonce": "EBESExQVFhcYGRobHB0eHw",
+      "keyId": "key_current",
+      "signature": "v1=bVXxP-0DayEYL39y03ZnuH1hviEhm08vVK1sr9hMIec",
+      "expected": "WEBHOOK_UNSUPPORTED_SCHEMA"
+    },
+    {
+      "name": "outside_window",
+      "wire": "{\"eventId\":\"evt_01JABCDEF0123456789\",\"eventType\":\"message.persisted\",\"occurredAt\":\"1790189000000\",\"schemaVersion\":1,\"payload\":{\"conversationId\":\"conv_alpha\",\"conversationSeq\":\"42\",\"serverMsgId\":\"msg_alpha\",\"serverTime\":\"1790189000000\",\"senderId\":\"alice\",\"type\":\"text\",\"version\":1}}",
+      "secret": "0123456789abcdef0123456789abcdef",
+      "now": 1790189301001,
+      "eventId": "evt_01JABCDEF0123456789",
+      "deliveryId": "dlv_01JABCDEF0123456789",
+      "timestamp": "1790189001000",
+      "nonce": "AAECAwQFBgcICQoLDA0ODw",
+      "keyId": "key_current",
+      "signature": "v1=9aDOTjbNZeXLPlPzU2TXFgN34XQ6itdQGBH5K9lgahU",
+      "expected": "WEBHOOK_TIMESTAMP_OUT_OF_WINDOW"
+    }
+  ],
+  "decode": [
+    {
+      "name": "unknown_additive_field",
+      "wire": "{\"eventId\":\"evt_01JABCDEF0123456789\",\"eventType\":\"message.persisted\",\"occurredAt\":\"1790189000000\",\"schemaVersion\":1,\"payload\":{\"conversationId\":\"conv_alpha\",\"conversationSeq\":\"42\",\"serverMsgId\":\"msg_alpha\",\"serverTime\":\"1790189000000\",\"senderId\":\"alice\",\"type\":\"text\",\"version\":1},\"futureField\":true}",
+      "expected": "ok"
+    },
+    {
+      "name": "unknown_schema",
+      "wire": "{\"eventId\":\"evt_01JABCDEF0123456789\",\"eventType\":\"message.persisted\",\"occurredAt\":\"1790189000000\",\"schemaVersion\":2,\"payload\":{\"conversationId\":\"conv_alpha\",\"conversationSeq\":\"42\",\"serverMsgId\":\"msg_alpha\",\"serverTime\":\"1790189000000\",\"senderId\":\"alice\",\"type\":\"text\",\"version\":1}}",
+      "expected": "WEBHOOK_UNSUPPORTED_SCHEMA"
+    },
+    {
+      "name": "trailing_json",
+      "wire": "{\"eventId\":\"evt_01JABCDEF0123456789\",\"eventType\":\"message.persisted\",\"occurredAt\":\"1790189000000\",\"schemaVersion\":1,\"payload\":{\"conversationId\":\"conv_alpha\",\"conversationSeq\":\"42\",\"serverMsgId\":\"msg_alpha\",\"serverTime\":\"1790189000000\",\"senderId\":\"alice\",\"type\":\"text\",\"version\":1}} null",
+      "expected": "WEBHOOK_INVALID_JSON"
+    },
+    {
+      "name": "non_object_payload",
+      "wire": "{\"eventId\":\"evt_01JABCDEF0123456789\",\"eventType\":\"message.persisted\",\"occurredAt\":\"1790189000000\",\"schemaVersion\":1,\"payload\":[]}",
+      "expected": "WEBHOOK_INVALID_ENVELOPE"
+    }
+  ],
+  "retired_key": {
+    "name": "retired_key",
     "wire": "{\"eventId\":\"evt_01JABCDEF0123456789\",\"eventType\":\"message.persisted\",\"occurredAt\":\"1790189000000\",\"schemaVersion\":1,\"payload\":{\"conversationId\":\"conv_alpha\",\"conversationSeq\":\"42\",\"serverMsgId\":\"msg_alpha\",\"serverTime\":\"1790189000000\",\"senderId\":\"alice\",\"type\":\"text\",\"version\":1}}",
-    "secret": "0123456789abcdef0123456789abcdef",
+    "secret": "retired-secret-0123456789abcdef0123",
     "now": 1790189001000,
     "eventId": "evt_01JABCDEF0123456789",
     "deliveryId": "dlv_01JABCDEF0123456789",
     "timestamp": "1790189001000",
-    "nonce": "AAECAwQFBgcICQoLDA0ODw",
-    "keyId": "key_20260924",
-    "signature": "v1=l5YG-mYUplPvm0lfIoa1XYtg6jBnrcg5d9P1Te4Z3HA"
+    "nonce": "MDEyMzQ1Njc4OTo7PD0-Pw",
+    "keyId": "key_retired",
+    "signature": "v1=nOxVoJESUwpXCJpj-PVqADOq67cHF5-QzZhW4BoG7us",
+    "expected": "WEBHOOK_UNKNOWN_KEY"
   }
-]
+}

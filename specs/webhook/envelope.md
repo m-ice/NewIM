@@ -61,18 +61,26 @@ v1
 ```
 
 签名是 `v1=` 加 `base64url(HMAC-SHA256(secret, signingBytes))` 的无 padding 编码。
-secret 至少 32 bytes。验证必须先做 constant-time HMAC 比较，再检查时间窗和原子
-nonce reservation；失败不得回显 secret、body、signature 或完整 URL。
+secret 至少 32 bytes。signature 的 base64url 必须严格规范，解码后重新编码必须与
+输入完全一致。验证必须先做 constant-time HMAC 比较，再解析 envelope、绑定 header
+`X-NewIM-Event-Id` 与 body `eventId`，最后检查时间窗和原子 nonce reservation；
+失败不得回显 secret、body、signature 或完整 URL。
 
 ## Verification
 
 - 可信时钟的默认允许窗口为 5 分钟，包含边界。
+- 最老边界的 nonce 有效期必须至少覆盖到 `timestamp + window + 1ms`，避免刚好落在
+  inclusive 边界时被 guard 当作已过期。
 - 只有签名正确且时间戳在窗口内的请求才能调用 replay guard。
 - replay guard 必须原子返回“首次预留/已重放/容量失败”；不得 check-then-insert，
   不得因容量压力淘汰仍在有效期内的 nonce。容量失败返回
   `WEBHOOK_REPLAY_CAPACITY_EXCEEDED` 或 `WEBHOOK_REPLAY_UNAVAILABLE`，必须 fail-closed。
 - 业务幂等以 `deliveryId`（或稳定的 `eventId`）为准；nonce 只用于网络重放拒绝。
+- `keyId` 必须由显式 `WebhookKeyResolver` 解析；未知或退役 key 返回
+  `WEBHOOK_UNKNOWN_KEY`。header 与 body 的 event ID 不一致返回
+  `WEBHOOK_IDENTITY_MISMATCH`，不得只验证其中一处。
 
-固定正例和签名向量位于 `tests/compatibility/webhook/fixtures/cases.json`。Go API 位于
+固定正例、边界、key rotation、decode 和 negative 向量位于
+`tests/compatibility/webhook/fixtures/cases.json`。Go API 位于
 `core/protocol/go/webhook.go`；`MemoryWebhookReplayGuard` 仅是有界单进程参考实现，
-生产共享缓存必须另行提供同样的原子接口。
+生产共享缓存必须另行提供同样的原子接口并把 verifier 的 trusted `now` 传入 guard。

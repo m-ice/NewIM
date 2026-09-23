@@ -53,10 +53,10 @@ protocol-limits: toolchain
 	cargo test -p newim-protocol --locked --test fixtures limits -- --exact
 
 webhook-envelope: toolchain
-	go test -count=1 ./tests/compatibility/webhook -run '^(TestWebhookEnvelope|TestWebhookSigningAndVerification)$$'
+	go test -race -shuffle=on -count=1 ./tests/compatibility/webhook -run '^(TestWebhookEnvelope|TestWebhookSigningAndVerification|TestWebhookKeyRotationUse)$$'
 
 webhook-envelope-security: toolchain
-	go test -count=1 ./tests/compatibility/webhook -run '^TestWebhookSecurity$$'
+	go test -race -shuffle=on -count=1 ./tests/compatibility/webhook -run '^(TestWebhookSecurity|TestWebhookStrictInputs|TestWebhookClockBoundaries)$$'
 
 .PHONY: send-protocol-golden send-protocol-errors send-protocol-limits
 

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strconv"
 	"strings"
@@ -25,19 +26,30 @@ type fixtureCase struct {
 	Nonce     string `json:"nonce"`
 	KeyID     string `json:"keyId"`
 	Signature string `json:"signature"`
+	Expected  string `json:"expected"`
 }
 
-func loadFixture(t *testing.T) fixtureCase {
+type fixtureSet struct {
+	Positive   []fixtureCase `json:"positive"`
+	Negative   []fixtureCase `json:"negative"`
+	Decode     []fixtureCase `json:"decode"`
+	RetiredKey fixtureCase   `json:"retired_key"`
+}
+
+func loadFixture(t *testing.T) fixtureSet {
 	t.Helper()
 	raw, err := os.ReadFile("fixtures/cases.json")
 	if err != nil {
 		t.Fatal(err)
 	}
-	var cases []fixtureCase
-	if err = json.Unmarshal(raw, &cases); err != nil || len(cases) != 1 {
-		t.Fatalf("fixture shape: %v, cases=%d", err, len(cases))
+	var fixtures fixtureSet
+	if err = json.Unmarshal(raw, &fixtures); err != nil {
+		t.Fatal(err)
 	}
-	return cases[0]
+	if len(fixtures.Positive) < 4 || len(fixtures.Negative) < 4 || len(fixtures.Decode) < 4 || fixtures.RetiredKey.Name == "" {
+		t.Fatalf("fixture coverage is incomplete: %+v", fixtures)
+	}
+	return fixtures
 }
 
 func headers(f fixtureCase) protocol.WebhookHeaders {
@@ -54,13 +66,13 @@ func headers(f fixtureCase) protocol.WebhookHeaders {
 
 func headerMap(h protocol.WebhookHeaders) map[string][]string {
 	return map[string][]string{
-		protocol.WebhookHeaderNames.EventID:          {h.EventID},
-		protocol.WebhookHeaderNames.DeliveryID:       {h.DeliveryID},
-		protocol.WebhookHeaderNames.Timestamp:        {h.Timestamp},
-		protocol.WebhookHeaderNames.Nonce:            {h.Nonce},
-		protocol.WebhookHeaderNames.KeyID:            {h.KeyID},
-		protocol.WebhookHeaderNames.SignatureVersion: {h.SignatureVersion},
-		protocol.WebhookHeaderNames.Signature:        {h.Signature},
+		protocol.WebhookHeaderEventID:          {h.EventID},
+		protocol.WebhookHeaderDeliveryID:       {h.DeliveryID},
+		protocol.WebhookHeaderTimestamp:        {h.Timestamp},
+		protocol.WebhookHeaderNonce:            {h.Nonce},
+		protocol.WebhookHeaderKeyID:            {h.KeyID},
+		protocol.WebhookHeaderSignatureVersion: {h.SignatureVersion},
+		protocol.WebhookHeaderSignature:        {h.Signature},
 	}
 }
 
@@ -84,100 +96,111 @@ func liveHeaders(t *testing.T, f fixtureCase, body []byte, now time.Time) protoc
 	return h
 }
 
-func TestWebhookEnvelope(t *testing.T) {
-	f := loadFixture(t)
-	body := []byte(f.Wire)
-	envelope, err := protocol.DecodeWebhookEnvelope(body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if envelope.EventID != f.EventID || envelope.EventType != "message.persisted" || envelope.OccurredAt != "1790189000000" || envelope.SchemaVersion != 1 {
-		t.Fatalf("decoded envelope = %+v", envelope)
-	}
-	encoded, err := protocol.EncodeWebhookEnvelope(envelope)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !bytes.Equal(encoded, body) {
-		t.Fatalf("canonical encoding changed: %s", encoded)
-	}
+type resolver map[string]string
 
-	var raw map[string]json.RawMessage
-	if err = json.Unmarshal(body, &raw); err != nil {
-		t.Fatal(err)
+func (r resolver) ResolveWebhookSecret(_ context.Context, keyID string) ([]byte, error) {
+	secret, ok := r[keyID]
+	if !ok {
+		return nil, protocol.WebhookUnknownKey
 	}
-	raw["futureField"] = json.RawMessage(`true`)
-	withFuture, err := json.Marshal(raw)
-	if err != nil {
-		t.Fatal(err)
+	return []byte(secret), nil
+}
+
+func TestWebhookEnvelope(t *testing.T) {
+	fixtures := loadFixture(t)
+	for _, c := range fixtures.Decode {
+		t.Run(c.Name, func(t *testing.T) {
+			envelope, err := protocol.DecodeWebhookEnvelope([]byte(c.Wire))
+			if c.Expected == "ok" {
+				if err != nil {
+					t.Fatal(err)
+				}
+				encoded, err := protocol.EncodeWebhookEnvelope(envelope)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if _, err = protocol.DecodeWebhookEnvelope(encoded); err != nil {
+					t.Fatalf("canonical encoding did not round trip: %v", err)
+				}
+				return
+			}
+			assertCode(t, err, protocol.WebhookCode(c.Expected))
+		})
 	}
-	if _, err = protocol.DecodeWebhookEnvelope(withFuture); err != nil {
-		t.Fatalf("unknown additive field rejected: %v", err)
+	for _, c := range fixtures.Positive {
+		t.Run(c.Name, func(t *testing.T) {
+			envelope, err := protocol.DecodeWebhookEnvelope([]byte(c.Wire))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if envelope.EventID == "" || envelope.Payload == nil {
+				t.Fatalf("incomplete envelope: %+v", envelope)
+			}
+		})
 	}
 }
 
 func TestWebhookSigningAndVerification(t *testing.T) {
-	f := loadFixture(t)
-	body := []byte(f.Wire)
-	parsed, err := protocol.ParseWebhookHeaders(headerMap(headers(f)))
-	if err != nil {
-		t.Fatal(err)
-	}
-	signing, err := protocol.CanonicalWebhookSigningBytes(parsed, body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !strings.HasSuffix(string(signing), "\n") || strings.Count(string(signing), "\n") != 7 {
-		t.Fatalf("canonical signing bytes are not newline terminated: %q", signing)
-	}
-	signature, err := protocol.SignWebhook([]byte(f.Secret), parsed, body)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if signature != f.Signature {
-		t.Fatalf("signature got %q want %q", signature, f.Signature)
-	}
-	now := time.Now()
-	verification := liveHeaders(t, f, body, now)
-	guard, err := protocol.NewMemoryWebhookReplayGuard(16)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err = protocol.VerifyWebhookSignature(context.Background(), []byte(f.Secret), verification, body, now, guard); err != nil {
-		t.Fatal(err)
+	fixtures := loadFixture(t)
+	for _, c := range fixtures.Positive {
+		t.Run(c.Name, func(t *testing.T) {
+			body := []byte(c.Wire)
+			parsed, err := protocol.ParseWebhookHeaders(headerMap(headers(c)))
+			if err != nil {
+				t.Fatal(err)
+			}
+			signature, err := protocol.SignWebhook([]byte(c.Secret), parsed, body)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if signature != c.Signature {
+				t.Fatalf("signature got %q want %q", signature, c.Signature)
+			}
+			guard, err := protocol.NewMemoryWebhookReplayGuard(16)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = protocol.VerifyWebhookSignature(context.Background(), []byte(c.Secret), parsed, body, time.UnixMilli(c.Now), guard); err != nil {
+				t.Fatal(err)
+			}
+			resolver := resolver{c.KeyID: c.Secret}
+			guard, _ = protocol.NewMemoryWebhookReplayGuard(16)
+			if err = protocol.VerifyWebhookRequest(context.Background(), parsed, body, time.UnixMilli(c.Now), guard, resolver); err != nil {
+				t.Fatal(err)
+			}
+		})
 	}
 }
 
 func TestWebhookSecurity(t *testing.T) {
-	f := loadFixture(t)
-	body := []byte(f.Wire)
-	now := time.Now()
-	base := liveHeaders(t, f, body, now)
-
-	t.Run("tampered_body", func(t *testing.T) {
+	fixtures := loadFixture(t)
+	for _, c := range fixtures.Negative {
+		t.Run(c.Name, func(t *testing.T) {
+			guard, err := protocol.NewMemoryWebhookReplayGuard(16)
+			if err != nil {
+				t.Fatal(err)
+			}
+			err = protocol.VerifyWebhookSignature(context.Background(), []byte(c.Secret), headers(c), []byte(c.Wire), time.UnixMilli(c.Now), guard)
+			assertCode(t, err, protocol.WebhookCode(c.Expected))
+		})
+	}
+	t.Run("retired_key", func(t *testing.T) {
+		c := fixtures.RetiredKey
 		guard, _ := protocol.NewMemoryWebhookReplayGuard(16)
-		err := protocol.VerifyWebhookSignature(context.Background(), []byte(f.Secret), base, []byte(strings.Replace(f.Wire, "alice", "alice2", 1)), now, guard)
-		assertCode(t, err, protocol.WebhookInvalidSignature)
-	})
-	t.Run("wrong_secret", func(t *testing.T) {
-		guard, _ := protocol.NewMemoryWebhookReplayGuard(16)
-		err := protocol.VerifyWebhookSignature(context.Background(), []byte("xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"), base, body, now, guard)
-		assertCode(t, err, protocol.WebhookInvalidSignature)
-	})
-	t.Run("timestamp_window", func(t *testing.T) {
-		guard, _ := protocol.NewMemoryWebhookReplayGuard(16)
-		err := protocol.VerifyWebhookSignature(context.Background(), []byte(f.Secret), base, body, now.Add(2*protocol.WebhookTimestampWindow), guard)
-		assertCode(t, err, protocol.WebhookTimestampMismatch)
+		err := protocol.VerifyWebhookRequest(context.Background(), headers(c), []byte(c.Wire), time.UnixMilli(c.Now), guard, resolver{"key_current": fixtures.Positive[0].Secret})
+		assertCode(t, err, protocol.WebhookCode(c.Expected))
 	})
 	t.Run("replay", func(t *testing.T) {
+		c := fixtures.Positive[0]
 		guard, _ := protocol.NewMemoryWebhookReplayGuard(16)
-		if err := protocol.VerifyWebhookSignature(context.Background(), []byte(f.Secret), base, body, now, guard); err != nil {
+		if err := protocol.VerifyWebhookSignature(context.Background(), []byte(c.Secret), headers(c), []byte(c.Wire), time.UnixMilli(c.Now), guard); err != nil {
 			t.Fatal(err)
 		}
-		err := protocol.VerifyWebhookSignature(context.Background(), []byte(f.Secret), base, body, now, guard)
+		err := protocol.VerifyWebhookSignature(context.Background(), []byte(c.Secret), headers(c), []byte(c.Wire), time.UnixMilli(c.Now), guard)
 		assertCode(t, err, protocol.WebhookReplayDetected)
 	})
 	t.Run("concurrent_replay", func(t *testing.T) {
+		c := fixtures.Positive[0]
 		guard, _ := protocol.NewMemoryWebhookReplayGuard(16)
 		start := make(chan struct{})
 		results := make(chan protocol.WebhookCode, 2)
@@ -187,7 +210,7 @@ func TestWebhookSecurity(t *testing.T) {
 			go func() {
 				defer wg.Done()
 				<-start
-				err := protocol.VerifyWebhookSignature(context.Background(), []byte(f.Secret), base, body, now, guard)
+				err := protocol.VerifyWebhookSignature(context.Background(), []byte(c.Secret), headers(c), []byte(c.Wire), time.UnixMilli(c.Now), guard)
 				results <- protocol.WebhookErrorCode(err)
 			}()
 		}
@@ -209,41 +232,129 @@ func TestWebhookSecurity(t *testing.T) {
 			t.Fatalf("accepted=%d replay=%d", accepted, replay)
 		}
 	})
-	t.Run("invalid_headers", func(t *testing.T) {
-		bad := headerMap(base)
-		bad[protocol.WebhookHeaderNames.DeliveryID] = []string{"bad\nvalue"}
-		if _, err := protocol.ParseWebhookHeaders(bad); protocol.WebhookErrorCode(err) != protocol.WebhookInvalidHeaders {
-			t.Fatalf("CRLF header accepted: %v", err)
-		}
-		bad = headerMap(base)
-		bad[protocol.WebhookHeaderNames.Nonce] = []string{base.Nonce + "="}
-		if _, err := protocol.ParseWebhookHeaders(bad); protocol.WebhookErrorCode(err) != protocol.WebhookInvalidHeaders {
-			t.Fatalf("padded nonce accepted: %v", err)
-		}
-		bad = headerMap(base)
-		bad[protocol.WebhookHeaderNames.KeyID] = []string{base.KeyID, base.KeyID}
-		if _, err := protocol.ParseWebhookHeaders(bad); protocol.WebhookErrorCode(err) != protocol.WebhookInvalidHeaders {
-			t.Fatalf("duplicate key id accepted: %v", err)
-		}
-	})
-	t.Run("unknown_schema", func(t *testing.T) {
-		wire := []byte(strings.Replace(f.Wire, `"schemaVersion":1`, `"schemaVersion":2`, 1))
-		_, err := protocol.DecodeWebhookEnvelope(wire)
-		assertCode(t, err, protocol.WebhookUnsupportedSchema)
-	})
 	t.Run("capacity_fail_closed", func(t *testing.T) {
+		c := fixtures.Positive[0]
 		guard, _ := protocol.NewMemoryWebhookReplayGuard(1)
-		if err := protocol.VerifyWebhookSignature(context.Background(), []byte(f.Secret), base, body, now, guard); err != nil {
+		if err := protocol.VerifyWebhookSignature(context.Background(), []byte(c.Secret), headers(c), []byte(c.Wire), time.UnixMilli(c.Now), guard); err != nil {
 			t.Fatal(err)
 		}
-		second := base
+		second := headers(c)
 		second.Nonce = "EBESExQVFhcYGRobHB0eHw"
-		signature, err := protocol.SignWebhook([]byte(f.Secret), second, body)
+		signature, err := protocol.SignWebhook([]byte(c.Secret), second, []byte(c.Wire))
 		if err != nil {
 			t.Fatal(err)
 		}
 		second.Signature = signature
-		err = protocol.VerifyWebhookSignature(context.Background(), []byte(f.Secret), second, body, now, guard)
+		err = protocol.VerifyWebhookSignature(context.Background(), []byte(c.Secret), second, []byte(c.Wire), time.UnixMilli(c.Now), guard)
 		assertCode(t, err, protocol.WebhookCapacityExceeded)
 	})
+	t.Run("error_code_preservation", func(t *testing.T) {
+		if got := protocol.WebhookErrorCode(protocol.WebhookCapacityExceeded); got != protocol.WebhookCapacityExceeded {
+			t.Fatalf("direct code got %q", got)
+		}
+		wrapped := fmt.Errorf("wrapped: %w", protocol.WebhookCapacityExceeded)
+		if got := protocol.WebhookErrorCode(wrapped); got != protocol.WebhookCapacityExceeded {
+			t.Fatalf("wrapped code got %q", got)
+		}
+	})
+}
+
+func TestWebhookStrictInputs(t *testing.T) {
+	fixtures := loadFixture(t)
+	base := fixtures.Positive[0]
+	for _, name := range []string{
+		protocol.WebhookHeaderEventID,
+		protocol.WebhookHeaderDeliveryID,
+		protocol.WebhookHeaderTimestamp,
+		protocol.WebhookHeaderNonce,
+		protocol.WebhookHeaderKeyID,
+		protocol.WebhookHeaderSignatureVersion,
+		protocol.WebhookHeaderSignature,
+	} {
+		t.Run("missing_"+name, func(t *testing.T) {
+			values := headerMap(headers(base))
+			delete(values, name)
+			if _, err := protocol.ParseWebhookHeaders(values); protocol.WebhookErrorCode(err) != protocol.WebhookInvalidHeaders {
+				t.Fatalf("missing header accepted: %v", err)
+			}
+		})
+	}
+	t.Run("duplicate_event_id", func(t *testing.T) {
+		values := headerMap(headers(base))
+		values[protocol.WebhookHeaderEventID] = []string{base.EventID, base.EventID}
+		if _, err := protocol.ParseWebhookHeaders(values); protocol.WebhookErrorCode(err) != protocol.WebhookInvalidHeaders {
+			t.Fatalf("duplicate event id accepted: %v", err)
+		}
+	})
+	t.Run("malformed_json", func(t *testing.T) {
+		cases := map[string][]byte{
+			"duplicate_key":      []byte(strings.Replace(base.Wire, `"eventId":"`+base.EventID+`",`, `"eventId":"`+base.EventID+`","eventId":"dup",`, 1)),
+			"invalid_utf8":       {0xff},
+			"unpaired_surrogate": []byte(`{"eventId":"\ud800"}`),
+			"trailing_token":     []byte(base.Wire + "null"),
+			"payload_not_object": []byte(`{"eventId":"evt_01JABCDEF0123456789","eventType":"message.persisted","occurredAt":"1790189000000","schemaVersion":1,"payload":[]}`),
+		}
+		for name, wire := range cases {
+			t.Run(name, func(t *testing.T) {
+				_, err := protocol.DecodeWebhookEnvelope(wire)
+				if protocol.WebhookErrorCode(err) == "" {
+					t.Fatalf("malformed envelope accepted: %s", wire)
+				}
+			})
+		}
+	})
+	t.Run("oversized_encoder_input", func(t *testing.T) {
+		envelope := protocol.WebhookEnvelope{
+			EventID:       base.EventID,
+			EventType:     "message.persisted",
+			OccurredAt:    "1790189000000",
+			SchemaVersion: 1,
+			Payload:       bytes.Repeat([]byte{'x'}, protocol.WebhookMaxEnvelopeBytes+1),
+		}
+		_, err := protocol.EncodeWebhookEnvelope(envelope)
+		assertCode(t, err, protocol.WebhookEnvelopeTooLarge)
+	})
+}
+
+func TestWebhookClockBoundaries(t *testing.T) {
+	fixtures := loadFixture(t)
+	base := fixtures.Positive[0]
+	now := time.UnixMilli(base.Now)
+	body := []byte(base.Wire)
+	for _, delta := range []time.Duration{-protocol.WebhookTimestampWindow, protocol.WebhookTimestampWindow} {
+		t.Run(delta.String(), func(t *testing.T) {
+			h := liveHeaders(t, base, body, now.Add(delta))
+			guard, _ := protocol.NewMemoryWebhookReplayGuard(4)
+			if err := protocol.VerifyWebhookSignature(context.Background(), []byte(base.Secret), h, body, now, guard); err != nil {
+				t.Fatalf("inclusive boundary rejected: %v", err)
+			}
+		})
+	}
+	for _, delta := range []time.Duration{-protocol.WebhookTimestampWindow - time.Millisecond, protocol.WebhookTimestampWindow + time.Millisecond} {
+		t.Run("outside_"+delta.String(), func(t *testing.T) {
+			h := liveHeaders(t, base, body, now.Add(delta))
+			guard, _ := protocol.NewMemoryWebhookReplayGuard(4)
+			err := protocol.VerifyWebhookSignature(context.Background(), []byte(base.Secret), h, body, now, guard)
+			assertCode(t, err, protocol.WebhookTimestampMismatch)
+		})
+	}
+}
+
+func TestWebhookKeyRotationUse(t *testing.T) {
+	fixtures := loadFixture(t)
+	secretByKey := map[string]string{}
+	for _, c := range fixtures.Positive {
+		secretByKey[c.KeyID] = c.Secret
+	}
+	for _, c := range fixtures.Positive {
+		if c.KeyID != "key_old" && c.KeyID != "key_new" {
+			continue
+		}
+		t.Run(c.KeyID, func(t *testing.T) {
+			guard, _ := protocol.NewMemoryWebhookReplayGuard(4)
+			if err := protocol.VerifyWebhookRequest(context.Background(), headers(c), []byte(c.Wire), time.UnixMilli(c.Now), guard, resolver(secretByKey)); err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
 }

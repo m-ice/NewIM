@@ -8,6 +8,7 @@ import (
 	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"strconv"
 	"strings"
 	"sync"
@@ -38,25 +39,17 @@ const (
 	WebhookMaxEnvelopeDepth = MaxDepth
 )
 
-// WebhookHeaderNames are the exact case-insensitive security headers in v1.
-// WebhookHeaderNames 是 v1 固定的不区分大小写安全 header。
-var WebhookHeaderNames = struct {
-	EventID          string
-	DeliveryID       string
-	Timestamp        string
-	Nonce            string
-	KeyID            string
-	SignatureVersion string
-	Signature        string
-}{
-	EventID:          "X-NewIM-Event-Id",
-	DeliveryID:       "X-NewIM-Delivery-Id",
-	Timestamp:        "X-NewIM-Timestamp",
-	Nonce:            "X-NewIM-Nonce",
-	KeyID:            "X-NewIM-Key-Id",
-	SignatureVersion: "X-NewIM-Signature-Version",
-	Signature:        "X-NewIM-Signature",
-}
+// WebhookHeader* are the exact case-insensitive security headers in v1.
+// WebhookHeader* 是 v1 固定的不区分大小写安全 header 常量。
+const (
+	WebhookHeaderEventID          = "X-NewIM-Event-Id"
+	WebhookHeaderDeliveryID       = "X-NewIM-Delivery-Id"
+	WebhookHeaderTimestamp        = "X-NewIM-Timestamp"
+	WebhookHeaderNonce            = "X-NewIM-Nonce"
+	WebhookHeaderKeyID            = "X-NewIM-Key-Id"
+	WebhookHeaderSignatureVersion = "X-NewIM-Signature-Version"
+	WebhookHeaderSignature        = "X-NewIM-Signature"
+)
 
 // WebhookCode is a stable webhook protocol error code.
 // WebhookCode 是稳定的 Webhook 协议错误码。
@@ -74,6 +67,8 @@ const (
 	WebhookReplayDetected    WebhookCode = "WEBHOOK_REPLAY_DETECTED"
 	WebhookReplayUnavailable WebhookCode = "WEBHOOK_REPLAY_UNAVAILABLE"
 	WebhookCapacityExceeded  WebhookCode = "WEBHOOK_REPLAY_CAPACITY_EXCEEDED"
+	WebhookUnknownKey        WebhookCode = "WEBHOOK_UNKNOWN_KEY"
+	WebhookIdentityMismatch  WebhookCode = "WEBHOOK_IDENTITY_MISMATCH"
 )
 
 func (e WebhookCode) Error() string { return string(e) }
@@ -92,7 +87,12 @@ func WebhookErrorCode(err error) WebhookCode {
 	if err == nil {
 		return ""
 	}
-	if known, ok := err.(*WebhookError); ok && known != nil {
+	var code WebhookCode
+	if errors.As(err, &code) {
+		return code
+	}
+	var known *WebhookError
+	if errors.As(err, &known) && known != nil {
 		return known.Code
 	}
 	return ""
@@ -123,12 +123,21 @@ type WebhookHeaders struct {
 // WebhookReplayGuard atomically reserves a nonce until expiresAt.
 // WebhookReplayGuard 原子预留 nonce，直到 expiresAt；实现必须 fail-closed。
 type WebhookReplayGuard interface {
-	ReserveWebhookNonce(context.Context, string, string, time.Time) (bool, error)
+	ReserveWebhookNonce(context.Context, string, string, time.Time, time.Time) (bool, error)
+}
+
+// WebhookKeyResolver resolves the secret selected by a signed key id.
+// WebhookKeyResolver 按已签名 key id 解析 secret；未知或退役 key 必须 fail-closed。
+type WebhookKeyResolver interface {
+	ResolveWebhookSecret(context.Context, string) ([]byte, error)
 }
 
 // EncodeWebhookEnvelope validates and canonically encodes one webhook envelope.
 // EncodeWebhookEnvelope 校验并规范编码一个 Webhook envelope。
 func EncodeWebhookEnvelope(envelope WebhookEnvelope) ([]byte, error) {
+	if len(envelope.Payload) > WebhookMaxEnvelopeBytes {
+		return nil, webhookFail(WebhookEnvelopeTooLarge)
+	}
 	eventID, err := quoteWebhookString(envelope.EventID)
 	if err != nil {
 		return nil, err
@@ -163,6 +172,9 @@ func EncodeWebhookEnvelope(envelope WebhookEnvelope) ([]byte, error) {
 	out = append(out, `,"payload":`...)
 	out = append(out, envelope.Payload...)
 	out = append(out, '}')
+	if len(out) > WebhookMaxEnvelopeBytes {
+		return nil, webhookFail(WebhookEnvelopeTooLarge)
+	}
 	if _, err = DecodeWebhookEnvelope(out); err != nil {
 		return nil, err
 	}
@@ -229,13 +241,13 @@ func DecodeWebhookEnvelope(wire []byte) (WebhookEnvelope, error) {
 // ParseWebhookHeaders 拒绝缺失、重复或非规范安全 header。
 func ParseWebhookHeaders(values map[string][]string) (WebhookHeaders, error) {
 	required := map[string]string{
-		strings.ToLower(WebhookHeaderNames.EventID):          WebhookHeaderNames.EventID,
-		strings.ToLower(WebhookHeaderNames.DeliveryID):       WebhookHeaderNames.DeliveryID,
-		strings.ToLower(WebhookHeaderNames.Timestamp):        WebhookHeaderNames.Timestamp,
-		strings.ToLower(WebhookHeaderNames.Nonce):            WebhookHeaderNames.Nonce,
-		strings.ToLower(WebhookHeaderNames.KeyID):            WebhookHeaderNames.KeyID,
-		strings.ToLower(WebhookHeaderNames.SignatureVersion): WebhookHeaderNames.SignatureVersion,
-		strings.ToLower(WebhookHeaderNames.Signature):        WebhookHeaderNames.Signature,
+		strings.ToLower(WebhookHeaderEventID):          WebhookHeaderEventID,
+		strings.ToLower(WebhookHeaderDeliveryID):       WebhookHeaderDeliveryID,
+		strings.ToLower(WebhookHeaderTimestamp):        WebhookHeaderTimestamp,
+		strings.ToLower(WebhookHeaderNonce):            WebhookHeaderNonce,
+		strings.ToLower(WebhookHeaderKeyID):            WebhookHeaderKeyID,
+		strings.ToLower(WebhookHeaderSignatureVersion): WebhookHeaderSignatureVersion,
+		strings.ToLower(WebhookHeaderSignature):        WebhookHeaderSignature,
 	}
 	found := make(map[string]string, len(required))
 	for key, list := range values {
@@ -258,13 +270,13 @@ func ParseWebhookHeaders(values map[string][]string) (WebhookHeaders, error) {
 		}
 	}
 	headers := WebhookHeaders{
-		EventID:          found[strings.ToLower(WebhookHeaderNames.EventID)],
-		DeliveryID:       found[strings.ToLower(WebhookHeaderNames.DeliveryID)],
-		Timestamp:        found[strings.ToLower(WebhookHeaderNames.Timestamp)],
-		Nonce:            found[strings.ToLower(WebhookHeaderNames.Nonce)],
-		KeyID:            found[strings.ToLower(WebhookHeaderNames.KeyID)],
-		SignatureVersion: found[strings.ToLower(WebhookHeaderNames.SignatureVersion)],
-		Signature:        found[strings.ToLower(WebhookHeaderNames.Signature)],
+		EventID:          found[strings.ToLower(WebhookHeaderEventID)],
+		DeliveryID:       found[strings.ToLower(WebhookHeaderDeliveryID)],
+		Timestamp:        found[strings.ToLower(WebhookHeaderTimestamp)],
+		Nonce:            found[strings.ToLower(WebhookHeaderNonce)],
+		KeyID:            found[strings.ToLower(WebhookHeaderKeyID)],
+		SignatureVersion: found[strings.ToLower(WebhookHeaderSignatureVersion)],
+		Signature:        found[strings.ToLower(WebhookHeaderSignature)],
 	}
 	if err := validateWebhookHeaders(headers); err != nil {
 		return WebhookHeaders{}, err
@@ -326,8 +338,9 @@ func VerifyWebhookSignature(ctx context.Context, secret []byte, headers WebhookH
 	if headers.SignatureVersion != WebhookSignatureVersion || !strings.HasPrefix(headers.Signature, "v1=") {
 		return webhookFail(WebhookInvalidSignature)
 	}
-	provided, err := base64.RawURLEncoding.DecodeString(strings.TrimPrefix(headers.Signature, "v1="))
-	if err != nil || len(provided) != sha256.Size {
+	encodedSignature := strings.TrimPrefix(headers.Signature, "v1=")
+	provided, err := base64.RawURLEncoding.Strict().DecodeString(encodedSignature)
+	if err != nil || len(provided) != sha256.Size || base64.RawURLEncoding.EncodeToString(provided) != encodedSignature {
 		return webhookFail(WebhookInvalidSignature)
 	}
 	signing, err := CanonicalWebhookSigningBytes(headers, body)
@@ -339,6 +352,13 @@ func VerifyWebhookSignature(ctx context.Context, secret []byte, headers WebhookH
 	if !hmac.Equal(provided, mac.Sum(nil)) {
 		return webhookFail(WebhookInvalidSignature)
 	}
+	envelope, err := DecodeWebhookEnvelope(body)
+	if err != nil {
+		return err
+	}
+	if headers.EventID != envelope.EventID {
+		return webhookFail(WebhookIdentityMismatch)
+	}
 	timestamp, err := strconv.ParseInt(headers.Timestamp, 10, 64)
 	if err != nil || timestamp < 0 {
 		return webhookFail(WebhookInvalidHeaders)
@@ -349,8 +369,10 @@ func VerifyWebhookSignature(ctx context.Context, secret []byte, headers WebhookH
 	if timestamp < lower || timestamp > upper {
 		return webhookFail(WebhookTimestampMismatch)
 	}
-	expiresAt := time.UnixMilli(timestamp).Add(WebhookTimestampWindow)
-	accepted, err := replay.ReserveWebhookNonce(ctx, headers.KeyID, headers.Nonce, expiresAt)
+	// Keep the nonce one millisecond past the inclusive oldest boundary so a
+	// request accepted at exactly now-window cannot be mistaken for expired.
+	expiresAt := time.UnixMilli(timestamp).Add(WebhookTimestampWindow + time.Millisecond)
+	accepted, err := replay.ReserveWebhookNonce(ctx, headers.KeyID, headers.Nonce, now, expiresAt)
 	if err != nil {
 		if protocolCode := WebhookErrorCode(err); protocolCode != "" {
 			return err
@@ -363,13 +385,28 @@ func VerifyWebhookSignature(ctx context.Context, secret []byte, headers WebhookH
 	return nil
 }
 
+// VerifyWebhookRequest resolves keyID and performs the complete signed request check.
+// VerifyWebhookRequest 解析 keyID 并执行完整签名请求校验。
+func VerifyWebhookRequest(ctx context.Context, headers WebhookHeaders, body []byte, now time.Time, replay WebhookReplayGuard, resolver WebhookKeyResolver) error {
+	if ctx == nil || resolver == nil {
+		return webhookFail(WebhookReplayUnavailable)
+	}
+	secret, err := resolver.ResolveWebhookSecret(ctx, headers.KeyID)
+	if err != nil {
+		if code := WebhookErrorCode(err); code != "" {
+			return err
+		}
+		return webhookFail(WebhookUnknownKey)
+	}
+	return VerifyWebhookSignature(ctx, secret, headers, body, now, replay)
+}
+
 // MemoryWebhookReplayGuard is a bounded single-process reference guard.
 // MemoryWebhookReplayGuard 是有界的单进程参考 guard；生产必须使用共享、持久实现。
 type MemoryWebhookReplayGuard struct {
 	mu      sync.Mutex
 	limit   int
 	entries map[string]time.Time
-	now     func() time.Time
 }
 
 // NewMemoryWebhookReplayGuard creates a fail-closed in-memory guard.
@@ -381,13 +418,12 @@ func NewMemoryWebhookReplayGuard(limit int) (*MemoryWebhookReplayGuard, error) {
 	return &MemoryWebhookReplayGuard{
 		limit:   limit,
 		entries: make(map[string]time.Time, limit),
-		now:     time.Now,
 	}, nil
 }
 
 // ReserveWebhookNonce atomically reserves one nonce without evicting unexpired entries.
 // ReserveWebhookNonce 原子预留 nonce，且不会淘汰尚未过期条目。
-func (g *MemoryWebhookReplayGuard) ReserveWebhookNonce(ctx context.Context, keyID, nonce string, expiresAt time.Time) (bool, error) {
+func (g *MemoryWebhookReplayGuard) ReserveWebhookNonce(ctx context.Context, keyID, nonce string, now, expiresAt time.Time) (bool, error) {
 	if g == nil || ctx == nil {
 		return false, webhookFail(WebhookReplayUnavailable)
 	}
@@ -396,7 +432,6 @@ func (g *MemoryWebhookReplayGuard) ReserveWebhookNonce(ctx context.Context, keyI
 		return false, webhookFail(WebhookReplayUnavailable)
 	default:
 	}
-	now := g.now()
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	for key, expiry := range g.entries {

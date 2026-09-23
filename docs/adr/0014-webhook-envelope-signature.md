@@ -41,16 +41,20 @@ The outbound contract is `webhook-v1`:
 - Each HTTP attempt gets a fresh timestamp and nonce. `eventId` and `deliveryId`
   remain stable across retries and lease takeover. A consumer accepts a timestamp
   within 5 minutes of its trusted clock, atomically reserves the nonce for the full
-  validity interval, and treats the delivery/event identity as the business
-  idempotency key. Replay reservation failure is fail-closed; capacity exhaustion
-  must not evict an unexpired nonce. A bounded single-process reference guard is
-  provided for tests, not as the production shared cache.
+  validity interval (plus one millisecond past the inclusive oldest boundary), and
+  treats the delivery/event identity as the business idempotency key. The verifier
+  decodes the signed envelope and requires its `eventId` to equal the signed header;
+  callers that use multiple key IDs must resolve the secret through an explicit
+  `WebhookKeyResolver`. Replay reservation failure is fail-closed; capacity
+  exhaustion must not evict an unexpired nonce. A bounded single-process reference
+  guard is provided for tests, not as the production shared cache.
 - Stable webhook errors are separate from persisted-message errors:
   `WEBHOOK_INVALID_JSON`, `WEBHOOK_INVALID_ENVELOPE`, `WEBHOOK_ENVELOPE_TOO_LARGE`,
   `WEBHOOK_ENVELOPE_TOO_DEEP`, `WEBHOOK_UNSUPPORTED_SCHEMA`,
   `WEBHOOK_INVALID_HEADERS`, `WEBHOOK_INVALID_SIGNATURE`,
   `WEBHOOK_TIMESTAMP_OUT_OF_WINDOW`, `WEBHOOK_REPLAY_DETECTED`,
-  `WEBHOOK_REPLAY_UNAVAILABLE`, and `WEBHOOK_REPLAY_CAPACITY_EXCEEDED`.
+  `WEBHOOK_REPLAY_UNAVAILABLE`, `WEBHOOK_REPLAY_CAPACITY_EXCEEDED`,
+  `WEBHOOK_UNKNOWN_KEY`, and `WEBHOOK_IDENTITY_MISMATCH`.
 
 ## Compatibility and limits
 
@@ -63,9 +67,10 @@ unknown fields in a v1 envelope are ignored.
 
 ## Tests
 
-`make webhook-envelope` validates canonical encoding, the fixed HMAC vector,
-additive unknown fields, and the positive verifier path. `make
-webhook-envelope-security` validates tampering, wrong keys, clock boundaries,
+`make webhook-envelope` validates canonical encoding, fixed HMAC vectors, additive
+unknown fields, key rotation vectors, inclusive clock boundaries, and the positive
+verifier path. `make webhook-envelope-security` validates tampering, wrong or
+retired keys, non-canonical signature encoding, header/body identity mismatch,
 invalid encodings/headers, concurrent nonce reservation, unknown schema versions,
-and fail-closed capacity. Both targets use the fixed fixture under
-`tests/compatibility/webhook/`.
+oversized encoder input, and fail-closed capacity. Both targets use the fixed
+fixture under `tests/compatibility/webhook/`.
