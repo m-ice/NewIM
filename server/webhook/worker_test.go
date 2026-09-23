@@ -403,4 +403,8 @@ func TestBuildEnvelopePayloadContract(t *testing.T) {
 	if err = json.Unmarshal(payload["payloadSha256"], &digest); err != nil || len(digest) != 64 {
 		t.Fatalf("payloadSha256 = %q, %v", digest, err)
 	}
+	var size string
+	if err = json.Unmarshal(payload["payloadSize"], &size); err != nil || size == "" {
+		t.Fatalf("payloadSize is not a decimal string: %q, %v", size, err)
+	}
 }

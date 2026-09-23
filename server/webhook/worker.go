@@ -288,7 +288,7 @@ func messagePayload(event Event, omitBody bool) any {
 		Payload         json.RawMessage `json:"payload"`
 		PayloadOmitted  bool            `json:"payloadOmitted,omitempty"`
 		PayloadSHA256   string          `json:"payloadSha256,omitempty"`
-		PayloadSize     int             `json:"payloadSize,omitempty"`
+		PayloadSize     string          `json:"payloadSize,omitempty"`
 	}{
 		ClientMsgID:     event.ClientMsgID,
 		ServerMsgID:     event.ServerMsgID,
@@ -302,7 +302,7 @@ func messagePayload(event Event, omitBody bool) any {
 		Payload:         payload,
 		PayloadOmitted:  omitBody,
 		PayloadSHA256:   digest,
-		PayloadSize:     size,
+		PayloadSize:     strconv.Itoa(size),
 	}
 }
 
