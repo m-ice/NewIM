@@ -63,10 +63,8 @@ func (s *Service) Send(ctx context.Context, identity session.ConnectionIdentity,
 	if _, encodeErr := protocol.EncodeSend(request); encodeErr != nil {
 		return protocol.ServerFrame{}, Fail(SendInvalidInput)
 	}
-	if mediaErr := s.validateMedia(ctx, identity, request); mediaErr != nil {
-		return protocol.ServerFrame{}, mediaErr
-	}
 	principal := conversation.Principal{UserID: identity.UserID()}
+	validate := func() error { return s.validateMedia(ctx, identity, request) }
 	generate := func() (Generated, error) {
 		now := s.clock.Now()
 		if now.IsZero() {
@@ -91,7 +89,7 @@ func (s *Service) Send(ctx context.Context, identity session.ConnectionIdentity,
 	}
 	attemptCtx, cancel := context.WithTimeout(ctx, s.requestTimeout)
 	defer cancel()
-	persisted, persistErr := s.store.Persist(attemptCtx, principal, request, generate)
+	persisted, persistErr := s.store.Persist(attemptCtx, principal, request, validate, generate)
 	if persistErr != nil {
 		return protocol.ServerFrame{}, redactedError(persistErr)
 	}

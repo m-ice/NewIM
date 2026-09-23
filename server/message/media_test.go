@@ -13,11 +13,16 @@ import (
 )
 
 type mediaTestStore struct {
-	calls int
+	calls  int
+	writes int
 }
 
-func (s *mediaTestStore) Persist(_ context.Context, _ conversation.Principal, request protocol.Send, generate func() (Generated, error)) (PersistedMessage, error) {
+func (s *mediaTestStore) Persist(_ context.Context, _ conversation.Principal, request protocol.Send, validate func() error, generate func() (Generated, error)) (PersistedMessage, error) {
 	s.calls++
+	if err := validate(); err != nil {
+		return PersistedMessage{}, err
+	}
+	s.writes++
 	generated, err := generate()
 	if err != nil {
 		return PersistedMessage{}, err
@@ -87,25 +92,25 @@ func newMediaTestService(t *testing.T, store Store, validator MediaValidator) *S
 	return service
 }
 
-func TestMediaValidatorFailurePrecedesPersistence(t *testing.T) {
+func TestMediaValidatorFailureStopsPersistBeforeWrite(t *testing.T) {
 	store := &mediaTestStore{}
 	validator := &recordingMediaValidator{err: media.Fail(media.MediaUnauthorized)}
 	service := newMediaTestService(t, store, validator)
 	_, err := service.Send(context.Background(), mediaIdentity(t), mediaSend(t))
-	if ErrorCode(err) != SendUnauthorized || store.calls != 0 || validator.calls != 1 {
-		t.Fatalf("error=%v store=%d validator=%d", err, store.calls, validator.calls)
+	if ErrorCode(err) != SendUnauthorized || store.calls != 1 || store.writes != 0 || validator.calls != 1 {
+		t.Fatalf("error=%v store=%d writes=%d validator=%d", err, store.calls, store.writes, validator.calls)
 	}
 	if validator.metadata.MediaKey != "media_key" || validator.metadata.Size != 12 {
 		t.Fatalf("validator metadata = %+v", validator.metadata)
 	}
 }
 
-func TestMissingMediaValidatorRejectsMediaWithoutPersistence(t *testing.T) {
+func TestMissingMediaValidatorRejectsMediaBeforeWrite(t *testing.T) {
 	store := &mediaTestStore{}
 	service := newMediaTestService(t, store, nil)
 	_, err := service.Send(context.Background(), mediaIdentity(t), mediaSend(t))
-	if ErrorCode(err) != SendInvalidInput || store.calls != 0 {
-		t.Fatalf("error=%v store=%d", err, store.calls)
+	if ErrorCode(err) != SendInvalidInput || store.calls != 1 || store.writes != 0 {
+		t.Fatalf("error=%v store=%d writes=%d", err, store.calls, store.writes)
 	}
 }
 
@@ -119,5 +124,63 @@ func TestTextDoesNotRequireMediaValidator(t *testing.T) {
 	frame, err := service.Send(context.Background(), mediaIdentity(t), request)
 	if err != nil || frame.Ack == nil || store.calls != 1 {
 		t.Fatalf("frame=%+v error=%v store=%d", frame, err, store.calls)
+	}
+}
+
+type flipMediaValidator struct {
+	calls int
+}
+
+func (v *flipMediaValidator) ValidateForSend(_ context.Context, _ session.ConnectionIdentity, _ string, metadata media.Metadata) error {
+	v.calls++
+	if v.calls > 1 {
+		return media.Fail(media.MediaUnauthorized)
+	}
+	return nil
+}
+
+type idempotentMediaStore struct {
+	byClient map[string]PersistedMessage
+}
+
+func (s *idempotentMediaStore) Persist(_ context.Context, _ conversation.Principal, request protocol.Send, validate func() error, generate func() (Generated, error)) (PersistedMessage, error) {
+	if s.byClient == nil {
+		s.byClient = make(map[string]PersistedMessage)
+	}
+	if existing, ok := s.byClient[request.ClientMsgID]; ok {
+		return existing, nil
+	}
+	if err := validate(); err != nil {
+		return PersistedMessage{}, err
+	}
+	generated, err := generate()
+	if err != nil {
+		return PersistedMessage{}, err
+	}
+	stored := PersistedMessage{
+		ClientMsgID: request.ClientMsgID, ConversationID: request.ConversationID, SenderID: "alice",
+		ServerMsgID: generated.ServerMsgID, ConversationSeq: 1, ServerTime: generated.ServerTime,
+	}
+	s.byClient[request.ClientMsgID] = stored
+	return stored, nil
+}
+
+func TestDuplicateMediaRetryReturnsOriginalACK(t *testing.T) {
+	store := &idempotentMediaStore{}
+	validator := &flipMediaValidator{}
+	service := newMediaTestService(t, store, validator)
+	request := mediaSend(t)
+	identity := mediaIdentity(t)
+
+	first, err := service.Send(context.Background(), identity, request)
+	if err != nil || first.Ack == nil {
+		t.Fatalf("first send frame=%+v error=%v", first, err)
+	}
+	second, err := service.Send(context.Background(), identity, request)
+	if err != nil || second.Ack == nil {
+		t.Fatalf("duplicate retry must return original ACK: frame=%+v error=%v", second, err)
+	}
+	if second.Ack.ServerMsgID != first.Ack.ServerMsgID || second.Ack.ConversationSeq != first.Ack.ConversationSeq {
+		t.Fatalf("duplicate ACK changed: first=%+v second=%+v", first.Ack, second.Ack)
 	}
 }

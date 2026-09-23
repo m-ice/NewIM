@@ -203,16 +203,16 @@ type countingStore struct {
 	calls atomic.Int64
 }
 
-func (s *countingStore) Persist(ctx context.Context, principal conversation.Principal, request protocol.Send, generate func() (app.Generated, error)) (app.PersistedMessage, error) {
+func (s *countingStore) Persist(ctx context.Context, principal conversation.Principal, request protocol.Send, validate func() error, generate func() (app.Generated, error)) (app.PersistedMessage, error) {
 	s.calls.Add(1)
-	return s.inner.Persist(ctx, principal, request, generate)
+	return s.inner.Persist(ctx, principal, request, validate, generate)
 }
 
 func (s *countingStore) Calls() int { return int(s.calls.Load()) }
 
 type errorStore struct{ err error }
 
-func (s *errorStore) Persist(context.Context, conversation.Principal, protocol.Send, func() (app.Generated, error)) (app.PersistedMessage, error) {
+func (s *errorStore) Persist(context.Context, conversation.Principal, protocol.Send, func() error, func() (app.Generated, error)) (app.PersistedMessage, error) {
 	return app.PersistedMessage{}, s.err
 }
 
@@ -221,8 +221,8 @@ type lostResponseStore struct {
 	once  atomic.Bool
 }
 
-func (s *lostResponseStore) Persist(ctx context.Context, principal conversation.Principal, request protocol.Send, generate func() (app.Generated, error)) (app.PersistedMessage, error) {
-	result, err := s.inner.Persist(ctx, principal, request, generate)
+func (s *lostResponseStore) Persist(ctx context.Context, principal conversation.Principal, request protocol.Send, validate func() error, generate func() (app.Generated, error)) (app.PersistedMessage, error) {
+	result, err := s.inner.Persist(ctx, principal, request, validate, generate)
 	if err != nil {
 		return app.PersistedMessage{}, err
 	}

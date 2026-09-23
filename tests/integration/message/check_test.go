@@ -3,8 +3,10 @@
 package message_test
 
 import (
+	"context"
 	"encoding/json"
 	"testing"
+	"time"
 
 	protocol "github.com/m-ice/NewIM/core/protocol/go"
 	app "github.com/m-ice/NewIM/server/message"
@@ -69,6 +71,64 @@ func TestMessageCheck(t *testing.T) {
 		}
 		if got := f.scalarString("SELECT convert_from(payload_bytes,'UTF8') FROM newim.im_messages WHERE server_msg_id=$1", original.ServerMsgID); got != `{"text":"original"}` {
 			t.Fatalf("conflict changed original payload: %s", got)
+		}
+	})
+
+	t.Run("duplicate-media-retry-skips-revalidation", func(t *testing.T) {
+		f := openFixture(t)
+		conversationID := f.seedConversation("dup_media_retry_check", "alice")
+		validator := &flipMediaValidator{}
+		service, err := app.NewService(f.repo, app.Config{
+			IDs:            &sequenceIDs{prefix: "dup_media"},
+			Clock:          app.ClockFunc(func() time.Time { return time.UnixMilli(f.now.Load()).UTC() }),
+			MediaValidator: validator,
+		})
+		must(t, err)
+		payload, err := protocol.EncodeMediaPayload(protocol.MediaMetadata{
+			MediaKey: "dup_media_key", Kind: "image", ContentType: "image/jpeg",
+			Size: "12", SHA256: "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+		})
+		must(t, err)
+		request := protocol.Send{
+			ProtocolVersion: 1, ClientMsgID: "dup_media_client", ConversationID: conversationID,
+			Version: 1, Type: "media", Payload: payload,
+		}
+		identity := f.identity("alice")
+
+		first, err := service.Send(context.Background(), identity, request)
+		must(t, err)
+		second, err := service.Send(context.Background(), identity, request)
+		must(t, err)
+		if first.Ack == nil || second.Ack == nil || first.Ack.ServerMsgID != second.Ack.ServerMsgID ||
+			first.Ack.ConversationSeq != second.Ack.ConversationSeq {
+			t.Fatalf("duplicate ACK mismatch: first=%+v second=%+v", first.Ack, second.Ack)
+		}
+		if validator.calls.Load() != 1 {
+			t.Fatalf("media validation calls = %d, want 1", validator.calls.Load())
+		}
+	})
+
+	t.Run("duplicate-retry-skips-id-generation", func(t *testing.T) {
+		f := openFixture(t)
+		conversationID := f.seedConversation("dup_text_retry_check", "alice")
+		ids := &limitedIDs{}
+		service, err := app.NewService(f.repo, app.Config{
+			IDs:   ids,
+			Clock: app.ClockFunc(func() time.Time { return time.UnixMilli(f.now.Load()).UTC() }),
+		})
+		must(t, err)
+		request := f.request("dup_text_client", conversationID, "hello")
+		identity := f.identity("alice")
+
+		first, err := service.Send(context.Background(), identity, request)
+		must(t, err)
+		second, err := service.Send(context.Background(), identity, request)
+		must(t, err)
+		if first.Ack == nil || second.Ack == nil || first.Ack.ServerMsgID != second.Ack.ServerMsgID {
+			t.Fatalf("duplicate ACK mismatch: first=%+v second=%+v", first.Ack, second.Ack)
+		}
+		if ids.calls.Load() != 2 {
+			t.Fatalf("ID generation calls = %d, want 2", ids.calls.Load())
 		}
 	})
 
