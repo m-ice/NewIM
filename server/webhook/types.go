@@ -83,6 +83,10 @@ type Observation struct {
 	Elapsed        time.Duration
 	Total          int
 	MaxDestination int
+	Pending        int
+	Retry          int
+	Leased         int
+	DeadLetter     int
 }
 
 // Observer receives best-effort observations.
@@ -143,6 +147,10 @@ type Delivery struct {
 type Counts struct {
 	Total          int
 	MaxDestination int
+	Pending        int
+	Retry          int
+	Leased         int
+	DeadLetter     int
 }
 
 // Outcome is a valid terminal or retry transition for a claimed delivery.

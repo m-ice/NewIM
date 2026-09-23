@@ -225,7 +225,10 @@ func (w *Worker) observe(operation string, code Code, elapsed time.Duration) {
 
 func (w *Worker) observeCounts(operation string, code Code, counts Counts) {
 	if w.cfg.Observer != nil {
-		w.cfg.Observer.Observe(Observation{Operation: operation, Code: code, Total: counts.Total, MaxDestination: counts.MaxDestination})
+		w.cfg.Observer.Observe(Observation{
+			Operation: operation, Code: code, Total: counts.Total, MaxDestination: counts.MaxDestination,
+			Pending: counts.Pending, Retry: counts.Retry, Leased: counts.Leased, DeadLetter: counts.DeadLetter,
+		})
 	}
 }
 

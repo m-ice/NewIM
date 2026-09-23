@@ -57,7 +57,8 @@ pending/retry/leased -> cancelled (endpoint revoked)
 `SecureClient` 一次解析全部地址，拒绝 loopback/private/link-local/multicast/reserved、
 documentation、IPv4-mapped IPv6、NAT64、6to4、Teredo 和 site-local 绕过；实际 dial 只连接已批准 IP，保留原始
 Host/SNI/TLS 校验，禁止 proxy 环境和重定向。超时、响应体、并发、fan-out endpoint
-数量、单 endpoint 队列、速率、重试和 backlog 都有硬上限。生产默认 HTTPS；测试 loopback/HTTP policy 只能由
+数量、单 endpoint 队列、速率、重试和 backlog 都有硬上限；global high-water 允许单个
+合法事件的有界 overshoot，避免事件 endpoint 数本身较大时永久饥饿。生产默认 HTTPS；测试 loopback/HTTP policy 只能由
 测试构造器显式传入。
 
 当前部署契约是每个数据库一个 Webhook worker 进程；上述并发和 token-bucket 是该进程内的硬上限。

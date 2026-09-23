@@ -54,13 +54,26 @@ func run(args []string, stdout, stderr io.Writer, read func() (buildinfo.Info, e
 	}
 	workerCtx, cancelWorker := context.WithCancel(ctx)
 	defer cancelWorker()
+	serverCtx, cancelServer := context.WithCancel(ctx)
+	defer cancelServer()
 	var runtimeDone chan error
 	if runtime != nil {
 		defer runtime.Close()
 		runtimeDone = make(chan error, 1)
 		go func() { runtimeDone <- runtime.Run(workerCtx) }()
 	}
-	serverErr := server.Run(ctx)
+	serverDone := make(chan error, 1)
+	go func() { serverDone <- server.Run(serverCtx) }()
+	var serverErr error
+	select {
+	case serverErr = <-serverDone:
+	case workerErr := <-runtimeDone:
+		serverErr = workerErr
+		cancelServer()
+		if err := <-serverDone; serverErr == nil {
+			serverErr = err
+		}
+	}
 	cancelWorker()
 	if runtimeDone != nil {
 		select {

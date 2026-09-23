@@ -184,8 +184,13 @@ func (r *Repository) Counts(ctx context.Context) (app.Counts, error) {
 	if r == nil || r.pool == nil || ctx == nil {
 		return counts, app.Fail(app.CodeStorageUnavailable)
 	}
-	if err := r.pool.QueryRow(ctx, `SELECT count(*)::int FROM newim.im_webhook_deliveries
-WHERE status IN ('pending','retry','leased')`).Scan(&counts.Total); err != nil {
+	if err := r.pool.QueryRow(ctx, `SELECT
+count(*) FILTER (WHERE status IN ('pending','retry','leased'))::int,
+count(*) FILTER (WHERE status='pending')::int,
+count(*) FILTER (WHERE status='retry')::int,
+count(*) FILTER (WHERE status='leased')::int,
+count(*) FILTER (WHERE status='dead_letter')::int
+FROM newim.im_webhook_deliveries`).Scan(&counts.Total, &counts.Pending, &counts.Retry, &counts.Leased, &counts.DeadLetter); err != nil {
 		return counts, mapStorageError(err)
 	}
 	if err := r.pool.QueryRow(ctx, `SELECT COALESCE(max(c),0)::int FROM (
@@ -297,7 +302,9 @@ FOR UPDATE`)
 		if queueFull {
 			continue
 		}
-		if globalPending+len(refs) > maxGlobalQueue {
+		// Admit at most one event's worth of fan-out above the high-water mark;
+		// this avoids starving a valid event whose endpoint count is itself large.
+		if globalPending >= maxGlobalQueue {
 			continue
 		}
 		for _, ref := range refs {
