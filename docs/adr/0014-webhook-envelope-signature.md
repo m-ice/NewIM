@@ -54,7 +54,8 @@ The outbound contract is `webhook-v1`:
   `WEBHOOK_INVALID_HEADERS`, `WEBHOOK_INVALID_SIGNATURE`,
   `WEBHOOK_TIMESTAMP_OUT_OF_WINDOW`, `WEBHOOK_REPLAY_DETECTED`,
   `WEBHOOK_REPLAY_UNAVAILABLE`, `WEBHOOK_REPLAY_CAPACITY_EXCEEDED`,
-  `WEBHOOK_UNKNOWN_KEY`, and `WEBHOOK_IDENTITY_MISMATCH`.
+  `WEBHOOK_UNKNOWN_KEY`, `WEBHOOK_KEY_UNAVAILABLE`, and
+  `WEBHOOK_IDENTITY_MISMATCH`.
 
 ## Compatibility and limits
 
@@ -71,6 +72,7 @@ unknown fields in a v1 envelope are ignored.
 unknown fields, key rotation vectors, inclusive clock boundaries, and the positive
 verifier path. `make webhook-envelope-security` validates tampering, wrong or
 retired keys, non-canonical signature encoding, header/body identity mismatch,
-invalid encodings/headers, concurrent nonce reservation, unknown schema versions,
-oversized encoder input, and fail-closed capacity. Both targets use the fixed
-fixture under `tests/compatibility/webhook/`.
+invalid encodings/headers, resolver short-circuiting and transient failures,
+concurrent nonce reservation, unknown schema versions, oversized encoder input,
+and fail-closed capacity. Both targets use the fixed fixture under
+`tests/compatibility/webhook/`.

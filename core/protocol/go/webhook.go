@@ -68,6 +68,7 @@ const (
 	WebhookReplayUnavailable WebhookCode = "WEBHOOK_REPLAY_UNAVAILABLE"
 	WebhookCapacityExceeded  WebhookCode = "WEBHOOK_REPLAY_CAPACITY_EXCEEDED"
 	WebhookUnknownKey        WebhookCode = "WEBHOOK_UNKNOWN_KEY"
+	WebhookKeyUnavailable    WebhookCode = "WEBHOOK_KEY_UNAVAILABLE"
 	WebhookIdentityMismatch  WebhookCode = "WEBHOOK_IDENTITY_MISMATCH"
 )
 
@@ -281,6 +282,9 @@ func ParseWebhookHeaders(values map[string][]string) (WebhookHeaders, error) {
 	if err := validateWebhookHeaders(headers); err != nil {
 		return WebhookHeaders{}, err
 	}
+	if _, err := validateWebhookSignatureEncoding(headers.Signature); err != nil {
+		return WebhookHeaders{}, err
+	}
 	return headers, nil
 }
 
@@ -338,10 +342,9 @@ func VerifyWebhookSignature(ctx context.Context, secret []byte, headers WebhookH
 	if headers.SignatureVersion != WebhookSignatureVersion || !strings.HasPrefix(headers.Signature, "v1=") {
 		return webhookFail(WebhookInvalidSignature)
 	}
-	encodedSignature := strings.TrimPrefix(headers.Signature, "v1=")
-	provided, err := base64.RawURLEncoding.Strict().DecodeString(encodedSignature)
-	if err != nil || len(provided) != sha256.Size || base64.RawURLEncoding.EncodeToString(provided) != encodedSignature {
-		return webhookFail(WebhookInvalidSignature)
+	provided, err := validateWebhookSignatureEncoding(headers.Signature)
+	if err != nil {
+		return err
 	}
 	signing, err := CanonicalWebhookSigningBytes(headers, body)
 	if err != nil {
@@ -388,15 +391,28 @@ func VerifyWebhookSignature(ctx context.Context, secret []byte, headers WebhookH
 // VerifyWebhookRequest resolves keyID and performs the complete signed request check.
 // VerifyWebhookRequest 解析 keyID 并执行完整签名请求校验。
 func VerifyWebhookRequest(ctx context.Context, headers WebhookHeaders, body []byte, now time.Time, replay WebhookReplayGuard, resolver WebhookKeyResolver) error {
-	if ctx == nil || resolver == nil {
+	if ctx == nil || now.IsZero() || replay == nil || resolver == nil {
 		return webhookFail(WebhookReplayUnavailable)
+	}
+	if err := validateWebhookHeaders(headers); err != nil {
+		return err
+	}
+	envelope, err := DecodeWebhookEnvelope(body)
+	if err != nil {
+		return err
+	}
+	if headers.EventID != envelope.EventID {
+		return webhookFail(WebhookIdentityMismatch)
+	}
+	if _, err := validateWebhookSignatureEncoding(headers.Signature); err != nil {
+		return err
 	}
 	secret, err := resolver.ResolveWebhookSecret(ctx, headers.KeyID)
 	if err != nil {
 		if code := WebhookErrorCode(err); code != "" {
 			return err
 		}
-		return webhookFail(WebhookUnknownKey)
+		return webhookFail(WebhookKeyUnavailable)
 	}
 	return VerifyWebhookSignature(ctx, secret, headers, body, now, replay)
 }
@@ -494,6 +510,18 @@ func validateWebhookHeaders(headers WebhookHeaders) error {
 		return webhookFail(WebhookInvalidSignature)
 	}
 	return nil
+}
+
+func validateWebhookSignatureEncoding(signature string) ([]byte, error) {
+	if !strings.HasPrefix(signature, "v1=") {
+		return nil, webhookFail(WebhookInvalidSignature)
+	}
+	encoded := strings.TrimPrefix(signature, "v1=")
+	decoded, err := base64.RawURLEncoding.Strict().DecodeString(encoded)
+	if err != nil || len(decoded) != sha256.Size || base64.RawURLEncoding.EncodeToString(decoded) != encoded {
+		return nil, webhookFail(WebhookInvalidSignature)
+	}
+	return decoded, nil
 }
 
 func validateWebhookSigningHeaders(headers WebhookHeaders) error {

@@ -77,8 +77,9 @@ secret 至少 32 bytes。signature 的 base64url 必须严格规范，解码后�
   `WEBHOOK_REPLAY_CAPACITY_EXCEEDED` 或 `WEBHOOK_REPLAY_UNAVAILABLE`，必须 fail-closed。
 - 业务幂等以 `deliveryId`（或稳定的 `eventId`）为准；nonce 只用于网络重放拒绝。
 - `keyId` 必须由显式 `WebhookKeyResolver` 解析；未知或退役 key 返回
-  `WEBHOOK_UNKNOWN_KEY`。header 与 body 的 event ID 不一致返回
-  `WEBHOOK_IDENTITY_MISMATCH`，不得只验证其中一处。
+  `WEBHOOK_UNKNOWN_KEY`，临时 secret-store 故障返回 `WEBHOOK_KEY_UNAVAILABLE`。
+  resolver 必须在 header/envelope/签名格式校验通过后才调用。header 与 body 的
+  event ID 不一致返回 `WEBHOOK_IDENTITY_MISMATCH`，不得只验证其中一处。
 
 固定正例、边界、key rotation、decode 和 negative 向量位于
 `tests/compatibility/webhook/fixtures/cases.json`。Go API 位于

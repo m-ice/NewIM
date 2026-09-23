@@ -97,7 +97,7 @@
       "timestamp": "1790189001000",
       "nonce": "AAECAwQFBgcICQoLDA0ODw",
       "keyId": "key_current",
-      "signature": "v1=9aDOTjbNZeXLPlPzU2TXFgN34XQ6itdQGBH5K9lgahB",
+      "signature": "v1=9aDOTjbNZeXLPlPzU2TXFgN34XQ6itdQGBH5K9lgahV",
       "expected": "WEBHOOK_INVALID_SIGNATURE"
     },
     {

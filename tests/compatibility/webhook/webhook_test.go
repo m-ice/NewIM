@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"strconv"
@@ -104,6 +105,12 @@ func (r resolver) ResolveWebhookSecret(_ context.Context, keyID string) ([]byte,
 		return nil, protocol.WebhookUnknownKey
 	}
 	return []byte(secret), nil
+}
+
+type resolverFunc func(context.Context, string) ([]byte, error)
+
+func (f resolverFunc) ResolveWebhookSecret(ctx context.Context, keyID string) ([]byte, error) {
+	return f(ctx, keyID)
 }
 
 func TestWebhookEnvelope(t *testing.T) {
@@ -247,6 +254,54 @@ func TestWebhookSecurity(t *testing.T) {
 		second.Signature = signature
 		err = protocol.VerifyWebhookSignature(context.Background(), []byte(c.Secret), second, []byte(c.Wire), time.UnixMilli(c.Now), guard)
 		assertCode(t, err, protocol.WebhookCapacityExceeded)
+	})
+	t.Run("parser_rejects_noncanonical_signature", func(t *testing.T) {
+		h := headers(fixtures.Positive[0])
+		h.Signature = h.Signature[:len(h.Signature)-1] + "V"
+		if _, err := protocol.ParseWebhookHeaders(headerMap(h)); protocol.WebhookErrorCode(err) != protocol.WebhookInvalidSignature {
+			t.Fatalf("noncanonical signature accepted by parser: %v", err)
+		}
+	})
+	t.Run("malformed_headers_skip_resolver", func(t *testing.T) {
+		c := fixtures.Positive[0]
+		h := headers(c)
+		h.KeyID = "bad key"
+		calls := 0
+		r := resolverFunc(func(context.Context, string) ([]byte, error) {
+			calls++
+			return []byte(c.Secret), nil
+		})
+		guard, _ := protocol.NewMemoryWebhookReplayGuard(4)
+		err := protocol.VerifyWebhookRequest(context.Background(), h, []byte(c.Wire), time.UnixMilli(c.Now), guard, r)
+		assertCode(t, err, protocol.WebhookInvalidHeaders)
+		if calls != 0 {
+			t.Fatalf("resolver called %d times for malformed headers", calls)
+		}
+	})
+	t.Run("malformed_body_skips_resolver", func(t *testing.T) {
+		c := fixtures.Positive[0]
+		calls := 0
+		r := resolverFunc(func(context.Context, string) ([]byte, error) {
+			calls++
+			return []byte(c.Secret), nil
+		})
+		guard, _ := protocol.NewMemoryWebhookReplayGuard(4)
+		err := protocol.VerifyWebhookRequest(context.Background(), headers(c), []byte("null"), time.UnixMilli(c.Now), guard, r)
+		if protocol.WebhookErrorCode(err) != protocol.WebhookInvalidEnvelope {
+			t.Fatalf("malformed body error = %v", err)
+		}
+		if calls != 0 {
+			t.Fatalf("resolver called %d times for malformed body", calls)
+		}
+	})
+	t.Run("transient_resolver_failure", func(t *testing.T) {
+		c := fixtures.Positive[0]
+		guard, _ := protocol.NewMemoryWebhookReplayGuard(4)
+		r := resolverFunc(func(context.Context, string) ([]byte, error) {
+			return nil, errors.New("temporary secret store failure")
+		})
+		err := protocol.VerifyWebhookRequest(context.Background(), headers(c), []byte(c.Wire), time.UnixMilli(c.Now), guard, r)
+		assertCode(t, err, protocol.WebhookKeyUnavailable)
 	})
 	t.Run("error_code_preservation", func(t *testing.T) {
 		if got := protocol.WebhookErrorCode(protocol.WebhookCapacityExceeded); got != protocol.WebhookCapacityExceeded {
