@@ -14,9 +14,11 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -213,6 +215,56 @@ func TestServerRecovery(t *testing.T) {
 		}
 		if err := <-runDone; err != nil {
 			t.Fatalf("Run failed: %v", err)
+		}
+	})
+
+	t.Run("Run handles SIGTERM with active request", func(t *testing.T) {
+		server, err := New(Config{APIAddr: "127.0.0.1:0", OpsAddr: "127.0.0.1:0", ServerVersion: "0.1.0-test"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		server.apiServer.Handler = blockingHandler(t, release, entered)
+		ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGTERM)
+		defer stop()
+		runDone := make(chan error, 1)
+		go func() { runDone <- server.Run(ctx) }()
+		waitForReady(t, server)
+		requestDone := make(chan error, 1)
+		go func() {
+			response, err := http.Get("http://" + server.APIAddr() + "/")
+			if err == nil {
+				_ = response.Body.Close()
+			}
+			requestDone <- err
+		}()
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("SIGTERM request did not enter handler")
+		}
+		if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
+			t.Fatal(err)
+		}
+		deadline := time.Now().Add(time.Second)
+		for server.Ready() && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+		if server.Ready() {
+			t.Fatal("SIGTERM did not fail readiness closed")
+		}
+		select {
+		case err := <-runDone:
+			t.Fatalf("Run returned before SIGTERM request completed: %v", err)
+		case <-time.After(50 * time.Millisecond):
+		}
+		close(release)
+		if err := <-requestDone; err != nil {
+			t.Fatalf("SIGTERM request failed: %v", err)
+		}
+		if err := <-runDone; err != nil {
+			t.Fatalf("SIGTERM shutdown failed: %v", err)
 		}
 	})
 
@@ -447,6 +499,16 @@ func TestHTTPSecurity(t *testing.T) {
 		if strings.Contains(body, "private-path") || strings.Contains(body, "?") {
 			t.Fatalf("metrics leaked request-derived data: %s", body)
 		}
+		var inFlight bytes.Buffer
+		server.metrics.begin("api", "health", "GET")
+		server.metrics.begin("api", "health", "POST")
+		if err := server.metrics.writeTo(&inFlight); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Count(inFlight.String(), `newim_http_requests_in_flight{listener="api",route="health"} `) != 1 || !strings.Contains(inFlight.String(), `newim_http_requests_in_flight{listener="api",route="health"} 2`) {
+			t.Fatalf("in-flight labels did not aggregate: %s", inFlight.String())
+		}
+
 		allowed := regexp.MustCompile(`(?:listener|route|method|status)="([^"]*)"`)
 		for _, match := range allowed.FindAllStringSubmatch(body, -1) {
 			value := match[1]

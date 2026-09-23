@@ -16,8 +16,8 @@ semantics.
 | Ops | `127.0.0.1:9090` | `/ready` | `GET` | `200` `{"status":"ready"}` |
 | Ops | `127.0.0.1:9090` | `/metrics` | `GET` | `200` Prometheus text |
 
-Routes are exact raw paths: trailing slashes and percent-encoded aliases are not
-accepted. Health is liveness only;
+Routes are exact raw paths: trailing slashes, percent-encoded aliases, and the
+special `OPTIONS *` target are not accepted as aliases. Health is liveness only;
 it does not probe a database. Readiness is true only after both listeners bind
 and serving starts, and becomes false before shutdown drain begins.
 
