@@ -5,6 +5,7 @@ package messagesync_test
 import (
 	"context"
 	"errors"
+	"math"
 	"strings"
 	"testing"
 
@@ -96,6 +97,32 @@ func TestDelta(t *testing.T) {
 		t.Fatalf("unexpected default page: %+v", all)
 	}
 
+	afterZero, err := f.read(app.ReadRequest{ConversationID: conversationID, HasAfterSeq: true, AfterSeq: 0, Limit: 1})
+	must(t, err)
+	assertSequences(t, afterZero, 1)
+	if !afterZero.HasNext || afterZero.NextAfterSeq == nil || *afterZero.NextAfterSeq != 1 {
+		t.Fatalf("unexpected after-zero boundary page: %+v", afterZero)
+	}
+	for name, request := range map[string]app.ReadRequest{
+		"min-after": {ConversationID: conversationID, HasAfterSeq: true, AfterSeq: math.MinInt64, Limit: 10},
+		"max-after": {ConversationID: conversationID, HasAfterSeq: true, AfterSeq: math.MaxInt64, Limit: 10},
+	} {
+		t.Run(name, func(t *testing.T) {
+			page, err := f.read(request)
+			mustCode(t, err, app.InvalidCursor)
+			assertZeroPage(t, page)
+		})
+	}
+
+	reordered := f.seedConversation("delta_reordered", f.user)
+	for _, seq := range []int64{3, 1, 2} {
+		f.insertMessage(reordered, seq, payloadOfLength(40))
+	}
+	f.setHead(reordered, 3, f.messageID(reordered, 3))
+	orderedPage, err := f.read(app.ReadRequest{ConversationID: reordered, Limit: 10})
+	must(t, err)
+	assertSequences(t, orderedPage, 1, 2, 3)
+
 	for name, request := range map[string]app.ReadRequest{
 		"negative-after":     {ConversationID: conversationID, HasAfterSeq: true, AfterSeq: -1, Limit: 10},
 		"presence-conflict":  {ConversationID: conversationID, AfterSeq: 1, Limit: 10},
@@ -110,6 +137,11 @@ func TestDelta(t *testing.T) {
 	t.Run("negative-limit", func(t *testing.T) {
 		page, err := f.read(app.ReadRequest{ConversationID: conversationID, Limit: -1})
 		mustCode(t, err, app.LimitExceeded)
+		assertZeroPage(t, page)
+	})
+	t.Run("cursor-error-precedes-limit", func(t *testing.T) {
+		page, err := f.read(app.ReadRequest{ConversationID: conversationID, HasAfterSeq: true, AfterSeq: -1, Limit: -1})
+		mustCode(t, err, app.InvalidCursor)
 		assertZeroPage(t, page)
 	})
 
@@ -141,6 +173,21 @@ func TestRedaction(t *testing.T) {
 	}
 	if len(observer.values) != 1 || observer.values[0].Code != app.StorageUnavailable {
 		t.Fatalf("unexpected observations: %+v", observer.values)
+	}
+
+	// Exercise a real adapter/driver error whose unsealed text would contain a
+	// table name. The public error must still expose only the stable code.
+	real := openFixture(t)
+	conversationID := real.seedConversation("redaction_real", real.user)
+	real.sql("ALTER TABLE newim.im_messages RENAME TO im_messages_hidden")
+	t.Cleanup(func() {
+		real.sql("ALTER TABLE newim.im_messages_hidden RENAME TO im_messages")
+	})
+	page, err := real.read(app.ReadRequest{ConversationID: conversationID, Limit: 10})
+	mustCode(t, err, app.StorageUnavailable)
+	assertZeroPage(t, page)
+	if strings.Contains(err.Error(), "im_messages") || strings.Contains(err.Error(), "SELECT") || strings.Contains(err.Error(), "postgres") {
+		t.Fatalf("adapter driver detail escaped sealed error: %v", err)
 	}
 }
 

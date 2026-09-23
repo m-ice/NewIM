@@ -49,6 +49,10 @@ SELECT 'qp_other_server_'||g,'qp_other_client_'||g,$1,$2,g,1,1,'text',g,convert_
 			t.Fatalf("%s plan is not JSON", label)
 		}
 	}
+	assertPlanRowsAtMost(t, plans["page"], 101)
+	assertPlanRowsAtMost(t, plans["first"], 2)
+	assertPlanRowsAtMost(t, plans["last"], 2)
+	assertPlanRowsAtMost(t, plans["anchor"], 2)
 	if err := os.WriteFile("/tmp/nim-syn-005-query-plans.json", mustJSON(t, plans), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -64,4 +68,36 @@ func mustJSON(t *testing.T, value any) []byte {
 	data, err := json.MarshalIndent(value, "", "  ")
 	must(t, err)
 	return append(data, '\n')
+}
+
+func assertPlanRowsAtMost(t *testing.T, raw json.RawMessage, maximum float64) {
+	t.Helper()
+	var value any
+	decoder := json.NewDecoder(strings.NewReader(string(raw)))
+	decoder.UseNumber()
+	if err := decoder.Decode(&value); err != nil {
+		t.Fatalf("decode plan: %v", err)
+	}
+	var walk func(any)
+	walk = func(node any) {
+		switch current := node.(type) {
+		case map[string]any:
+			for key, child := range current {
+				if key == "Actual Rows" {
+					if number, ok := child.(json.Number); ok {
+						rows, err := number.Float64()
+						if err == nil && rows > maximum {
+							t.Fatalf("plan actual rows %.0f exceed %.0f: %s", rows, maximum, string(raw))
+						}
+					}
+				}
+				walk(child)
+			}
+		case []any:
+			for _, child := range current {
+				walk(child)
+			}
+		}
+	}
+	walk(value)
 }

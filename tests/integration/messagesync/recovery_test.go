@@ -42,13 +42,14 @@ func prepareRecovery(t *testing.T, f *fixture) {
 
 	seqZero := f.seedConversation("recovery_seq_zero", f.user)
 	f.insertMessage(seqZero, 0, payloadOfLength(40))
-	f.setHead(seqZero, 0, f.messageID(seqZero, 0))
+	f.insertMessage(seqZero, 1, payloadOfLength(40))
+	f.setHead(seqZero, 1, f.messageID(seqZero, 1))
 
 	aboveHead := f.seedConversation("recovery_above_head", f.user)
 	for _, seq := range []int64{1, 3} {
 		f.insertMessage(aboveHead, seq, payloadOfLength(40))
 	}
-	f.setHead(aboveHead, 2, f.messageID(aboveHead, 1))
+	f.setHead(aboveHead, 1, f.messageID(aboveHead, 1))
 
 	badPointer := f.seedConversation("recovery_bad_pointer", f.user)
 	for _, seq := range []int64{1, 2} {
