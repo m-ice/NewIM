@@ -1,7 +1,7 @@
 # HTTP service foundation
 
-Status: review  
-Task: NIM-SRV-004  
+Status: review
+Task: NIM-SRV-004
 API version: `v1`
 
 This specification defines only the loopback process skeleton. It does not
