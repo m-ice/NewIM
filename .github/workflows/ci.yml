@@ -41,6 +41,9 @@ jobs:
       - name: Exercise durable conversation sync projection
         timeout-minutes: 12
         run: make sync-check
+      - name: Exercise bounded message delta reads
+        timeout-minutes: 15
+        run: make message-delta-check
       - name: Exercise auth token storage and identity
         timeout-minutes: 10
         run: make auth-check

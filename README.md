@@ -72,6 +72,18 @@ the four media suites, the three message-send suites and the explicit SDK
 outbox gate on Ubuntu 24.04. A successful local run does not establish that a
 hosted CI job ran.
 
+## 内部消息增量读取
+
+`server/sync/message` 提供策略中立的内部 `afterSeq` 读取端口，`server/storage/messagesync` 使用既有 `im_messages`、conversation head 和 membership 在 `REPEATABLE READ READ ONLY` 快照中实现 PostgreSQL 适配器。它支持显式 continuation anchor、有界分页/字节预算、连续性与 head/pointer fail-closed，不提供 HTTP/WS、登录、device、read/unread、retention、block、push 或客户端 gap 状态机。
+
+真实 PostgreSQL 验收：
+
+```sh
+make message-delta-check
+```
+
+该目标覆盖 authz、delta、query-plan、recovery 和 redaction；它不代表公共同步协议或客户端网络接入已经完成。
+
 ## Build identity and schema versions
 
 ```sh
