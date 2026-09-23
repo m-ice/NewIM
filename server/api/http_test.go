@@ -45,6 +45,8 @@ func TestHTTPContracts(t *testing.T) {
 		{name: "ready", handler: opsHandler, method: http.MethodGet, target: "/ready", wantStatus: 200, wantBody: "{\"status\":\"ready\"}\n", wantContent: "application/json; charset=utf-8"},
 		{name: "not ready", handler: opsHandler, method: http.MethodGet, target: "/ready", wantStatus: 503, wantCode: ServerNotReady, wantContent: "application/json; charset=utf-8"},
 		{name: "api unknown", handler: apiHandler, method: http.MethodGet, target: "/api/v1/health/", wantStatus: 404, wantCode: HTTPRouteNotFound, wantContent: "application/json; charset=utf-8"},
+		{name: "encoded slash is not an alias", handler: apiHandler, method: http.MethodGet, target: "/api%2Fv1%2Fhealth", wantStatus: 404, wantCode: HTTPRouteNotFound, wantContent: "application/json; charset=utf-8"},
+		{name: "encoded health is not an alias", handler: apiHandler, method: http.MethodGet, target: "/api/v1/%68ealth", wantStatus: 404, wantCode: HTTPRouteNotFound, wantContent: "application/json; charset=utf-8"},
 		{name: "api surface isolation", handler: apiHandler, method: http.MethodGet, target: "/ready", wantStatus: 404, wantCode: HTTPRouteNotFound, wantContent: "application/json; charset=utf-8"},
 		{name: "ops surface isolation", handler: opsHandler, method: http.MethodGet, target: "/api/v1/health", wantStatus: 404, wantCode: HTTPRouteNotFound, wantContent: "application/json; charset=utf-8"},
 		{name: "method", handler: apiHandler, method: http.MethodPost, target: "/api/v1/health", wantStatus: 405, wantCode: HTTPMethodNotAllowed, wantAllow: http.MethodGet, wantContent: "application/json; charset=utf-8"},
@@ -140,13 +142,107 @@ func TestServerRecovery(t *testing.T) {
 		}
 	})
 
+	t.Run("shutdown waits for active request", func(t *testing.T) {
+		server, listener, release := blockingServer(t)
+		defer listener.Close()
+		entered := make(chan struct{})
+		server.apiServer.Handler = blockingHandler(t, release, entered)
+		serveDone := make(chan error, 1)
+		go func() { serveDone <- server.apiServer.Serve(listener) }()
+		requestDone := make(chan error, 1)
+		go func() {
+			response, err := http.Get("http://" + listener.Addr().String() + "/")
+			if err == nil {
+				_ = response.Body.Close()
+			}
+			requestDone <- err
+		}()
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("active request did not enter handler")
+		}
+		shutdownDone := make(chan error, 1)
+		go func() { shutdownDone <- server.Shutdown(context.Background()) }()
+		select {
+		case err := <-shutdownDone:
+			t.Fatalf("shutdown returned before active request completed: %v", err)
+		case <-time.After(50 * time.Millisecond):
+		}
+		close(release)
+		if err := <-shutdownDone; err != nil {
+			t.Fatalf("graceful shutdown failed: %v", err)
+		}
+		if err := <-requestDone; err != nil {
+			t.Fatalf("active request failed: %v", err)
+		}
+		select {
+		case err := <-serveDone:
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				t.Fatalf("serve return: %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("serve did not return after shutdown")
+		}
+	})
+
+	t.Run("shutdown timeout force-closes active request", func(t *testing.T) {
+		server, listener, release := blockingServer(t)
+		defer listener.Close()
+		entered := make(chan struct{})
+		server.apiServer.Handler = blockingHandler(t, release, entered)
+		serveDone := make(chan error, 1)
+		go func() { serveDone <- server.apiServer.Serve(listener) }()
+		requestDone := make(chan error, 1)
+		go func() {
+			response, err := http.Get("http://" + listener.Addr().String() + "/")
+			if err == nil {
+				_ = response.Body.Close()
+			}
+			requestDone <- err
+		}()
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("active request did not enter handler")
+		}
+		ctx, cancel := context.WithTimeout(context.Background(), 50*time.Millisecond)
+		defer cancel()
+		err := server.Shutdown(ctx)
+		if codeOf(err) != CodeShutdownFailed {
+			t.Fatalf("shutdown timeout code=%q err=%v", codeOf(err), err)
+		}
+		close(release)
+		select {
+		case <-requestDone:
+		case <-time.After(time.Second):
+			t.Fatal("forced-close request did not return")
+		}
+		select {
+		case err := <-serveDone:
+			if err != nil && !errors.Is(err, http.ErrServerClosed) {
+				t.Fatalf("serve return: %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("serve did not return after forced close")
+		}
+	})
+
 	t.Run("second bind failure is atomic", func(t *testing.T) {
 		held, err := net.Listen("tcp", "127.0.0.1:0")
 		if err != nil {
 			t.Fatal(err)
 		}
 		defer held.Close()
-		server, err := New(Config{APIAddr: "127.0.0.1:0", OpsAddr: held.Addr().String(), ServerVersion: "0.1.0-test"}, nil)
+		free, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		apiAddr := free.Addr().String()
+		if err := free.Close(); err != nil {
+			t.Fatal(err)
+		}
+		server, err := New(Config{APIAddr: apiAddr, OpsAddr: held.Addr().String(), ServerVersion: "0.1.0-test"}, nil)
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -157,6 +253,11 @@ func TestServerRecovery(t *testing.T) {
 		if server.APIAddr() != "" || server.OpsAddr() != "" {
 			t.Fatalf("failed startup retained listeners: api=%q ops=%q", server.APIAddr(), server.OpsAddr())
 		}
+		probe, listenErr := net.Listen("tcp", apiAddr)
+		if listenErr != nil {
+			t.Fatalf("first listener remained open after second-bind failure: %v", listenErr)
+		}
+		_ = probe.Close()
 	})
 }
 
@@ -282,6 +383,28 @@ func TestImportBoundary(t *testing.T) {
 			}
 		}
 	}
+}
+
+func blockingServer(t *testing.T) (*Server, net.Listener, chan struct{}) {
+	t.Helper()
+	server, err := New(Config{APIAddr: "127.0.0.1:0", OpsAddr: "127.0.0.1:0", ServerVersion: "0.1.0-test"}, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return server, listener, make(chan struct{})
+}
+
+func blockingHandler(t *testing.T, release <-chan struct{}, entered chan<- struct{}) http.Handler {
+	t.Helper()
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		close(entered)
+		<-release
+		w.WriteHeader(http.StatusOK)
+	})
 }
 
 func waitForReady(t *testing.T, server *Server) {

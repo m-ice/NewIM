@@ -20,6 +20,7 @@ const (
 	defaultIdleTimeout     = 60 * time.Second
 	defaultMaxHeaderBytes  = 16 * 1024
 	defaultShutdownTimeout = 10 * time.Second
+	defaultStartupTimeout  = 5 * time.Second
 )
 
 var (
@@ -101,20 +102,46 @@ func (s *Server) Run(ctx context.Context) error {
 		return err
 	}
 
-	s.ready.Store(true)
 	results := make(chan serverResult, 2)
-	go serve(s.apiServer, s.apiListener, results)
-	go serve(s.opsServer, s.opsListener, results)
+	started := make(chan struct{}, 2)
+	go serve(s.apiServer, s.apiListener, started, results)
+	go serve(s.opsServer, s.opsListener, started, results)
 
 	var runErr error
 	remaining := 2
-	select {
-	case <-ctx.Done():
-	case result := <-results:
-		remaining--
-		runErr = result.err
-		if runErr == nil || errors.Is(runErr, http.ErrServerClosed) {
+	startedCount := 0
+	startupTimer := time.NewTimer(defaultStartupTimeout)
+	for startedCount < 2 && runErr == nil && ctx.Err() == nil {
+		select {
+		case <-started:
+			startedCount++
+		case result := <-results:
+			remaining--
+			runErr = result.err
+			if runErr == nil || errors.Is(runErr, http.ErrServerClosed) {
+				runErr = fail(CodeRuntimeFailed)
+			}
+		case <-ctx.Done():
+		case <-startupTimer.C:
 			runErr = fail(CodeRuntimeFailed)
+		}
+	}
+	if !startupTimer.Stop() {
+		select {
+		case <-startupTimer.C:
+		default:
+		}
+	}
+	if runErr == nil && startedCount == 2 && ctx.Err() == nil {
+		s.ready.Store(true)
+		select {
+		case <-ctx.Done():
+		case result := <-results:
+			remaining--
+			runErr = result.err
+			if runErr == nil || errors.Is(runErr, http.ErrServerClosed) {
+				runErr = fail(CodeRuntimeFailed)
+			}
 		}
 	}
 
@@ -158,8 +185,19 @@ func (s *Server) bind() error {
 	return nil
 }
 
-func serve(server *http.Server, listener net.Listener, results chan<- serverResult) {
-	results <- serverResult{err: server.Serve(listener)}
+func serve(server *http.Server, listener net.Listener, started chan<- struct{}, results chan<- serverResult) {
+	results <- serverResult{err: server.Serve(&startListener{Listener: listener, started: started})}
+}
+
+type startListener struct {
+	net.Listener
+	once    sync.Once
+	started chan<- struct{}
+}
+
+func (l *startListener) Accept() (net.Conn, error) {
+	l.once.Do(func() { l.started <- struct{}{} })
+	return l.Listener.Accept()
 }
 
 // Shutdown makes readiness false before draining both listeners.
@@ -242,7 +280,7 @@ func (s *Server) OpsAddr() string {
 
 func (s *Server) makeHandler(listener string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		route, ok := resolveRoute(listener, r.URL.Path)
+		route, ok := resolveRoute(listener, r.URL.EscapedPath())
 		method := normalizeMethod(r.Method)
 		started := time.Now()
 		recorder := &responseRecorder{ResponseWriter: w}
