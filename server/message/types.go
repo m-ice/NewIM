@@ -142,5 +142,5 @@ type Observer interface {
 // Store is the application-to-storage port for the send transaction.
 // Store 是发送事务的 application 到 storage 端口。
 type Store interface {
-	Persist(context.Context, conversation.Principal, protocol.Send, func() (Generated, error)) (PersistedMessage, error)
+	Persist(context.Context, conversation.Principal, protocol.Send, func() error, func() (Generated, error)) (PersistedMessage, error)
 }

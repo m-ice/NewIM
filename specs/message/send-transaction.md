@@ -20,10 +20,13 @@ returns exactly one `protocol.ServerFrame` ACK on success. Errors contain only a
 stable code and `RetryDisposition`.
 
 The storage adapter implements `Store.Persist` with the trusted sender principal,
-the validated request and a generator callback. The callback is invoked only
-inside the adapter's READ COMMITTED transaction after conversation
-authorization. It supplies `serverMsgId`, outbox `eventId` and nonnegative
-server-time milliseconds.
+the validated request, a pre-persist validation callback and a generator
+callback. After conversation authorization it checks the committed
+`(senderId, clientMsgId)` identity first. An equal duplicate returns the original
+row without re-running media validation or ID generation. Only a new message
+invokes validation and then the generator inside the adapter's READ COMMITTED
+transaction. The generator supplies `serverMsgId`, outbox `eventId` and
+nonnegative server-time milliseconds.
 
 `server/conversation` defines the trusted `Principal`, `Authorizer`, `Tx` and
 `Row` seam. It contains no credential, device, kick, read, mute or transport

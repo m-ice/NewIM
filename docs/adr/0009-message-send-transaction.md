@@ -37,10 +37,13 @@ transaction. A missing conversation is permanent
 ## Transaction and ACK ordering
 
 The storage adapter begins a fresh bounded READ COMMITTED transaction, runs the
-conversation authorizer, invokes the trusted server-ID/time generator callback,
-calls `newim.persist_message`, compares persisted intent, and commits. The
-service receives a `PersistedMessage` only after `COMMIT` succeeds and only then
-constructs and returns a `protocol.ServerFrame{Ack: ...}` with status
+conversation authorizer, and checks the committed `(senderId, clientMsgId)`
+identity before any media validation or ID generation. An equal duplicate
+returns the original row without those steps. For a new message, the adapter
+invokes the media-validation callback and then the trusted server-ID/time
+generator, calls `newim.persist_message`, compares persisted intent, and commits.
+The service receives a `PersistedMessage` only after `COMMIT` succeeds and only
+then constructs and returns a `protocol.ServerFrame{Ack: ...}` with status
 `SERVER_PERSISTED`.
 
 A rollback, termination or connection loss before commit returns no success ACK.

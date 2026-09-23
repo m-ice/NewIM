@@ -105,8 +105,8 @@ func (r *Repository) Close() {
 
 // Persist authorizes, persists and commits one send atomically.
 // Persist 原子完成授权、持久化与提交；提交成功前不返回结果。
-func (r *Repository) Persist(ctx context.Context, principal conversation.Principal, request protocol.Send, generate func() (app.Generated, error)) (app.PersistedMessage, error) {
-	if r == nil || r.pool == nil || r.authorizer == nil || ctx == nil || !principal.Valid() || generate == nil || !identifier(request.ConversationID) {
+func (r *Repository) Persist(ctx context.Context, principal conversation.Principal, request protocol.Send, validate func() error, generate func() (app.Generated, error)) (app.PersistedMessage, error) {
+	if r == nil || r.pool == nil || r.authorizer == nil || ctx == nil || !principal.Valid() || validate == nil || generate == nil || !identifier(request.ConversationID) {
 		return app.PersistedMessage{}, app.Fail(app.SendInvalidInput)
 	}
 	if _, err := protocol.EncodeSend(request); err != nil {
@@ -118,6 +118,26 @@ func (r *Repository) Persist(ctx context.Context, principal conversation.Princip
 	}
 	defer rollback(tx)
 	if err = r.authorizer.Authorize(ctx, conversationTx{tx: tx}, principal.UserID, request.ConversationID); err != nil {
+		return app.PersistedMessage{}, fixed(err)
+	}
+	existing, found, err := loadMessage(ctx, tx, principal.UserID, request.ClientMsgID)
+	if err != nil {
+		return app.PersistedMessage{}, mapStorageError(err)
+	}
+	if found {
+		same, compareErr := protocol.SameIntent(existing.intent(), request)
+		if compareErr != nil {
+			return app.PersistedMessage{}, app.Fail(app.SendStorageUnavailable)
+		}
+		if !same {
+			return app.PersistedMessage{}, app.Fail(app.SendIDConflict)
+		}
+		if err = tx.Commit(ctx); err != nil {
+			return app.PersistedMessage{}, app.Fail(app.SendStorageUnavailable)
+		}
+		return existing.persisted(), nil
+	}
+	if err = validate(); err != nil {
 		return app.PersistedMessage{}, fixed(err)
 	}
 	generated, err := generate()
@@ -142,6 +162,23 @@ func (r *Repository) Persist(ctx context.Context, principal conversation.Princip
 		return app.PersistedMessage{}, app.Fail(app.SendStorageUnavailable)
 	}
 	return stored.persisted(), nil
+}
+
+func loadMessage(ctx context.Context, tx pgx.Tx, senderID, clientMsgID string) (storedRow, bool, error) {
+	var stored storedRow
+	err := tx.QueryRow(ctx, `SELECT server_msg_id,client_msg_id,sender_id,conversation_id,conversation_seq,protocol_version,schema_version,message_type,server_time_ms,payload_bytes
+FROM newim.im_messages WHERE sender_id=$1 AND client_msg_id=$2`, senderID, clientMsgID).Scan(
+		&stored.ServerMsgID, &stored.ClientMsgID, &stored.SenderID, &stored.ConversationID,
+		&stored.ConversationSeq, &stored.ProtocolVersion, &stored.SchemaVersion,
+		&stored.MessageType, &stored.ServerTime, &stored.Payload,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return storedRow{}, false, nil
+	}
+	if err != nil {
+		return storedRow{}, false, err
+	}
+	return stored, true, nil
 }
 
 func persistMessage(ctx context.Context, tx pgx.Tx, senderID string, request protocol.Send, generated app.Generated) (storedRow, error) {
