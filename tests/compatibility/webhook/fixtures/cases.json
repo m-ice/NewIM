@@ -1,0 +1,14 @@
+[
+  {
+    "name": "message_persisted",
+    "wire": "{\"eventId\":\"evt_01JABCDEF0123456789\",\"eventType\":\"message.persisted\",\"occurredAt\":\"1790189000000\",\"schemaVersion\":1,\"payload\":{\"conversationId\":\"conv_alpha\",\"conversationSeq\":\"42\",\"serverMsgId\":\"msg_alpha\",\"serverTime\":\"1790189000000\",\"senderId\":\"alice\",\"type\":\"text\",\"version\":1}}",
+    "secret": "0123456789abcdef0123456789abcdef",
+    "now": 1790189001000,
+    "eventId": "evt_01JABCDEF0123456789",
+    "deliveryId": "dlv_01JABCDEF0123456789",
+    "timestamp": "1790189001000",
+    "nonce": "AAECAwQFBgcICQoLDA0ODw",
+    "keyId": "key_20260924",
+    "signature": "v1=l5YG-mYUplPvm0lfIoa1XYtg6jBnrcg5d9P1Te4Z3HA"
+  }
+]

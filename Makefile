@@ -1,4 +1,4 @@
-.PHONY: build check docs-check api-check api-recovery api-security toolchain protocol-golden protocol-unknown-fields protocol-unknown-type protocol-limits media-protocol media-db media-security media-authz media-check
+.PHONY: build check docs-check api-check api-recovery api-security toolchain protocol-golden protocol-unknown-fields protocol-unknown-type protocol-limits webhook-envelope webhook-envelope-security media-protocol media-db media-security media-authz media-check
 
 export GOTOOLCHAIN := local
 
@@ -51,6 +51,12 @@ protocol-unknown-type: toolchain
 protocol-limits: toolchain
 	go test -count=1 -run '^TestLimits$$' ./tests/compatibility
 	cargo test -p newim-protocol --locked --test fixtures limits -- --exact
+
+webhook-envelope: toolchain
+	go test -count=1 ./tests/compatibility/webhook -run '^(TestWebhookEnvelope|TestWebhookSigningAndVerification)$$'
+
+webhook-envelope-security: toolchain
+	go test -count=1 ./tests/compatibility/webhook -run '^TestWebhookSecurity$$'
 
 .PHONY: send-protocol-golden send-protocol-errors send-protocol-limits
 
