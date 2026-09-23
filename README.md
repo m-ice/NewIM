@@ -7,7 +7,8 @@ internal 1v1 send transaction with idempotent persisted ACKs, a durable internal
 conversation-sync projection, policy-neutral opaque auth-session/token
 primitives, an internal provider-neutral media credential/metadata flow, plus a
 portable SDK local-store contract with a native SQLite adapter and a wire-neutral
-SDK Core outbox/send state machine, and a loopback-only HTTP API/Ops service
+SDK Core outbox/send state machine, an internal durable Webhook delivery core, and
+a loopback-only HTTP API/Ops service
 foundation. Storage has real migration, idempotency, pagination, query-plan, concurrency, rollback and recovery tests. User credential
 verification, HTTP/WS/gateway login, refresh tokens, multi-device login/kick policy,
 public media endpoints, rate limiting/moderation/retention/account erasure, network
@@ -57,6 +58,7 @@ make sync-check
 make auth-check auth-recovery auth-policy
 make media-protocol media-db media-security media-authz media-check
 make message-check message-recovery message-errors
+make webhook-protocol webhook-recovery webhook-security webhook-redaction
 ```
 
 Preparation verifies the locked official PostgreSQL image and pulls it if absent.
@@ -94,6 +96,13 @@ auth, message, sync, WebSocket, push, TLS, or rate-limiting semantics yet; see
 [ADR 0013](docs/adr/0013-http-api-service-foundation.md) and the
 [service specification](specs/http/service-foundation.md).
 
+The same process can optionally run the internal Webhook worker when explicit
+DSN/master-key configuration is present. It consumes the message outbox with
+at-least-once delivery and the PRT-003 signed envelope, but exposes no public
+endpoint-management API or Push/login semantics. See
+[ADR 0015](docs/adr/0015-webhook-delivery.md) and the
+[delivery specification](specs/webhook/delivery.md).
+
 ```sh
 make api-check api-recovery api-security
 ```
@@ -116,7 +125,7 @@ syntax only. Ordinary SDK builds leave that optional label unset. The SDK does
 not infer clean state or wire compatibility from a revision.
 
 Server and SDK versions are independently maintained at `0.1.0-dev`; the message
-protocol is version 1. PostgreSQL has additive migration stages 001 through 005;
+protocol is version 1. PostgreSQL has additive migration stages 001 through 006;
 SQLite has its separate migration history. They are not interchangeable schemas or
 previously released upgrade histories. See the
 [relational storage ADR](docs/adr/0004-relational-storage.md),

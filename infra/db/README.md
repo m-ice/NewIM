@@ -2,11 +2,11 @@
 
 This directory implements PostgreSQL constraints, atomic message persistence,
 transactional migrations, the durable message-send transaction, the durable
-auth-session/token storage primitive and the digest-only media grant/asset
-storage primitive. It supplies no credential verification, network ACK,
-dispatcher, sync cursor, media endpoint, retention policy or public
-authentication endpoint. See ADRs 0004, 0008, 0009 and 0011 for the caller
-contracts.
+auth-session/token storage primitive, the digest-only media grant/asset storage
+primitive and the webhook endpoint/lease state. It supplies no public webhook
+management API, credential verification, network ACK, dispatcher, sync cursor,
+media endpoint, retention policy or public authentication endpoint. See ADRs
+0004, 0008, 0009, 0011, 0014 and 0015 for the caller contracts.
 
 Prerequisites: Python 3.11+, Docker (classic or OCI descriptor-aware image store),
 the root pinned Go/Rust tools. No Python package or additional Go database
@@ -19,6 +19,7 @@ make db-prepare
 make db-schema db-migrations db-sequence db-repair
 make auth-check auth-recovery auth-policy
 make media-protocol media-db media-security media-authz media-check
+make webhook-protocol webhook-recovery webhook-security webhook-redaction
 make message-check message-recovery message-errors
 make build check
 ```
@@ -49,7 +50,7 @@ an 8 minute bound around all four suites. Failures are errors, never skips.
 
 Records under ignored `build/db-runs/<suite>-<unique>/`,
 `build/auth/<suite>-<unique>/`, `build/message/<suite>-<unique>/` and
-`build/media/<suite>-<unique>/` contain
+`build/media/<suite>-<unique>/` and `build/webhook/<suite>-<unique>/` contain
 actual argv, working directory, exit code, duration and stdin SHA-256, image
 identity, compilation/test logs and suite result. SQL parameters and raw errors
 are not logged. The test-only codec binary has no production API and no database
@@ -71,6 +72,17 @@ trusted identity bindings, a closed `pending`/`ready` state and no URL/object/AC
 columns. It does not implement retention, deletion, moderation, account erasure
 or cleanup. The media suite uses real PostgreSQL plus the local filesystem
 adapter and bounded process-restart replay tests.
+
+Migration 006 adds `webhook_fanout_at` with a dedicated pending index, append-only
+`im_webhook_endpoint_revisions` and `im_webhook_endpoints` active/revoked state,
+plus fenced delivery status, lease, attempt, retry and HTTP-outcome columns. The
+migration preserves `(event_id,destination_id)` uniqueness. It marks every
+pre-006 outbox row as already fanned out to prevent historical replay and every
+pre-006 delivery as a dead-letter legacy row with a null endpoint revision; new
+deliveries reference an immutable revision. It performs no delete or endpoint
+backfill. The webhook suite compiles and runs the tagged
+`tests/integration/webhook` package against this real isolated PostgreSQL 18.6
+container.
 
 `newim.persist_message` requires a trusted, authorized, protocol-validated caller
 and READ COMMITTED. Invoke it in a transaction and only acknowledge persistence
@@ -110,10 +122,12 @@ ORDER BY conversation_seq LIMIT $3;
 
 Required B-trees cover global server ID, sender/client identity, conversation/seq,
 and user/conversation membership. The pending outbox index is partial on
-`completed_at IS NULL`, ordered by available time/event ID. The schema suite
-checks actual EXPLAIN ANALYZE/BUFFERS on 10,000 rows with default planner settings;
-this proves fixture access paths, not a production latency or throughput SLO.
-Query callers must separately cap limits, scope permissions and enforce deadlines.
+`completed_at IS NULL`, ordered by available time/event ID. The webhook fan-out
+index is partial on `webhook_fanout_at IS NULL`, ordered by creation time/event ID;
+claim and expired-lease indexes cover delivery dispatch. The schema suite checks
+actual EXPLAIN ANALYZE/BUFFERS on 10,000 rows with default planner settings; this
+proves fixture access paths, not a production latency or throughput SLO. Query
+callers must separately cap limits, scope permissions and enforce deadlines.
 
 `payload_bytes` preserves codec-validated raw UTF-8 JSON bytes, including huge
 number tokens and escaped NUL. Do not cast it through JSONB/numeric. The SQL byte
@@ -155,11 +169,12 @@ or an SDK retry state machine.
    released schemas. Populated 001→002 is a supported staged installation test;
    do not deploy a service with only 001. Migration 002 does not generate events
    for manually populated 001 fixtures. Migration 003 adds the conversation
-   projection, migration 004 adds the opaque token table and migration 005 adds
-   digest-only media grants/assets. Migration 005 keeps all populated 001-004
-   rows and performs no implicit media backfill. No
-   production backlog conversion is claimed and no destructive down migration
-   exists.
+   projection, migration 004 adds the opaque token table, migration 005 adds
+   digest-only media grants/assets and migration 006 adds webhook fan-out,
+   endpoint revisions and fenced delivery state. Migration 006 preserves all
+   populated 001-005 rows, marks pre-existing outbox/delivery rows as a no-replay
+   cutover, and performs no endpoint backfill or delete. No production backlog
+   conversion is claimed and no destructive down migration exists.
 5. For backup, use `pg_dump --format=custom --no-owner` with the explicitly
    selected database and protected output location. Preserve ACLs; do not add
    `--no-privileges`. Test tooling captures the dump in memory and logs only its

@@ -33,6 +33,7 @@ SYNC_TABLES = {'im_conversation_sync_accounts', 'im_conversation_sync_keys',
                'im_conversation_sync_changes'}
 AUTH_TABLES = {'im_auth_tokens'}
 MEDIA_TABLES = {'im_media_assets'}
+WEBHOOK_TABLES = {'im_webhook_endpoints', 'im_webhook_endpoint_revisions'}
 
 
 def source_migrations():
@@ -57,6 +58,7 @@ def check_catalog(db, target=None):
     expected |= SYNC_TABLES if target >= 3 else set()
     expected |= AUTH_TABLES if target >= 4 else set()
     expected |= MEDIA_TABLES if target >= 5 else set()
+    expected |= WEBHOOK_TABLES if target >= 6 else set()
     actual_tables = set(db.sql("SELECT tablename FROM pg_tables WHERE schemaname='newim';").splitlines())
     if actual_tables != expected:
         raise Failure('exact catalog table set: missing='+repr(sorted(expected-actual_tables))+
@@ -97,6 +99,16 @@ def snapshot(db):
         result[table] = db.sql(f"SELECT md5(COALESCE(string_agg(t::text,E'\\n' ORDER BY t::text),'')) "
                                f"FROM {schema}.{table} t;").strip()
     return result
+
+
+def ensure_webhook_endpoint(db):
+    # Integration fixtures insert endpoint then revision; the pointer is checked by joins.
+    db.sql("INSERT INTO newim.im_webhook_endpoints(destination_id,status,active_revision) "
+           "VALUES ('destination','active',1) ON CONFLICT DO NOTHING; "
+           )
+    db.sql("INSERT INTO newim.im_webhook_endpoint_revisions(destination_id,revision,url,key_id,secret_nonce,secret_ciphertext) "
+           "VALUES ('destination',1,'https://webhook.internal.test/hook','webhook-key-1',"
+           "decode(repeat('11',12),'hex'),decode(repeat('22',64),'hex')) ON CONFLICT DO NOTHING;")
 
 
 def codec_roundtrips(db, commands):
@@ -220,13 +232,15 @@ def schema(db, commands):
     db.sql(migration_sql())
     check_catalog(db)
     seed(db)
+    ensure_webhook_endpoint(db)
     db.sql(persist('one'))
     db.sql("INSERT INTO newim.im_devices VALUES ('alice','phone',default); "
            "INSERT INTO newim.im_sessions(session_id,user_id,device_id) VALUES ('session','alice','phone'); "
            "INSERT INTO newim.im_push_tokens VALUES ('alice','phone','apns',decode('01','hex')); "
            "INSERT INTO newim.im_read_states VALUES ('room','alice',0); "
            "INSERT INTO newim.im_blocks VALUES ('alice','bob'); "
-           "INSERT INTO newim.im_webhook_deliveries(delivery_id,event_id,destination_id) VALUES ('delivery','e_one','destination');")
+           "INSERT INTO newim.im_webhook_deliveries(delivery_id,event_id,destination_id,endpoint_revision,status,next_attempt_at) "
+           "VALUES ('delivery','e_one','destination',1,'pending',clock_timestamp());")
     negatives = [
         ("INSERT INTO newim.im_users(user_id) VALUES ('bad id');", '23514'),
         ("INSERT INTO newim.im_users(user_id) VALUES (repeat('a',129));", '23514'),
@@ -254,6 +268,7 @@ def schema(db, commands):
     sync_constraints(db)
     auth_constraints(db)
     media_constraints(db)
+    webhook_constraints(db)
     print(f'PASS schema catalogs and {len(negatives)} negative writes', flush=True)
     codec_roundtrips(db, commands)
     db.sql("TRUNCATE newim.im_users CASCADE;")
@@ -263,12 +278,21 @@ def schema(db, commands):
            "INSERT INTO newim.im_conversations(conversation_id) SELECT 'r_'||g FROM generate_series(1,10000) g; "
            "INSERT INTO newim.im_conversation_members SELECT 'r_'||g,'alice' FROM generate_series(1,10000) g; "
            "INSERT INTO newim.im_outbox_events(event_id,server_msg_id,completed_at) SELECT 'e_'||g,'s_'||g,CASE WHEN g<=9900 THEN now() ELSE NULL END FROM generate_series(1,10000) g; "
-           "ANALYZE newim.im_messages; ANALYZE newim.im_conversation_members; ANALYZE newim.im_outbox_events;")
+           "INSERT INTO newim.im_webhook_deliveries(delivery_id,event_id,destination_id,endpoint_revision,status,next_attempt_at,lease_owner,lease_token,lease_expires_at) "
+           "SELECT 'wd_'||g,'e_'||g,'destination',1,"
+           "CASE WHEN g%100=0 THEN 'leased' ELSE 'pending' END, now()-interval '1 second',"
+           "CASE WHEN g%100=0 THEN 'webhook-worker' ELSE NULL END,"
+           "CASE WHEN g%100=0 THEN 'lease_'||g ELSE NULL END,"
+           "CASE WHEN g%100=0 THEN now()-interval '1 minute' ELSE NULL END FROM generate_series(1,10000) g; "
+           "ANALYZE newim.im_messages; ANALYZE newim.im_conversation_members; ANALYZE newim.im_outbox_events; ANALYZE newim.im_webhook_deliveries;")
     queries = [
         ("SELECT server_msg_id FROM newim.im_messages WHERE conversation_id='room' AND conversation_seq>9980 ORDER BY conversation_seq LIMIT 10", 'im_messages_conversation_seq_key'),
         ("SELECT server_msg_id FROM newim.im_messages WHERE sender_id='alice' AND client_msg_id='c_9999'", 'im_messages_sender_client_key'),
         ("SELECT conversation_id FROM newim.im_conversation_members WHERE user_id='alice' AND conversation_id>'r_9980' ORDER BY conversation_id LIMIT 10", 'im_conversation_members_user_idx'),
         ("SELECT event_id FROM newim.im_outbox_events WHERE completed_at IS NULL AND available_at<=now() ORDER BY available_at,event_id LIMIT 10", 'im_outbox_events_pending_idx'),
+        ("SELECT event_id FROM newim.im_outbox_events WHERE webhook_fanout_at IS NULL AND created_at<=now() ORDER BY created_at,event_id LIMIT 10", 'im_outbox_events_webhook_pending_idx'),
+        ("SELECT delivery_id FROM newim.im_webhook_deliveries WHERE status IN ('pending','retry') AND next_attempt_at<=now() ORDER BY next_attempt_at,delivery_id LIMIT 10", 'im_webhook_deliveries_claim_idx'),
+        ("SELECT delivery_id FROM newim.im_webhook_deliveries WHERE status='leased' AND lease_expires_at<=now() ORDER BY lease_expires_at,delivery_id LIMIT 10", 'im_webhook_deliveries_lease_idx'),
     ]
     plans = []
     for query, index in queries:
@@ -278,7 +302,7 @@ def schema(db, commands):
         plans.append({'index':index,'plan':plan})
     (commands.directory/'query-plans.json').write_text(json.dumps(plans,indent=2)+'\n')
     scalar(db, "SELECT string_agg(conversation_seq::text,',' ORDER BY conversation_seq) FROM (SELECT conversation_seq FROM newim.im_messages WHERE conversation_id='room' AND conversation_seq>9990 ORDER BY conversation_seq LIMIT 5) p;", '9991,9992,9993,9994,9995', 'numeric keyset order/limit')
-    print('PASS four populated index plans, numeric bounded history', flush=True)
+    print('PASS six populated index plans, numeric bounded history', flush=True)
 
 
 def sync_migration_faults(db, commands):
@@ -409,6 +433,68 @@ def media_constraints(db):
     print(f'PASS media schema constraints: {len(negatives)} rejected writes', flush=True)
 
 
+def webhook_constraints(db):
+    # Additive 006 catalog, revision snapshot safety and closed delivery states.
+    ensure_webhook_endpoint(db)
+    scalar(db, "SELECT string_agg(column_name,',' ORDER BY ordinal_position) FROM information_schema.columns "
+           "WHERE table_schema='newim' AND table_name='im_outbox_events';",
+           'event_id,server_msg_id,created_at,available_at,completed_at,webhook_fanout_at',
+           'exact outbox columns with webhook fan-out marker')
+    scalar(db, "SELECT string_agg(column_name,',' ORDER BY ordinal_position) FROM information_schema.columns "
+           "WHERE table_schema='newim' AND table_name='im_webhook_endpoints';",
+           'destination_id,status,active_revision,created_at,updated_at,revoked_at',
+           'exact webhook endpoint columns')
+    scalar(db, "SELECT string_agg(column_name,',' ORDER BY ordinal_position) FROM information_schema.columns "
+           "WHERE table_schema='newim' AND table_name='im_webhook_endpoint_revisions';",
+           'destination_id,revision,url,key_id,secret_nonce,secret_ciphertext,created_at',
+           'exact webhook endpoint revision columns')
+    scalar(db, "SELECT string_agg(column_name,',' ORDER BY ordinal_position) FROM information_schema.columns "
+           "WHERE table_schema='newim' AND table_name='im_webhook_deliveries';",
+           'delivery_id,event_id,destination_id,attempts,completed_at,endpoint_revision,status,next_attempt_at,'
+           'lease_owner,lease_token,lease_expires_at,last_http_status,last_error_code,created_at,updated_at',
+           'exact fenced webhook delivery columns')
+    scalar(db, "SELECT pg_get_indexdef('newim.im_outbox_events_webhook_pending_idx'::regclass);",
+           'CREATE INDEX im_outbox_events_webhook_pending_idx ON newim.im_outbox_events USING btree (created_at, event_id) WHERE (webhook_fanout_at IS NULL)',
+           'dedicated webhook outbox index')
+    for index in ('im_webhook_deliveries_claim_idx', 'im_webhook_deliveries_lease_idx',
+                  'im_webhook_deliveries_destination_idx'):
+        scalar(db, "SELECT count(*) FROM pg_indexes WHERE schemaname='newim' AND indexname='" + index + "';",
+               1, 'webhook delivery index '+index)
+    scalar(db, "SELECT pg_get_constraintdef(oid) FROM pg_constraint "
+           "WHERE conrelid='newim.im_webhook_deliveries'::regclass AND contype='u' ORDER BY conname;",
+           'UNIQUE (event_id, destination_id)', 'webhook event/destination uniqueness')
+    equal(db.sql("SELECT conname||'|'||pg_get_constraintdef(oid) FROM pg_constraint "
+                 "WHERE conrelid='newim.im_webhook_deliveries'::regclass AND contype='f' ORDER BY conname;").splitlines(), [
+        'im_webhook_deliveries_endpoint_revision_fk|FOREIGN KEY (destination_id, endpoint_revision) REFERENCES newim.im_webhook_endpoint_revisions(destination_id, revision)',
+        'im_webhook_deliveries_event_id_fkey|FOREIGN KEY (event_id) REFERENCES newim.im_outbox_events(event_id)',
+    ], 'webhook delivery FK bindings')
+    db.sql("INSERT INTO newim.im_webhook_endpoint_revisions(destination_id,revision,url,key_id,secret_nonce,secret_ciphertext) "
+           "VALUES ('destination',2,'https://webhook.internal.test/hook-v2','webhook-key-2',"
+           "decode(repeat('33',12),'hex'),decode(repeat('44',64),'hex'));")
+    negatives = [
+        ("UPDATE newim.im_webhook_endpoints SET status='invalid' WHERE destination_id='destination';", '23514'),
+        ("UPDATE newim.im_webhook_endpoints SET status='revoked' WHERE destination_id='destination';", '23514'),
+        ("UPDATE newim.im_webhook_endpoint_revisions SET key_id='bad/key' WHERE destination_id='destination' AND revision=1;", '23514'),
+        ("UPDATE newim.im_webhook_endpoint_revisions SET secret_nonce=decode('00','hex') WHERE destination_id='destination' AND revision=1;", '23514'),
+        ("INSERT INTO newim.im_webhook_endpoint_revisions(destination_id,revision,url,key_id,secret_nonce,secret_ciphertext) "
+         "VALUES ('destination',2,'https://webhook.internal.test/duplicate','key',decode(repeat('55',12),'hex'),decode(repeat('66',64),'hex'));", '23505'),
+        ("UPDATE newim.im_webhook_deliveries SET status='invalid' WHERE delivery_id='delivery';", '23514'),
+        ("UPDATE newim.im_webhook_deliveries SET endpoint_revision=NULL WHERE delivery_id='delivery';", '23514'),
+        ("UPDATE newim.im_webhook_deliveries SET endpoint_revision=999 WHERE delivery_id='delivery';", '23503'),
+        ("UPDATE newim.im_webhook_deliveries SET status='leased' WHERE delivery_id='delivery';", '23514'),
+        ("UPDATE newim.im_webhook_deliveries SET last_http_status=99 WHERE delivery_id='delivery';", '23514'),
+        ("UPDATE newim.im_webhook_deliveries SET last_error_code='lowercase' WHERE delivery_id='delivery';", '23514'),
+        ("INSERT INTO newim.im_webhook_deliveries(delivery_id,event_id,destination_id,endpoint_revision,status,next_attempt_at) "
+         "VALUES ('duplicate_delivery','e_one','destination',1,'pending',clock_timestamp());", '23505'),
+        ("DELETE FROM newim.im_webhook_endpoints WHERE destination_id='destination';", '23503'),
+    ]
+    before = snapshot(db)
+    for sql, error in negatives:
+        db.sql(sql, error=error)
+    equal(snapshot(db), before, 'webhook constraint failures preserve state')
+    print(f'PASS webhook schema constraints: {len(negatives)} rejected writes', flush=True)
+
+
 def auth_migration_faults(db, commands):
     # Alter only an owned 004 copy; populated 001-003 bytes must survive every failure.
     marker = '-- AUTH_MIGRATION_FAULT_POINT'
@@ -471,13 +557,59 @@ def media_migration_faults(db, commands):
         held.finish(error='57P01')
         equal(snapshot(db), before, 'terminated 005 leaves exact populated 004 state')
         check_catalog(db, 4)
-    db.sql(migration_sql())
+    db.sql(migration_sql(5))
     check_catalog(db, 5)
     after = snapshot(db)
     equal({k:after[k] for k in before if k!='migrations'},
           {k:v for k,v in before.items() if k!='migrations'}, '005 preserves all historical rows')
     scalar(db, 'SELECT count(*) FROM newim.im_media_assets;', 0, 'media migration performs no implicit backfill')
     print('PASS populated 005 failure/termination rollback and original-source retry', flush=True)
+
+
+def webhook_migration_faults(db, commands):
+    # Alter only an owned 006 copy; populated 001-005 bytes must survive every failure.
+    marker = '-- WEBHOOK_MIGRATION_FAULT_POINT'
+    source = DB_DIR/'migrations/006_webhook_delivery.sql'
+    equal(source.read_text().count(marker), 1, 'unique webhook migration fault injection marker')
+    db.sql("INSERT INTO newim.im_webhook_deliveries(delivery_id,event_id,destination_id,attempts,completed_at) VALUES "
+           "('legacy_pending','e_migration_durable','legacy_destination',2,NULL),"
+           "('legacy_completed','e_migration_durable','legacy_other',3,now()-interval '1 hour');")
+    legacy_before = db.sql("SELECT delivery_id||'|'||event_id||'|'||destination_id||'|'||attempts::text||'|'||"
+                           "COALESCE(completed_at::text,'NULL') FROM newim.im_webhook_deliveries ORDER BY delivery_id;")
+    before = snapshot(db)
+    with tempfile.TemporaryDirectory(prefix='webhook-migration-copy-', dir=commands.directory) as owned:
+        directory = Path(owned)
+        for path in source_migrations():
+            (directory/path.name).write_bytes(path.read_bytes())
+        candidate = directory/source.name
+        candidate.write_text(source.read_text().replace(marker, 'SELECT 1/0;', 1))
+        db.sql(migration_sql(directory=directory), error='22012')
+        equal(snapshot(db), before, 'failed 006 leaves exact populated 005 state')
+        check_catalog(db, 5)
+        candidate.write_text(source.read_text().replace(marker, 'SELECT pg_sleep(30);', 1))
+        held = db.session("SET application_name='newim_webhook_migration_interrupt'; "+migration_sql(directory=directory))
+        db.wait_sql("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name='newim_webhook_migration_interrupt' AND wait_event='PgSleep');")
+        db.sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='newim_webhook_migration_interrupt';")
+        held.finish(error='57P01')
+        equal(snapshot(db), before, 'terminated 006 leaves exact populated 005 state')
+        check_catalog(db, 5)
+    db.sql(migration_sql())
+    check_catalog(db, 6)
+    scalar(db, "SELECT count(*) FROM newim.im_outbox_events WHERE webhook_fanout_at IS NOT NULL;",
+           1, '006 cuts over every pre-existing outbox event')
+    equal(db.sql("SELECT delivery_id||'|'||event_id||'|'||destination_id||'|'||attempts::text||'|'||"
+                 "COALESCE(completed_at::text,'NULL') FROM newim.im_webhook_deliveries ORDER BY delivery_id;"),
+          legacy_before, '006 preserves legacy delivery identity, attempts and completion')
+    scalar(db, "SELECT count(*) FROM newim.im_webhook_deliveries WHERE delivery_id IN ('legacy_pending','legacy_completed') "
+           "AND status='dead_letter' AND endpoint_revision IS NULL AND next_attempt_at IS NULL;",
+           2, '006 marks all existing deliveries as dead-letter legacy rows')
+    scalar(db, "SELECT count(*) FROM newim.im_webhook_deliveries WHERE created_at IS NULL OR updated_at IS NULL;",
+           0, '006 gives every delivery bounded audit timestamps')
+    scalar(db, "SELECT count(*) FROM newim.im_webhook_endpoints;", 0, '006 performs no endpoint backfill')
+    db.sql(persist('migration_webhook_post'))
+    scalar(db, "SELECT count(*) FROM newim.im_outbox_events WHERE event_id='e_migration_webhook_post' AND webhook_fanout_at IS NULL;",
+           1, 'post-006 outbox events remain pending for webhook fan-out')
+    print('PASS populated 006 failure/termination rollback, legacy dead-letter cutover and original-source retry', flush=True)
 
 
 def migrations(db, commands):
@@ -498,6 +630,7 @@ def migrations(db, commands):
     sync_migration_faults(db, commands)
     auth_migration_faults(db, commands)
     media_migration_faults(db, commands)
+    webhook_migration_faults(db, commands)
     after = snapshot(db)
     db.sql(migration_sql())
     equal(snapshot(db), after, 'head replay stable')

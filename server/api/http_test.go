@@ -525,11 +525,19 @@ func TestHTTPSecurity(t *testing.T) {
 }
 
 func TestImportBoundary(t *testing.T) {
-	allowedModule := map[string]bool{
-		"github.com/m-ice/NewIM/server/api":       true,
-		"github.com/m-ice/NewIM/server/buildinfo": true,
+	allowedByDir := map[string]map[string]bool{
+		".": {
+			"github.com/m-ice/NewIM/server/api":       true,
+			"github.com/m-ice/NewIM/server/buildinfo": true,
+		},
+		"../cmd/newim-server": {
+			"github.com/m-ice/NewIM/server/api":             true,
+			"github.com/m-ice/NewIM/server/buildinfo":       true,
+			"github.com/m-ice/NewIM/server/storage/webhook": true,
+			"github.com/m-ice/NewIM/server/webhook":         true,
+		},
 	}
-	for _, dir := range []string{".", "../cmd/newim-server"} {
+	for dir, allowedModule := range allowedByDir {
 		entries, err := os.ReadDir(dir)
 		if err != nil {
 			t.Fatal(err)

@@ -1,4 +1,4 @@
-.PHONY: build check docs-check api-check api-recovery api-security toolchain protocol-golden protocol-unknown-fields protocol-unknown-type protocol-limits webhook-envelope webhook-envelope-security media-protocol media-db media-security media-authz media-check
+.PHONY: build check docs-check api-check api-recovery api-security toolchain protocol-golden protocol-unknown-fields protocol-unknown-type protocol-limits webhook-envelope webhook-envelope-security webhook-protocol webhook-recovery webhook-security webhook-redaction media-protocol media-db media-security media-authz media-check
 
 export GOTOOLCHAIN := local
 
@@ -57,6 +57,22 @@ webhook-envelope: toolchain
 
 webhook-envelope-security: toolchain
 	go test -race -shuffle=on -count=1 ./tests/compatibility/webhook -run '^(TestWebhookSecurity|TestWebhookStrictInputs|TestWebhookClockBoundaries)$$'
+
+webhook-protocol: toolchain
+	go test -race -shuffle=on -count=1 ./server/webhook -run '^(TestWorkerDeliversSignedRequest|TestWorkerNonceIsFreshPerAttempt)$$'
+	python3 -B infra/db/webhook_suite.py protocol
+
+webhook-recovery: toolchain
+	go test -race -shuffle=on -count=1 ./server/webhook -run '^(TestWorkerRunStopsOnCancellation|TestWorkerRetryBackoffBounds|TestWorkerStorageFailureIsReturned)$$'
+	python3 -B infra/db/webhook_suite.py recovery
+
+webhook-security: toolchain
+	go test -race -shuffle=on -count=1 ./server/webhook -run '^(TestSecureClient.*|TestWorkerConfigRejectsLeaseShorterThanRequest)$$'
+	python3 -B infra/db/webhook_suite.py security
+
+webhook-redaction: toolchain
+	go test -race -shuffle=on -count=1 ./server/webhook -run '^TestWorkerRedactsDoerError$$'
+	python3 -B infra/db/webhook_suite.py redaction
 
 .PHONY: send-protocol-golden send-protocol-errors send-protocol-limits
 

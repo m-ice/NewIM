@@ -17,8 +17,8 @@ func TestSyncMigrations(t *testing.T) {
 
 	ledger := f.scalarString("SELECT string_agg(version::text||':'||sha256,',' ORDER BY version) FROM newim_meta.migrations")
 	parts := strings.Split(ledger, ",")
-	if len(parts) != 5 {
-		t.Fatalf("migration ledger got %q want versions 1..5", ledger)
+	if len(parts) != 6 {
+		t.Fatalf("migration ledger got %q want versions 1..6", ledger)
 	}
 	for index, part := range parts {
 		fields := strings.SplitN(part, ":", 2)
@@ -36,8 +36,11 @@ func TestSyncMigrations(t *testing.T) {
 	if tables := f.scalarInt64("SELECT count(*) FROM pg_tables WHERE schemaname='newim' AND tablename='im_media_assets'"); tables != 1 {
 		t.Fatalf("additive media table count got %d want 1", tables)
 	}
-	if tables := f.scalarInt64("SELECT count(*) FROM pg_tables WHERE schemaname='newim';"); tables != 16 {
-		t.Fatalf("head table count got %d want 16", tables)
+	if tables := f.scalarInt64("SELECT count(*) FROM pg_tables WHERE schemaname='newim';"); tables != 18 {
+		t.Fatalf("head table count got %d want 18", tables)
+	}
+	if tables := f.scalarInt64("SELECT count(*) FROM pg_tables WHERE schemaname='newim' AND tablename IN ('im_webhook_endpoints','im_webhook_endpoint_revisions')"); tables != 2 {
+		t.Fatalf("additive webhook table count got %d want 2", tables)
 	}
 	if triggers := f.scalarInt64("SELECT count(*) FROM pg_trigger WHERE tgrelid IN (SELECT oid FROM pg_class WHERE relnamespace='newim'::regnamespace) AND NOT tgisinternal"); triggers != 0 {
 		t.Fatalf("sync migration added %d application triggers", triggers)

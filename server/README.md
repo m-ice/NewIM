@@ -18,10 +18,20 @@ For example, `server/message` validates persistence intent and
 transaction; auth, sync, and media services follow the same application/storage
 split. These are internal packages and require a trusted caller/identity.
 
+`server/webhook` and `server/storage/webhook` add an internal at-least-once
+webhook delivery core over the existing message outbox. The worker is optional
+inside `cmd/newim-server`, is enabled only by explicit DSN/master-key
+configuration, uses the PRT-003 `webhook-v1` signature contract, and has no
+public endpoint-management API. Migration 006 adds endpoint revisions and fenced
+delivery state. See [ADR 0015](../docs/adr/0015-webhook-delivery.md) and the
+[delivery specification](../specs/webhook/delivery.md).
+
 There is no public network server or UI, WebSocket gateway, push delivery, or
 complete multi-device login/reconnect policy. The API/Ops foundation defaults
 to loopback and does not expose message persistence through a public route. Run
 the root `make build`, `make check`, `make docs-check`, `make api-check`,
-`make api-recovery`, and `make api-security` commands. See
+`make api-recovery`, `make api-security`, `make webhook-protocol`,
+`make webhook-recovery`, `make webhook-security`, and `make webhook-redaction`
+commands. See
 [architecture](../docs/architecture.md) and
 [third-party notices](../THIRD_PARTY_NOTICES.md).

@@ -65,3 +65,6 @@ jobs:
       - name: Exercise message permanent and retryable errors
         timeout-minutes: 10
         run: make message-errors
+      - name: Exercise durable webhook fan-out, signing, security and redaction
+        timeout-minutes: 20
+        run: make webhook-protocol webhook-recovery webhook-security webhook-redaction

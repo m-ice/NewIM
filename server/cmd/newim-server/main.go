@@ -45,6 +45,15 @@ func run(args []string, stdout, stderr io.Writer, read func() (buildinfo.Info, e
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
+	runtime, runtimeErr := newWebhookRuntimeFromEnv(ctx)
+	if runtimeErr != nil {
+		fmt.Fprintln(stderr, errorCode(runtimeErr))
+		return 2
+	}
+	if runtime != nil {
+		defer runtime.Close()
+		go func() { _ = runtime.Run(ctx) }()
+	}
 	if err := server.Run(ctx); err != nil {
 		fmt.Fprintln(stderr, errorCode(err))
 		return 1

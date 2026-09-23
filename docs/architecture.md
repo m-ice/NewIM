@@ -3,7 +3,8 @@
 The current implementation contains Go server application/storage packages for
 PostgreSQL message persistence, auth/session, conversation and message sync, and
 internal media metadata; Go/Rust protocol codecs; a Rust SDK outbox state machine;
-and a native SQLite adapter. Build identity lets support and future packaging tools
+and a native SQLite adapter. The server also contains an in-process durable
+Webhook delivery core. Build identity lets support and future packaging tools
 identify artifacts without fabricating unknown source metadata.
 
 The implementation now contains a loopback-only HTTP service foundation for
@@ -24,8 +25,9 @@ platform wrappers. This document does not claim those capabilities.
 | `server/message` | Send validation, media preconditions, idempotent persistence orchestration, and persisted ACK construction. |
 | `server/sync/*` | Internal bounded conversation bootstrap/delta and message delta read services; trusted principals are supplied by their callers. |
 | `server/media` | Protocol-neutral media application rules and ports for grants, metadata, validation, and private download authorization. |
-| `server/storage/*` | PostgreSQL adapters for message, auth/session, sync, and media metadata; no wire or UI authority. |
-| `server` | Application services depend on domain rules and ports; transport/storage adapters implement those ports. `cmd/newim-server` runs the loopback API/Ops foundation and `cmd/newim-buildinfo` remains the local artifact diagnostic. |
+| `server/webhook` | Policy-neutral outbox fan-out, at-least-once delivery, HMAC-v1 signing, fenced retry/dead-letter state and secure outbound HTTP; no message transaction, endpoint management or Push authority. |
+| `server/storage/*` | PostgreSQL adapters for message, auth/session, sync, media metadata and Webhook endpoint/delivery state; no wire or UI authority. |
+| `server` | Application services depend on domain rules and ports; transport/storage adapters implement those ports. `cmd/newim-server` runs the loopback API/Ops foundation and optional in-process Webhook worker; `cmd/newim-buildinfo` remains the local artifact diagnostic. |
 | `sdk/core` | Rust platform-neutral contracts and the host-driven outbox state machine; no Go runtime, SQLite, browser API, or UI dependency. |
 | `sdk/storage/sqlite` | Native SQLite LocalStore adapter with migrations, recovery, pending-outbox CAS, and bounded receipts. |
 | Platform wrappers (planned) | Translate host networking, lifecycle, storage and FFI concerns into SDK contracts; message semantics stay in core. |
@@ -49,8 +51,10 @@ latest pointer, and transactional outbox row atomically through
 `newim.persist_message`. `server/message` returns `SERVER_PERSISTED` only after
 commit; an equal retry returns the original identity, while unequal intent for the
 same trusted `(senderId, clientMsgId)` fails. The outbox is durable side-effect
-intent; no dispatcher or exactly-once delivery claim is made. See
-[ADR 0009](adr/0009-message-send-transaction.md).
+intent. `server/webhook` consumes it with at-least-once internal delivery; no
+exactly-once claim is made, and no online/WebSocket/push dispatcher is implied.
+See [ADR 0009](adr/0009-message-send-transaction.md) and
+[ADR 0015](adr/0015-webhook-delivery.md).
 
 `server/auth/session` implements opaque token issue/authenticate/revoke operations
 with persisted session/token bindings and revocation checks. `server/sync/*`

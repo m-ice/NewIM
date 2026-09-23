@@ -17,3 +17,15 @@ root, publishes only with no-replace semantics, fsyncs the file and parent, and
 compares an existing object by exact size and SHA-256. Private download URLs are
 short-lived memory values and are never persisted or logged. Retention, deletion,
 moderation, account erasure and cleanup remain outside this data model revision.
+
+Migration 006 adds the Webhook delivery state. `im_outbox_events.webhook_fanout_at`
+is a Webhook-only cutover/fan-out marker and never replaces the shared
+`completed_at` field. `im_webhook_endpoints` stores trusted internal destination
+state and an append-only `active_revision` pointer; immutable
+`im_webhook_endpoint_revisions` rows store the validated URL, key ID, secret nonce
+and encrypted secret material. `im_webhook_deliveries` extends the original
+event/destination identity with status, attempts, next-attempt time, lease
+owner/token/expiry, last HTTP status/error code and timestamps. Pre-006 outbox
+rows are cut over as already fanned out, and pre-006 delivery rows are preserved as
+non-claimable dead-letter legacy rows. No retention, deletion, public endpoint CRUD,
+Push, Bot or login policy is defined by this revision.

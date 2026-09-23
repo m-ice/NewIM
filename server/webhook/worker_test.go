@@ -1,0 +1,306 @@
+package webhook
+
+import (
+	"context"
+	"encoding/base64"
+	"encoding/json"
+	"errors"
+	"net/http"
+	"net/http/httptest"
+	"strings"
+	"sync"
+	"testing"
+	"time"
+
+	protocol "github.com/m-ice/NewIM/core/protocol/go"
+)
+
+type testStore struct {
+	mu       sync.Mutex
+	delivery Delivery
+	fanout   int
+	finished []Outcome
+	attempts int
+}
+
+func (s *testStore) CancelRevoked(context.Context, time.Time) (int, error) { return 0, nil }
+func (s *testStore) Counts(context.Context) (Counts, error)                { return Counts{}, nil }
+func (s *testStore) Fanout(context.Context, time.Time, int) (int, error)   { return s.fanout, nil }
+func (s *testStore) Claim(context.Context, time.Time, string, time.Duration, int) ([]Delivery, error) {
+	if s.delivery.ID == "" {
+		return nil, nil
+	}
+	return []Delivery{s.delivery}, nil
+}
+func (s *testStore) BeginAttempt(context.Context, string, string, time.Time, int) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.attempts++
+	return true, nil
+}
+func (s *testStore) Finish(_ context.Context, _ string, _ string, _ int, _ time.Time, outcome Outcome) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.finished = append(s.finished, outcome)
+	s.delivery.ID = ""
+	return nil
+}
+
+type testResolver struct{ secret []byte }
+
+func (r testResolver) Resolve(context.Context, SecretMaterial) ([]byte, error) {
+	return append([]byte(nil), r.secret...), nil
+}
+
+type testDoer struct {
+	status int
+	err    error
+}
+
+type captureObserver struct {
+	values []string
+}
+
+func (o *captureObserver) Observe(observation Observation) {
+	o.values = append(o.values, string(observation.Code))
+}
+
+func (d testDoer) Do(context.Context, string, map[string]string, []byte) (Response, error) {
+	if d.err != nil {
+		return Response{}, d.err
+	}
+	return Response{StatusCode: d.status}, nil
+}
+
+func testConfig(now time.Time) Config {
+	return Config{
+		Owner:            "test_owner",
+		BatchSize:        4,
+		MaxConcurrent:    2,
+		MaxAttempts:      3,
+		MaxResponseBytes: 1024,
+		LeaseTTL:         2 * time.Second,
+		RequestTimeout:   time.Second,
+		BaseBackoff:      10 * time.Millisecond,
+		MaxBackoff:       time.Second,
+		HighWater:        10,
+		LowWater:         2,
+		IdleDelay:        10 * time.Millisecond,
+		Clock:            ClockFunc(func() time.Time { return now }),
+	}
+}
+
+func testDelivery(handled func(http.Header, []byte)) Delivery {
+	return Delivery{
+		ID:               "delivery_1",
+		DestinationID:    "destination_1",
+		EndpointRevision: 1,
+		URL:              "",
+		KeyID:            "key_test",
+		Secret:           SecretMaterial{DestinationID: "destination_1", Revision: 1, KeyID: "key_test"},
+		Attempts:         0,
+		Event: Event{
+			ID:              "event_1",
+			ServerMsgID:     "server_1",
+			ClientMsgID:     "client_1",
+			SenderID:        "alice",
+			ConversationID:  "room",
+			ConversationSeq: 1,
+			ServerTime:      1790189000000,
+			ProtocolVersion: 1,
+			SchemaVersion:   1,
+			MessageType:     "text",
+			Payload:         json.RawMessage(`{"text":"hello"}`),
+		},
+	}
+}
+
+func TestWorkerDeliversSignedRequest(t *testing.T) {
+	var gotHeader http.Header
+	var gotBody []byte
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		gotHeader = r.Header.Clone()
+		gotBody = make([]byte, r.ContentLength)
+		_, _ = r.Body.Read(gotBody)
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	delivery := testDelivery(nil)
+	delivery.URL = server.URL
+	store := &testStore{delivery: delivery}
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	client, err := NewSecureClient(nil, Policy{AllowHTTP: true, AllowLoopback: true}, time.Second, 1024)
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.UnixMilli(1790189001000)
+	worker, err := NewWorker(testConfig(now), store, client, testResolver{secret: secret})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = worker.cycle(context.Background(), make(chan struct{}, 1)); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.finished) != 1 || store.finished[0].Status != "delivered" || store.attempts != 1 {
+		t.Fatalf("outcomes=%+v attempts=%d", store.finished, store.attempts)
+	}
+	if gotHeader.Get(protocol.WebhookHeaderEventID) != "event_1" || gotHeader.Get(protocol.WebhookHeaderDeliveryID) != "delivery_1" {
+		t.Fatalf("missing webhook identity headers: %v", gotHeader)
+	}
+	parsed, err := protocol.ParseWebhookHeaders(map[string][]string(gotHeader))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = protocol.VerifyWebhookSignature(context.Background(), secret, parsed, gotBody, now, mustGuard(t)); err != nil {
+		t.Fatalf("receiver verification failed: %v", err)
+	}
+}
+
+func mustGuard(t *testing.T) protocol.WebhookReplayGuard {
+	t.Helper()
+	guard, err := protocol.NewMemoryWebhookReplayGuard(8)
+	if err != nil {
+		t.Fatal(err)
+	}
+	return guard
+}
+
+func TestWorkerRetriesAndDeadLetters(t *testing.T) {
+	now := time.UnixMilli(1790189001000)
+	for _, tc := range []struct {
+		name   string
+		status int
+		want   string
+	}{
+		{"temporary", http.StatusServiceUnavailable, "retry"},
+		{"permanent", http.StatusForbidden, "dead_letter"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			store := &testStore{delivery: testDelivery(nil)}
+			worker, err := NewWorker(testConfig(now), store, testDoer{status: tc.status}, testResolver{secret: []byte("0123456789abcdef0123456789abcdef")})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err = worker.cycle(context.Background(), make(chan struct{}, 1)); err != nil {
+				t.Fatal(err)
+			}
+			store.mu.Lock()
+			defer store.mu.Unlock()
+			if len(store.finished) != 1 || store.finished[0].Status != tc.want {
+				t.Fatalf("outcomes=%+v want status %s", store.finished, tc.want)
+			}
+		})
+	}
+}
+
+func TestWorkerRejectsInvalidSecret(t *testing.T) {
+	now := time.UnixMilli(1790189001000)
+	store := &testStore{delivery: testDelivery(nil)}
+	resolver := testResolver{secret: []byte("short")}
+	worker, err := NewWorker(testConfig(now), store, testDoer{status: http.StatusNoContent}, resolver)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = worker.cycle(context.Background(), make(chan struct{}, 1)); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.finished) != 1 || store.finished[0].Status != "dead_letter" || store.finished[0].ErrorCode != CodeSecretInvalid {
+		t.Fatalf("invalid secret outcome=%+v", store.finished)
+	}
+}
+
+func TestWorkerRetryBackoffBounds(t *testing.T) {
+	now := time.UnixMilli(1790189001000)
+	cfg := testConfig(now)
+	delay := backoff(cfg, "delivery", 2)
+	if delay < cfg.BaseBackoff/2 || delay > cfg.MaxBackoff {
+		t.Fatalf("backoff out of bounds: %s", delay)
+	}
+}
+
+func TestWorkerStorageFailureIsReturned(t *testing.T) {
+	cfg := testConfig(time.UnixMilli(1790189001000))
+	if _, err := NewWorker(cfg, nil, testDoer{}, testResolver{}); ErrorCode(err) != CodeInvalidConfig {
+		t.Fatalf("nil store error = %v", err)
+	}
+	if ErrorCode(errors.New("unknown")) != CodeStorageUnavailable {
+		t.Fatal("unknown error classification changed")
+	}
+}
+
+func TestWorkerRunStopsOnCancellation(t *testing.T) {
+	now := time.UnixMilli(1790189001000)
+	worker, err := NewWorker(testConfig(now), &testStore{}, testDoer{}, testResolver{secret: []byte("0123456789abcdef0123456789abcdef")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	runCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(runCtx) }()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	select {
+	case err = <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("worker did not stop after cancellation")
+	}
+}
+
+func TestWorkerRedactsDoerError(t *testing.T) {
+	now := time.UnixMilli(1790189001000)
+	const sentinel = "secret-token-sentinel"
+	store := &testStore{delivery: testDelivery(nil)}
+	observer := &captureObserver{}
+	cfg := testConfig(now)
+	cfg.Observer = observer
+	worker, err := NewWorker(cfg, store, testDoer{err: errors.New(sentinel)}, testResolver{secret: []byte("0123456789abcdef0123456789abcdef")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = worker.cycle(context.Background(), make(chan struct{}, 1)); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(strings.Join(observer.values, "|"), sentinel) {
+		t.Fatal("observer leaked raw doer error")
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if len(store.finished) != 1 || store.finished[0].ErrorCode != CodeHTTPTemporary || store.finished[0].Status != "retry" {
+		t.Fatalf("redacted outcome = %+v", store.finished)
+	}
+}
+
+func TestWorkerConfigRejectsLeaseShorterThanRequest(t *testing.T) {
+	cfg := testConfig(time.UnixMilli(1790189001000))
+	cfg.RequestTimeout = 2 * time.Second
+	cfg.LeaseTTL = time.Second
+	if ErrorCode(cfg.Validate()) != CodeInvalidConfig {
+		t.Fatal("unsafe lease configuration accepted")
+	}
+}
+
+func TestWorkerNonceIsFreshPerAttempt(t *testing.T) {
+	now := time.UnixMilli(1790189001000)
+	delivery := testDelivery(nil)
+	headers1, err := signedHeaders([]byte("0123456789abcdef0123456789abcdef"), delivery, []byte(`{}`), now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	headers2, err := signedHeaders([]byte("0123456789abcdef0123456789abcdef"), delivery, []byte(`{}`), now.Add(time.Millisecond))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if headers1[protocol.WebhookHeaderNonce] == headers2[protocol.WebhookHeaderNonce] {
+		t.Fatal("nonce was reused across attempts")
+	}
+	if _, err = base64.RawURLEncoding.DecodeString(headers1[protocol.WebhookHeaderNonce]); err != nil {
+		t.Fatal(err)
+	}
+}
