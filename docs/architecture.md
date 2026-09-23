@@ -51,11 +51,12 @@ intent; no dispatcher or exactly-once delivery claim is made. See
 with persisted session/token bindings and revocation checks. `server/sync/*`
 implements bounded, resumable internal bootstrap, conversation delta, and message
 delta reads using server-assigned sequence and pagination contracts; this is not a
-public sync endpoint. `server/media` persists metadata, complete identity
-bindings, and SHA-256 grant digests, never binary bytes or signed/object URLs.
-Upload authorization precedes grant generation, message persistence requires a
-ready/owned/conversation-bound asset, and private download authorization precedes
-signer invocation.
+public sync endpoint. PostgreSQL media persistence stores metadata, complete
+identity bindings, and SHA-256 grant digests. Binary objects are stored by
+`server/media/localfs` through the object-store port. Neither persistence boundary
+stores signed/object URLs. Upload authorization precedes grant generation, message
+persistence requires a ready/owned/conversation-bound asset, and private download
+authorization precedes signer invocation.
 
 On clients, `sdk/core` owns the protocol-neutral outbox state machine and
 `sdk/storage/sqlite` provides the native SQLite adapter with atomic batch writes,

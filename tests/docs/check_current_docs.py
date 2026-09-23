@@ -183,7 +183,7 @@ def validate_document(path: Path) -> list[str]:
         if required_target not in found_targets:
             errors.append(f"{relative}: missing required link {required_target!r}")
 
-    for target in found_targets:
+    for target in sorted(found_targets):
         if target.startswith(("http://", "https://", "mailto:", "#")):
             continue
         path_part = target.split("#", 1)[0]
