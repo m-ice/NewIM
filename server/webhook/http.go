@@ -10,6 +10,7 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -112,10 +113,11 @@ func (c *SecureClient) Do(ctx context.Context, rawURL string, headers map[string
 		return nil, lastErr
 	}
 	transport := &http.Transport{
-		Proxy:             nil,
-		DialContext:       dialContext,
-		ForceAttemptHTTP2: true,
-		TLSClientConfig:   &tls.Config{MinVersion: tls.VersionTLS12},
+		Proxy:                  nil,
+		DialContext:            dialContext,
+		ForceAttemptHTTP2:      true,
+		MaxResponseHeaderBytes: 64 * 1024,
+		TLSClientConfig:        &tls.Config{MinVersion: tls.VersionTLS12},
 	}
 	defer transport.CloseIdleConnections()
 	client := &http.Client{
@@ -149,7 +151,26 @@ func (c *SecureClient) Do(ctx context.Context, rawURL string, headers map[string
 	if int64(len(responseBody)) > c.maxBody {
 		return Response{}, Fail(CodeResponseTooLarge)
 	}
-	return Response{StatusCode: response.StatusCode, Body: responseBody}, nil
+	return Response{StatusCode: response.StatusCode, Body: responseBody, RetryAfter: parseRetryAfter(response.Header.Get("Retry-After"))}, nil
+}
+
+func parseRetryAfter(value string) time.Duration {
+	if value == "" {
+		return 0
+	}
+	if seconds, err := strconv.ParseInt(value, 10, 64); err == nil && seconds > 0 {
+		if seconds > int64((time.Hour)/time.Second) {
+			return time.Hour
+		}
+		return time.Duration(seconds) * time.Second
+	}
+	if when, err := http.ParseTime(value); err == nil {
+		delay := time.Until(when)
+		if delay > 0 {
+			return delay
+		}
+	}
+	return 0
 }
 
 func classifyHTTPError(ctx context.Context, err error) error {
@@ -197,6 +218,11 @@ var blockedPrefixes = []netip.Prefix{
 	netip.MustParsePrefix("240.0.0.0/4"),
 	netip.MustParsePrefix("::/128"),
 	netip.MustParsePrefix("2001:2::/48"),
+	netip.MustParsePrefix("2001::/32"),
 	netip.MustParsePrefix("2001:10::/28"),
 	netip.MustParsePrefix("2001:db8::/32"),
+	netip.MustParsePrefix("2002::/16"),
+	netip.MustParsePrefix("64:ff9b::/96"),
+	netip.MustParsePrefix("64:ff9b:1::/48"),
+	netip.MustParsePrefix("fec0::/10"),
 }

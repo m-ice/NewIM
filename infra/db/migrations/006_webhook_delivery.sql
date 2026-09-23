@@ -47,6 +47,9 @@ CREATE TABLE newim.im_webhook_endpoint_revisions (
   PRIMARY KEY (destination_id, revision)
 );
 
+CREATE UNIQUE INDEX im_webhook_endpoint_revisions_key_nonce_idx
+  ON newim.im_webhook_endpoint_revisions (key_id, secret_nonce);
+
 ALTER TABLE newim.im_webhook_deliveries
   ADD COLUMN endpoint_revision bigint,
   ADD COLUMN status text COLLATE "C",

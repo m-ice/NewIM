@@ -30,7 +30,12 @@ const (
 	CodeDeliveryCancelled  Code = "WEBHOOK_DELIVERY_CANCELLED"
 	CodeDeliveryDelivered  Code = "WEBHOOK_DELIVERY_DELIVERED"
 	CodeDeliveryRetry      Code = "WEBHOOK_DELIVERY_RETRY"
+	CodeFanoutLimit        Code = "WEBHOOK_FANOUT_LIMIT"
 )
+
+// MaxEndpointsPerEvent bounds endpoint fan-out for one event.
+// MaxEndpointsPerEvent 限制单个事件的 endpoint fan-out 数量。
+const MaxEndpointsPerEvent = 64
 
 // Error carries only a stable code and never an endpoint URL, secret or body.
 // Error 只携带稳定码，不包含 endpoint URL、secret 或 body。
@@ -102,6 +107,7 @@ type Event struct {
 type SecretMaterial struct {
 	DestinationID string
 	Revision      int64
+	URL           string
 	KeyID         string
 	Nonce         []byte
 	Ciphertext    []byte
@@ -162,6 +168,7 @@ type Store interface {
 type Response struct {
 	StatusCode int
 	Body       []byte
+	RetryAfter time.Duration
 }
 
 // Doer sends one signed request without exposing response bodies to logs.
@@ -173,34 +180,41 @@ type Doer interface {
 // Config is trusted worker configuration and has no request-derived values.
 // Config 是可信 worker 配置，不含请求派生值。
 type Config struct {
-	Owner            string
-	BatchSize        int
-	MaxConcurrent    int
-	MaxAttempts      int
-	MaxResponseBytes int64
-	LeaseTTL         time.Duration
-	RequestTimeout   time.Duration
-	BaseBackoff      time.Duration
-	MaxBackoff       time.Duration
-	HighWater        int
-	LowWater         int
-	IdleDelay        time.Duration
-	Clock            Clock
-	Jitter           JitterFunc
-	Observer         Observer
+	Owner               string
+	BatchSize           int
+	MaxConcurrent       int
+	MaxPerDestination   int
+	MaxAttempts         int
+	MaxResponseBytes    int64
+	LeaseTTL            time.Duration
+	RequestTimeout      time.Duration
+	BaseBackoff         time.Duration
+	MaxBackoff          time.Duration
+	HighWater           int
+	LowWater            int
+	MaxDestinationQueue int
+	RatePerSecond       float64
+	RateBurst           float64
+	IdleDelay           time.Duration
+	Clock               Clock
+	Jitter              JitterFunc
+	Observer            Observer
 }
 
 // Validate rejects unsafe or unbounded worker configuration.
 // Validate 拒绝不安全或无界 worker 配置。
 func (c Config) Validate() error {
 	if c.Owner == "" || len(c.Owner) > 128 || c.BatchSize < 1 || c.BatchSize > 1000 ||
-		c.MaxConcurrent < 1 || c.MaxConcurrent > 64 || c.MaxAttempts < 1 || c.MaxAttempts > 8 ||
+		c.MaxConcurrent < 1 || c.MaxConcurrent > 64 || c.MaxPerDestination < 1 || c.MaxPerDestination > c.MaxConcurrent ||
+		c.MaxAttempts < 1 || c.MaxAttempts > 8 ||
 		c.MaxResponseBytes < 1 || c.MaxResponseBytes > 1<<20 ||
 		c.LeaseTTL <= c.RequestTimeout || c.LeaseTTL > 10*time.Minute ||
 		c.RequestTimeout < time.Millisecond || c.RequestTimeout > time.Minute ||
 		c.BaseBackoff < time.Millisecond || c.BaseBackoff > time.Minute ||
 		c.MaxBackoff < c.BaseBackoff || c.MaxBackoff > time.Hour ||
 		c.HighWater < 1 || c.LowWater < 0 || c.LowWater >= c.HighWater ||
+		c.MaxDestinationQueue < 1 || c.MaxDestinationQueue > 1_000_000 ||
+		c.RatePerSecond < 0.1 || c.RatePerSecond > 1000 || c.RateBurst < 1 || c.RateBurst > 1000 ||
 		c.IdleDelay < time.Millisecond || c.IdleDelay > time.Minute {
 		return Fail(CodeInvalidConfig)
 	}

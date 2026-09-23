@@ -108,16 +108,16 @@ func (r *Repository) CancelRevoked(ctx context.Context, now time.Time) (int, err
 	}
 	defer rollback(tx)
 	if _, err = tx.Exec(ctx, `UPDATE newim.im_webhook_deliveries
-SET status='retry', next_attempt_at=$1, lease_owner=NULL, lease_token=NULL, lease_expires_at=NULL, updated_at=$1
-WHERE status='leased' AND lease_expires_at <= $1`, now); err != nil {
+SET status='retry', next_attempt_at=clock_timestamp(), lease_owner=NULL, lease_token=NULL, lease_expires_at=NULL, updated_at=clock_timestamp()
+WHERE status='leased' AND lease_expires_at <= clock_timestamp()`); err != nil {
 		return 0, mapStorageError(err)
 	}
 	tag, err := tx.Exec(ctx, `UPDATE newim.im_webhook_deliveries d
-SET status='cancelled', completed_at=$1, lease_owner=NULL, lease_token=NULL, lease_expires_at=NULL,
-    last_error_code=$2, updated_at=$1
+SET status='cancelled', completed_at=clock_timestamp(), lease_owner=NULL, lease_token=NULL, lease_expires_at=NULL,
+    last_error_code=$1, updated_at=clock_timestamp()
 FROM newim.im_webhook_endpoints e
 WHERE d.destination_id=e.destination_id AND e.revoked_at IS NOT NULL
-  AND d.status IN ('pending','retry','leased')`, now, app.CodeDeliveryCancelled)
+  AND d.status IN ('pending','retry','leased')`, app.CodeDeliveryCancelled)
 	if err != nil {
 		return 0, mapStorageError(err)
 	}
@@ -182,7 +182,8 @@ LIMIT $1 FOR UPDATE SKIP LOCKED`, limit)
 FROM newim.im_webhook_endpoints e
 JOIN newim.im_webhook_endpoint_revisions r ON r.destination_id=e.destination_id AND r.revision=e.active_revision
 WHERE e.status='active' AND e.revoked_at IS NULL
-ORDER BY e.destination_id`)
+ORDER BY e.destination_id
+LIMIT 65`)
 		if err != nil {
 			return 0, mapStorageError(err)
 		}
@@ -204,6 +205,9 @@ ORDER BY e.destination_id`)
 			return 0, mapStorageError(err)
 		}
 		endpoints.Close()
+		if len(refs) > app.MaxEndpointsPerEvent {
+			return 0, app.Fail(app.CodeFanoutLimit)
+		}
 		for _, ref := range refs {
 			deliveryID, idErr := newID()
 			if idErr != nil {
@@ -211,12 +215,12 @@ ORDER BY e.destination_id`)
 			}
 			if _, err = tx.Exec(ctx, `INSERT INTO newim.im_webhook_deliveries
 (delivery_id,event_id,destination_id,endpoint_revision,status,next_attempt_at,created_at,updated_at)
-VALUES ($1,$2,$3,$4,'pending',$5,$5,$5)
-ON CONFLICT (event_id,destination_id) DO NOTHING`, deliveryID, eventID, ref.destination, ref.revision, now); err != nil {
+VALUES ($1,$2,$3,$4,'pending',clock_timestamp(),clock_timestamp(),clock_timestamp())
+ON CONFLICT (event_id,destination_id) DO NOTHING`, deliveryID, eventID, ref.destination, ref.revision); err != nil {
 				return 0, mapStorageError(err)
 			}
 		}
-		if _, err = tx.Exec(ctx, `UPDATE newim.im_outbox_events SET webhook_fanout_at=$2 WHERE event_id=$1 AND webhook_fanout_at IS NULL`, eventID, now); err != nil {
+		if _, err = tx.Exec(ctx, `UPDATE newim.im_outbox_events SET webhook_fanout_at=clock_timestamp() WHERE event_id=$1 AND webhook_fanout_at IS NULL`, eventID); err != nil {
 			return 0, mapStorageError(err)
 		}
 	}
@@ -238,8 +242,8 @@ func (r *Repository) Claim(ctx context.Context, now time.Time, owner string, lea
 	}
 	defer rollback(tx)
 	if _, err = tx.Exec(ctx, `UPDATE newim.im_webhook_deliveries
-SET status='retry', next_attempt_at=$1, lease_owner=NULL, lease_token=NULL, lease_expires_at=NULL, updated_at=$1
-WHERE status='leased' AND lease_expires_at <= $1`, now); err != nil {
+SET status='retry', next_attempt_at=clock_timestamp(), lease_owner=NULL, lease_token=NULL, lease_expires_at=NULL, updated_at=clock_timestamp()
+WHERE status='leased' AND lease_expires_at <= clock_timestamp()`); err != nil {
 		return nil, mapStorageError(err)
 	}
 	rows, err := tx.Query(ctx, `SELECT d.delivery_id,d.attempts,d.destination_id,d.endpoint_revision,
@@ -251,10 +255,10 @@ JOIN newim.im_webhook_endpoint_revisions r ON r.destination_id=d.destination_id 
 JOIN newim.im_webhook_endpoints e ON e.destination_id=d.destination_id
 JOIN newim.im_outbox_events o ON o.event_id=d.event_id
 JOIN newim.im_messages m ON m.server_msg_id=o.server_msg_id
-WHERE d.status IN ('pending','retry') AND d.next_attempt_at <= $1
+WHERE d.status IN ('pending','retry') AND d.next_attempt_at <= clock_timestamp()
   AND d.endpoint_revision IS NOT NULL AND e.status='active' AND e.revoked_at IS NULL
 ORDER BY d.next_attempt_at,d.delivery_id
-LIMIT $2 FOR UPDATE OF d SKIP LOCKED`, now, limit)
+LIMIT $1 FOR UPDATE OF d SKIP LOCKED`, limit)
 	if err != nil {
 		return nil, mapStorageError(err)
 	}
@@ -274,6 +278,7 @@ LIMIT $2 FOR UPDATE OF d SKIP LOCKED`, now, limit)
 		delivery.Event.Payload = append([]byte(nil), payload...)
 		delivery.Secret.DestinationID = delivery.DestinationID
 		delivery.Secret.Revision = delivery.EndpointRevision
+		delivery.Secret.URL = delivery.URL
 		delivery.Secret.KeyID = delivery.KeyID
 		delivery.LeaseToken, err = newID()
 		if err != nil {
@@ -281,7 +286,7 @@ LIMIT $2 FOR UPDATE OF d SKIP LOCKED`, now, limit)
 			return nil, app.Fail(app.CodeStorageUnavailable)
 		}
 		delivery.Status = "leased"
-		delivery.NextAttemptAt = now.Add(leaseTTL)
+		delivery.NextAttemptAt = time.Now().Add(leaseTTL)
 		deliveries = append(deliveries, delivery)
 	}
 	if err = rows.Err(); err != nil {
@@ -291,8 +296,8 @@ LIMIT $2 FOR UPDATE OF d SKIP LOCKED`, now, limit)
 	rows.Close()
 	for _, delivery := range deliveries {
 		if _, err = tx.Exec(ctx, `UPDATE newim.im_webhook_deliveries
-SET status='leased',lease_owner=$2,lease_token=$3,lease_expires_at=$4,next_attempt_at=$4,updated_at=$1
-WHERE delivery_id=$5`, now, owner, delivery.LeaseToken, delivery.NextAttemptAt, delivery.ID); err != nil {
+SET status='leased',lease_owner=$1,lease_token=$2,lease_expires_at=clock_timestamp()+make_interval(secs=>$3),next_attempt_at=clock_timestamp()+make_interval(secs=>$3),updated_at=clock_timestamp()
+WHERE delivery_id=$4`, owner, delivery.LeaseToken, leaseTTL.Seconds(), delivery.ID); err != nil {
 			return nil, mapStorageError(err)
 		}
 	}
@@ -313,10 +318,12 @@ func (r *Repository) BeginAttempt(ctx context.Context, deliveryID, leaseToken st
 		return false, err
 	}
 	defer rollback(tx)
-	tag, err := tx.Exec(ctx, `UPDATE newim.im_webhook_deliveries
-SET attempts=attempts+1,updated_at=$4
-WHERE delivery_id=$1 AND lease_token=$2 AND status='leased'
-  AND lease_expires_at > $3 AND attempts < $5`, deliveryID, leaseToken, now, now, maxAttempts)
+	tag, err := tx.Exec(ctx, `UPDATE newim.im_webhook_deliveries d
+SET attempts=attempts+1,updated_at=clock_timestamp()
+FROM newim.im_webhook_endpoints e
+WHERE d.delivery_id=$1 AND d.lease_token=$2 AND d.status='leased'
+  AND d.lease_expires_at > clock_timestamp() AND d.attempts < $3
+  AND d.destination_id=e.destination_id AND e.status='active' AND e.revoked_at IS NULL`, deliveryID, leaseToken, maxAttempts)
 	if err != nil {
 		return false, mapStorageError(err)
 	}
@@ -337,8 +344,8 @@ WHERE delivery_id=$1 AND lease_token=$2 AND status='leased'
 	}
 	if status == "leased" && currentToken == leaseToken && attempts >= maxAttempts {
 		if _, err = tx.Exec(ctx, `UPDATE newim.im_webhook_deliveries
-SET status='dead_letter',completed_at=$2,last_error_code=$3,lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=$2
-WHERE delivery_id=$1`, deliveryID, now, app.CodeDeliveryDeadLetter); err != nil {
+SET status='dead_letter',completed_at=clock_timestamp(),last_error_code=$2,lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=clock_timestamp()
+WHERE delivery_id=$1`, deliveryID, app.CodeDeliveryDeadLetter); err != nil {
 			return false, mapStorageError(err)
 		}
 	}
@@ -351,7 +358,7 @@ WHERE delivery_id=$1`, deliveryID, now, app.CodeDeliveryDeadLetter); err != nil 
 // Finish applies a fenced terminal or retry transition and rejects stale owners.
 // Finish 应用带 fencing 的终态或重试转换，并拒绝 stale owner。
 func (r *Repository) Finish(ctx context.Context, deliveryID, leaseToken string, attempts int, now time.Time, outcome app.Outcome) error {
-	if r == nil || r.pool == nil || ctx == nil || deliveryID == "" || leaseToken == "" || attempts < 1 || now.IsZero() {
+	if r == nil || r.pool == nil || ctx == nil || deliveryID == "" || leaseToken == "" || attempts < 0 || now.IsZero() {
 		return app.Fail(app.CodeInvalidConfig)
 	}
 	if outcome.NextAttempt.IsZero() {
@@ -366,12 +373,12 @@ func (r *Repository) Finish(ctx context.Context, deliveryID, leaseToken string, 
 	}
 	defer rollback(tx)
 	tag, err := tx.Exec(ctx, `UPDATE newim.im_webhook_deliveries
-SET status=$3::text,next_attempt_at=$4::timestamptz,
-    completed_at=CASE WHEN $3::text IN ('delivered','dead_letter','cancelled') THEN $5::timestamptz ELSE NULL END,
+SET status=$2::text,next_attempt_at=$3::timestamptz,
+    completed_at=CASE WHEN $2::text IN ('delivered','dead_letter','cancelled') THEN clock_timestamp() ELSE NULL END,
     lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,
-    last_http_status=NULLIF($6,0),last_error_code=NULLIF($7::text,''),updated_at=$2::timestamptz
-WHERE delivery_id=$1 AND lease_token=$8 AND status='leased' AND lease_expires_at > $2::timestamptz`,
-		deliveryID, now, outcome.Status, outcome.NextAttempt, outcome.CompletedAt, outcome.HTTPStatus, string(outcome.ErrorCode), leaseToken)
+    last_http_status=NULLIF($4,0),last_error_code=NULLIF($5::text,''),updated_at=clock_timestamp()
+WHERE delivery_id=$1 AND lease_token=$6 AND status='leased' AND lease_expires_at > clock_timestamp()`,
+		deliveryID, outcome.Status, outcome.NextAttempt, outcome.HTTPStatus, string(outcome.ErrorCode), leaseToken)
 	if err != nil {
 		return mapStorageError(err)
 	}

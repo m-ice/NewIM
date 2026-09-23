@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"log/slog"
 	"os"
 	"strings"
 	"time"
@@ -20,7 +21,7 @@ type webhookRuntime struct {
 
 // newWebhookRuntimeFromEnv creates no runtime when the DSN is absent.
 // newWebhookRuntimeFromEnv 在 DSN 缺失时返回 nil runtime；配置不完整必须 fail-closed。
-func newWebhookRuntimeFromEnv(ctx context.Context) (*webhookRuntime, error) {
+func newWebhookRuntimeFromEnv(ctx context.Context, logger *slog.Logger) (*webhookRuntime, error) {
 	dsn := strings.TrimSpace(os.Getenv("NEWIM_WEBHOOK_DSN"))
 	if dsn == "" {
 		return nil, nil
@@ -49,23 +50,29 @@ func newWebhookRuntimeFromEnv(ctx context.Context) (*webhookRuntime, error) {
 		return nil, err
 	}
 	worker, err := app.NewWorker(app.Config{
-		Owner:            "newim-server",
-		BatchSize:        100,
-		MaxConcurrent:    8,
-		MaxAttempts:      8,
-		MaxResponseBytes: 64 * 1024,
-		LeaseTTL:         30 * time.Second,
-		RequestTimeout:   10 * time.Second,
-		BaseBackoff:      time.Second,
-		MaxBackoff:       time.Hour,
-		HighWater:        10000,
-		LowWater:         5000,
-		IdleDelay:        100 * time.Millisecond,
+		Owner:               "newim-server",
+		BatchSize:           100,
+		MaxConcurrent:       8,
+		MaxPerDestination:   2,
+		MaxAttempts:         8,
+		MaxResponseBytes:    64 * 1024,
+		LeaseTTL:            30 * time.Second,
+		RequestTimeout:      10 * time.Second,
+		BaseBackoff:         time.Second,
+		MaxBackoff:          time.Hour,
+		HighWater:           10000,
+		LowWater:            5000,
+		MaxDestinationQueue: 5000,
+		RatePerSecond:       20,
+		RateBurst:           40,
+		IdleDelay:           100 * time.Millisecond,
+		Observer:            app.NewLogObserver(logger),
 	}, repo, client, resolver)
 	if err != nil {
 		repo.Close()
 		return nil, err
 	}
+	clear(masterKey)
 	return &webhookRuntime{repo: repo, worker: worker}, nil
 }
 

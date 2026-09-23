@@ -10,6 +10,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/m-ice/NewIM/server/api"
 	"github.com/m-ice/NewIM/server/buildinfo"
@@ -45,17 +46,36 @@ func run(args []string, stdout, stderr io.Writer, read func() (buildinfo.Info, e
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	runtime, runtimeErr := newWebhookRuntimeFromEnv(ctx)
+	runtime, runtimeErr := newWebhookRuntimeFromEnv(ctx, logger)
 	if runtimeErr != nil {
 		fmt.Fprintln(stderr, errorCode(runtimeErr))
 		return 2
 	}
+	workerCtx, cancelWorker := context.WithCancel(ctx)
+	defer cancelWorker()
+	var runtimeDone chan error
 	if runtime != nil {
 		defer runtime.Close()
-		go func() { _ = runtime.Run(ctx) }()
+		runtimeDone = make(chan error, 1)
+		go func() { runtimeDone <- runtime.Run(workerCtx) }()
 	}
-	if err := server.Run(ctx); err != nil {
-		fmt.Fprintln(stderr, errorCode(err))
+	serverErr := server.Run(ctx)
+	cancelWorker()
+	if runtimeDone != nil {
+		select {
+		case workerErr := <-runtimeDone:
+			if serverErr == nil && workerErr != nil {
+				serverErr = workerErr
+			}
+		case <-time.After(10 * time.Second):
+			if serverErr == nil {
+				fmt.Fprintln(stderr, api.CodeShutdownFailed)
+				return 1
+			}
+		}
+	}
+	if serverErr != nil {
+		fmt.Fprintln(stderr, errorCode(serverErr))
 		return 1
 	}
 	return 0

@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"log/slog"
 	"net"
 	"net/http"
 	"os"
@@ -16,7 +18,21 @@ import (
 
 	"github.com/m-ice/NewIM/server/api"
 	"github.com/m-ice/NewIM/server/buildinfo"
+	app "github.com/m-ice/NewIM/server/webhook"
 )
+
+func TestWebhookRuntimeConfigFailsClosed(t *testing.T) {
+	t.Setenv("NEWIM_WEBHOOK_DSN", "")
+	runtime, err := newWebhookRuntimeFromEnv(context.Background(), slog.Default())
+	if err != nil || runtime != nil {
+		t.Fatalf("disabled runtime = %v, %v", runtime, err)
+	}
+	t.Setenv("NEWIM_WEBHOOK_DSN", "postgres://example.invalid/newim")
+	t.Setenv("NEWIM_WEBHOOK_MASTER_KEY_B64", "")
+	if _, err = newWebhookRuntimeFromEnv(context.Background(), slog.Default()); app.ErrorCode(err) != app.CodeInvalidConfig {
+		t.Fatalf("incomplete runtime error = %v", err)
+	}
+}
 
 func TestHelpAndInvalidArguments(t *testing.T) {
 	for _, args := range [][]string{{"--help"}, {"-h"}} {

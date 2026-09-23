@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"bytes"
 	"context"
 	"crypto/rand"
 	"encoding/base64"
@@ -23,6 +24,7 @@ type Worker struct {
 	doer     Doer
 	resolver SecretResolver
 	paused   bool
+	limiter  *destinationLimiter
 }
 
 // NewWorker creates a worker; callers must provide real storage, HTTP and secret ports.
@@ -43,7 +45,10 @@ func NewWorker(cfg Config, store Store, doer Doer, resolver SecretResolver) (*Wo
 	if cfg.Jitter == nil {
 		cfg.Jitter = defaultJitter
 	}
-	return &Worker{cfg: cfg, store: store, doer: doer, resolver: resolver}, nil
+	return &Worker{
+		cfg: cfg, store: store, doer: doer, resolver: resolver,
+		limiter: newDestinationLimiter(cfg.MaxPerDestination, cfg.RatePerSecond, cfg.RateBurst),
+	}, nil
 }
 
 // Run performs bounded cycles until cancellation; in-flight work is waited for.
@@ -92,19 +97,15 @@ func (w *Worker) cycle(ctx context.Context, sem chan struct{}) error {
 		}
 		w.paused = false
 	}
-	if counts.Total >= w.cfg.HighWater || counts.MaxDestination >= w.cfg.HighWater {
+	if counts.Total >= w.cfg.HighWater || counts.MaxDestination >= w.cfg.MaxDestinationQueue {
 		w.paused = true
-		w.observe("fanout", CodeBacklogPaused, 0)
-		return nil
 	}
-	for i := 0; i < w.cfg.BatchSize; i++ {
+	if !w.paused {
 		n, err := w.store.Fanout(ctx, now, w.cfg.BatchSize)
 		if err != nil {
 			return err
 		}
-		if n == 0 {
-			break
-		}
+		_ = n
 	}
 	deliveries, err := w.store.Claim(ctx, now, w.cfg.Owner, w.cfg.LeaseTTL, w.cfg.BatchSize)
 	if err != nil {
@@ -113,15 +114,21 @@ func (w *Worker) cycle(ctx context.Context, sem chan struct{}) error {
 	var wg sync.WaitGroup
 	for _, delivery := range deliveries {
 		delivery := delivery
+		if !w.limiter.acquire(delivery.DestinationID, now) {
+			w.deferDelivery(ctx, delivery, now)
+			continue
+		}
 		select {
 		case sem <- struct{}{}:
 			wg.Add(1)
 			go func() {
 				defer wg.Done()
 				defer func() { <-sem }()
+				defer w.limiter.release(delivery.DestinationID)
 				w.deliver(ctx, delivery)
 			}()
 		case <-ctx.Done():
+			w.limiter.release(delivery.DestinationID)
 			wg.Wait()
 			return nil
 		}
@@ -142,8 +149,10 @@ func (w *Worker) deliver(ctx context.Context, delivery Delivery) {
 		w.observe("attempt", CodeLeaseLost, time.Since(started))
 		return
 	}
+	attemptCtx, cancel := context.WithTimeout(ctx, w.cfg.RequestTimeout)
+	defer cancel()
 	attempts := delivery.Attempts + 1
-	secret, err := w.resolver.Resolve(ctx, delivery.Secret)
+	secret, err := w.resolver.Resolve(attemptCtx, delivery.Secret)
 	if err != nil {
 		w.finish(ctx, delivery, now, outcomeForSecretError(err, attempts, w.cfg, now))
 		w.observe("secret", ErrorCode(err), time.Since(started))
@@ -167,12 +176,12 @@ func (w *Worker) deliver(ctx context.Context, delivery Delivery) {
 		w.observe("signature", CodeProtocolInvalid, time.Since(started))
 		return
 	}
-	response, err := w.doer.Do(ctx, delivery.URL, headers, body)
+	response, err := w.doer.Do(attemptCtx, delivery.URL, headers, body)
 	if err != nil {
 		if ctx.Err() != nil {
 			return
 		}
-		w.finish(ctx, delivery, now, retryOutcome(CodeHTTPTemporary, attempts, w.cfg, delivery.ID, now))
+		w.finish(ctx, delivery, now, retryOutcome(CodeHTTPTemporary, attempts, w.cfg, delivery.ID, now, 0))
 		w.observe("delivery", CodeHTTPTemporary, time.Since(started))
 		return
 	}
@@ -182,7 +191,7 @@ func (w *Worker) deliver(ctx context.Context, delivery Delivery) {
 		return
 	}
 	if retryableStatus(response.StatusCode) {
-		w.finish(ctx, delivery, now, retryOutcome(CodeHTTPTemporary, attempts, w.cfg, delivery.ID, now))
+		w.finish(ctx, delivery, now, retryOutcome(CodeHTTPTemporary, attempts, w.cfg, delivery.ID, now, response.RetryAfter))
 		w.observe("delivery", CodeHTTPTemporary, time.Since(started))
 		return
 	}
@@ -192,6 +201,13 @@ func (w *Worker) deliver(ctx context.Context, delivery Delivery) {
 
 func (w *Worker) finish(ctx context.Context, delivery Delivery, now time.Time, outcome Outcome) {
 	if err := w.store.Finish(ctx, delivery.ID, delivery.LeaseToken, delivery.Attempts+1, now, outcome); err != nil {
+		w.observe("finish", ErrorCode(err), 0)
+	}
+}
+
+func (w *Worker) deferDelivery(ctx context.Context, delivery Delivery, now time.Time) {
+	next := now.Add(w.cfg.BaseBackoff)
+	if err := w.store.Finish(ctx, delivery.ID, delivery.LeaseToken, 0, now, Outcome{Status: "retry", NextAttempt: next, ErrorCode: CodeBacklogPaused}); err != nil {
 		w.observe("finish", ErrorCode(err), 0)
 	}
 }
@@ -206,14 +222,14 @@ func buildEnvelope(event Event) ([]byte, error) {
 	if event.ID == "" || event.ServerMsgID == "" || event.ClientMsgID == "" || event.SenderID == "" || event.ConversationID == "" || event.MessageType == "" || len(event.Payload) == 0 {
 		return nil, Fail(CodeProtocolInvalid)
 	}
-	payload, err := json.Marshal(struct {
+	payload, err := marshalWebhookPayload(struct {
 		ClientMsgID     string          `json:"clientMsgId"`
 		ServerMsgID     string          `json:"serverMsgId"`
 		ConversationID  string          `json:"conversationId"`
 		ConversationSeq string          `json:"conversationSeq"`
 		SenderID        string          `json:"senderId"`
 		ProtocolVersion int             `json:"protocolVersion"`
-		SchemaVersion   int             `json:"schemaVersion"`
+		SchemaVersion   int             `json:"version"`
 		Type            string          `json:"type"`
 		ServerTime      string          `json:"serverTime"`
 		Payload         json.RawMessage `json:"payload"`
@@ -239,6 +255,16 @@ func buildEnvelope(event Event) ([]byte, error) {
 		SchemaVersion: protocol.WebhookSchemaVersion,
 		Payload:       payload,
 	})
+}
+
+func marshalWebhookPayload(value any) ([]byte, error) {
+	var buffer bytes.Buffer
+	encoder := json.NewEncoder(&buffer)
+	encoder.SetEscapeHTML(false)
+	if err := encoder.Encode(value); err != nil {
+		return nil, err
+	}
+	return bytes.TrimSuffix(buffer.Bytes(), []byte("\n")), nil
 }
 
 func signedHeaders(secret []byte, delivery Delivery, body []byte, now time.Time) (map[string]string, error) {
@@ -276,7 +302,7 @@ func retryableStatus(status int) bool {
 
 func outcomeForSecretError(err error, attempts int, cfg Config, now time.Time) Outcome {
 	if ErrorCode(err) == CodeSecretUnavailable {
-		return retryOutcome(CodeSecretUnavailable, attempts, cfg, "", now)
+		return retryOutcome(CodeSecretUnavailable, attempts, cfg, "", now, 0)
 	}
 	return terminalOutcome(ErrorCode(err), now)
 }
@@ -285,11 +311,18 @@ func terminalOutcome(code Code, now time.Time) Outcome {
 	return Outcome{Status: "dead_letter", ErrorCode: code, CompletedAt: now}
 }
 
-func retryOutcome(code Code, attempts int, cfg Config, deliveryID string, now time.Time) Outcome {
+func retryOutcome(code Code, attempts int, cfg Config, deliveryID string, now time.Time, retryAfter time.Duration) Outcome {
 	if attempts >= cfg.MaxAttempts {
 		return Outcome{Status: "dead_letter", ErrorCode: CodeDeliveryDeadLetter, CompletedAt: now}
 	}
-	return Outcome{Status: "retry", ErrorCode: code, NextAttempt: now.Add(backoff(cfg, deliveryID, attempts))}
+	delay := backoff(cfg, deliveryID, attempts)
+	if retryAfter > 0 {
+		delay = retryAfter
+		if delay > cfg.MaxBackoff {
+			delay = cfg.MaxBackoff
+		}
+	}
+	return Outcome{Status: "retry", ErrorCode: code, NextAttempt: now.Add(delay)}
 }
 
 func backoff(cfg Config, deliveryID string, attempts int) time.Duration {

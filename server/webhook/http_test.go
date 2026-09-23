@@ -65,6 +65,15 @@ func TestSecureClientResponseLimit(t *testing.T) {
 	}
 }
 
+func TestRetryAfterParsing(t *testing.T) {
+	if got := parseRetryAfter("2"); got != 2*time.Second {
+		t.Fatalf("seconds retry-after = %s", got)
+	}
+	if got := parseRetryAfter("invalid"); got != 0 {
+		t.Fatalf("invalid retry-after = %s", got)
+	}
+}
+
 func TestSecureClientAddressPolicy(t *testing.T) {
 	client, err := NewSecureClient(nil, Policy{}, time.Second, 1024)
 	if err != nil {
@@ -79,6 +88,11 @@ func TestSecureClientAddressPolicy(t *testing.T) {
 		{"10.0.0.1", false},
 		{"192.168.1.1", false},
 		{"192.0.2.1", false},
+		{"64:ff9b::7f00:1", false},
+		{"64:ff9b:1::7f00:1", false},
+		{"2002:7f00:1::1", false},
+		{"2001::7f00:1", false},
+		{"fec0::1", false},
 		{"8.8.8.8", true},
 		{"2001:4860:4860::8888", true},
 	} {

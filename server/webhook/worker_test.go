@@ -16,16 +16,23 @@ import (
 )
 
 type testStore struct {
-	mu       sync.Mutex
-	delivery Delivery
-	fanout   int
-	finished []Outcome
-	attempts int
+	mu          sync.Mutex
+	delivery    Delivery
+	fanout      int
+	fanoutCalls int
+	counts      Counts
+	finished    []Outcome
+	attempts    int
 }
 
 func (s *testStore) CancelRevoked(context.Context, time.Time) (int, error) { return 0, nil }
-func (s *testStore) Counts(context.Context) (Counts, error)                { return Counts{}, nil }
-func (s *testStore) Fanout(context.Context, time.Time, int) (int, error)   { return s.fanout, nil }
+func (s *testStore) Counts(context.Context) (Counts, error)                { return s.counts, nil }
+func (s *testStore) Fanout(context.Context, time.Time, int) (int, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fanoutCalls++
+	return s.fanout, nil
+}
 func (s *testStore) Claim(context.Context, time.Time, string, time.Duration, int) ([]Delivery, error) {
 	if s.delivery.ID == "" {
 		return nil, nil
@@ -74,19 +81,23 @@ func (d testDoer) Do(context.Context, string, map[string]string, []byte) (Respon
 
 func testConfig(now time.Time) Config {
 	return Config{
-		Owner:            "test_owner",
-		BatchSize:        4,
-		MaxConcurrent:    2,
-		MaxAttempts:      3,
-		MaxResponseBytes: 1024,
-		LeaseTTL:         2 * time.Second,
-		RequestTimeout:   time.Second,
-		BaseBackoff:      10 * time.Millisecond,
-		MaxBackoff:       time.Second,
-		HighWater:        10,
-		LowWater:         2,
-		IdleDelay:        10 * time.Millisecond,
-		Clock:            ClockFunc(func() time.Time { return now }),
+		Owner:               "test_owner",
+		BatchSize:           4,
+		MaxConcurrent:       2,
+		MaxPerDestination:   2,
+		MaxAttempts:         3,
+		MaxResponseBytes:    1024,
+		LeaseTTL:            2 * time.Second,
+		RequestTimeout:      time.Second,
+		BaseBackoff:         10 * time.Millisecond,
+		MaxBackoff:          time.Second,
+		HighWater:           10,
+		LowWater:            2,
+		MaxDestinationQueue: 100,
+		RatePerSecond:       100,
+		RateBurst:           100,
+		IdleDelay:           10 * time.Millisecond,
+		Clock:               ClockFunc(func() time.Time { return now }),
 	}
 }
 
@@ -222,6 +233,15 @@ func TestWorkerRetryBackoffBounds(t *testing.T) {
 	}
 }
 
+func TestRetryOutcomeDeadLettersAtMax(t *testing.T) {
+	now := time.UnixMilli(1790189001000)
+	cfg := testConfig(now)
+	outcome := retryOutcome(CodeHTTPTemporary, cfg.MaxAttempts, cfg, "delivery", now, 0)
+	if outcome.Status != "dead_letter" || outcome.ErrorCode != CodeDeliveryDeadLetter {
+		t.Fatalf("max-attempt outcome = %+v", outcome)
+	}
+}
+
 func TestWorkerStorageFailureIsReturned(t *testing.T) {
 	cfg := testConfig(time.UnixMilli(1790189001000))
 	if _, err := NewWorker(cfg, nil, testDoer{}, testResolver{}); ErrorCode(err) != CodeInvalidConfig {
@@ -250,6 +270,33 @@ func TestWorkerRunStopsOnCancellation(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("worker did not stop after cancellation")
+	}
+}
+
+func TestWorkerDrainsAboveHighWater(t *testing.T) {
+	now := time.UnixMilli(1790189001000)
+	store := &testStore{
+		delivery: testDelivery(nil),
+		counts:   Counts{Total: 10, MaxDestination: 10},
+		fanout:   1,
+	}
+	cfg := testConfig(now)
+	cfg.HighWater = 5
+	cfg.LowWater = 1
+	worker, err := NewWorker(cfg, store, testDoer{status: http.StatusNoContent}, testResolver{secret: []byte("0123456789abcdef0123456789abcdef")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = worker.cycle(context.Background(), make(chan struct{}, 2)); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.fanoutCalls != 0 {
+		t.Fatalf("fanout ran while paused: %d", store.fanoutCalls)
+	}
+	if len(store.finished) != 1 || store.finished[0].Status != "delivered" {
+		t.Fatalf("paused worker did not drain existing delivery: %+v", store.finished)
 	}
 }
 
@@ -302,5 +349,30 @@ func TestWorkerNonceIsFreshPerAttempt(t *testing.T) {
 	}
 	if _, err = base64.RawURLEncoding.DecodeString(headers1[protocol.WebhookHeaderNonce]); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestBuildEnvelopePayloadContract(t *testing.T) {
+	delivery := testDelivery(nil)
+	body, err := buildEnvelope(delivery.Event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := protocol.DecodeWebhookEnvelope(body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload map[string]json.RawMessage
+	if err = json.Unmarshal(envelope.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	for _, key := range []string{"clientMsgId", "conversationId", "conversationSeq", "serverMsgId", "serverTime", "senderId", "type", "protocolVersion", "version", "payload"} {
+		if _, ok := payload[key]; !ok {
+			t.Fatalf("message.persisted payload missing %s: %s", key, envelope.Payload)
+		}
+	}
+	var version int
+	if err = json.Unmarshal(payload["version"], &version); err != nil || version != delivery.Event.SchemaVersion {
+		t.Fatalf("payload version = %d, %v", version, err)
 	}
 }

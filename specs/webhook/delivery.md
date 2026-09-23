@@ -10,6 +10,16 @@
 - 生产只允许 HTTPS；secret 以加密封存材料保存，worker 通过 `SecretResolver` 解封。
 - 投递是 at-least-once、可乱序；消费者按 `deliveryId`/`eventId` 幂等。
 
+### `message.persisted` payload v1
+
+消息事件的 envelope `payload` 是 JSON object，字段固定为：
+`clientMsgId`、`conversationId`、`conversationSeq`、`serverMsgId`、`serverTime`、
+`senderId`、`type`、`protocolVersion`、`version`、`payload`。其中 `version` 是消息
+schema version（与持久消息的 `version` 一致），`protocolVersion` 是持久消息协议版本，
+内层 `payload` 保留原始已验证 JSON object。所有 64 位计数使用十进制字符串；
+消费者必须忽略未来新增字段。该映射由 `make webhook-protocol` 的真实 HTTP receiver
+测试验证，不允许实现端另建未登记的私有事件格式。
+
 ## Fan-out
 
 worker 在一个 PostgreSQL 事务内领取未标记 outbox 事件，为 active endpoint 的
@@ -27,27 +37,28 @@ pending/retry/leased -> cancelled (endpoint revoked)
 ```
 
 - `Claim` 只选择 pending/retry、到期且未被 revoke 的 delivery，使用行锁、随机
-  `lease_token` 和有限租约。
+  `lease_token` 和有限租约。到期判断、租约期限和终态时间使用 PostgreSQL
+  `clock_timestamp()`，不能依赖跨进程 wall clock。
 - `BeginAttempt` 必须在 HTTP 请求开始前以同一 token 原子递增 `attempts`；租约过期、
   token 不匹配或 attempt 耗尽不得发请求。
 - `Finish` 必须校验 live token。成功 2xx 为 delivered；不可重试 4xx/3xx 为
   dead_letter；网络、408、429、5xx 在 attempt 未耗尽时进入 retry。退避有上限并
-  带稳定 jitter；终态不可重新领取。
+  带稳定 jitter；429 的 `Retry-After` 只能在硬上限内采纳；终态不可重新领取。
 - endpoint revoke 后新 claim、fan-out 被禁止，pending/retry/leased 可取消；历史
   delivery 不删除。既有已开始的单次请求只在 request deadline 内完成。
 
 ## Outbound safety
 
-`SecureClient` 一次解析全部地址，拒绝 loopback/private/link-local/multicast/reserved/
-documentation 范围和 IPv4-mapped IPv6 绕过；实际 dial 只连接已批准 IP，保留原始
+`SecureClient` 一次解析全部地址，拒绝 loopback/private/link-local/multicast/reserved、
+documentation、IPv4-mapped IPv6、NAT64、6to4、Teredo 和 site-local 绕过；实际 dial 只连接已批准 IP，保留原始
 Host/SNI/TLS 校验，禁止 proxy 环境和重定向。超时、响应体、并发、fan-out endpoint
-数量、重试和 backlog 都有硬上限。生产默认 HTTPS；测试 loopback/HTTP policy 只能由
+数量、单 endpoint 队列、速率、重试和 backlog 都有硬上限。生产默认 HTTPS；测试 loopback/HTTP policy 只能由
 测试构造器显式传入。
 
 ## Secrets and observability
 
-AES-GCM 材料绑定 destination ID、revision、key ID；resolver 失败 fail-closed，不能回退
-明文。日志/错误/指标只包含稳定码和有界 operation；不得包含 secret、signature、
+AES-GCM 材料绑定 destination ID、revision、URL、key ID；resolver 失败 fail-closed，不能回退
+明文；secret nonce 在同一 key id 下不得复用。日志/错误/指标只包含稳定码和有界 operation；不得包含 secret、signature、
 payload、query、userinfo、完整 URL 或响应体。endpoint 配置表可以保存经过校验的 URL，
 但运维日志和 metrics 使用不可逆短标识。提供 pending/retry/dead-letter、attempt、latency、
 endpoint state 观测。
@@ -56,7 +67,8 @@ endpoint state 观测。
 
 worker 在 `server/cmd/newim-server` 进程内，只有显式配置 DSN 与 master key 才启动。
 未配置时不启动；配置不完整或初始化失败则启动失败。SIGTERM 先停止新 claim，取消/等待
-有界 in-flight，保留可恢复租约。运行期存储/HTTP 故障用有界退避，不静默成功。
+有界 in-flight，join worker 完成后再关闭数据库池，保留可恢复租约。生产日志 observer
+只记录 operation 和稳定 code；运行期存储/HTTP 故障用有界退避，不静默成功。
 
 ```sh
 make webhook-protocol

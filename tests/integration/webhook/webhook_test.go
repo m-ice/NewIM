@@ -97,7 +97,7 @@ func TestWebhookRecovery(t *testing.T) {
 	f := openFixture(t)
 	conversation := f.id("webhook_recovery_room")
 	eventID := f.seedEvent(conversation)
-	_, _ = f.insertEndpoint(1, "https://example.invalid/hook", []byte("0123456789abcdef0123456789abcdef"))
+	oldDestination, _ := f.insertEndpoint(1, "https://example.invalid/hook", []byte("0123456789abcdef0123456789abcdef"))
 	if n, err := f.repo.Fanout(ctx, f.now, 10); err != nil || n != 1 {
 		t.Fatalf("fanout = %d, %v", n, err)
 	}
@@ -119,7 +119,8 @@ func TestWebhookRecovery(t *testing.T) {
 	}
 	// Simulate a worker crash before the HTTP request: the expired lease is
 	// reclaimed without consuming an HTTP attempt.
-	claimed, err = f.repo.Claim(ctx, f.now.Add(3*time.Second), "owner_b", 2*time.Second, 10)
+	f.sql("UPDATE newim.im_webhook_deliveries SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE delivery_id=$1", claimed[0].ID)
+	claimed, err = f.repo.Claim(ctx, time.Now(), "owner_b", 2*time.Second, 10)
 	must(t, err)
 	if len(claimed) != 1 || claimed[0].Attempts != 1 {
 		t.Fatalf("claim-after-crash attempts = %+v", claimed)
@@ -142,6 +143,30 @@ func TestWebhookRecovery(t *testing.T) {
 	}
 	if err = f.repo.Finish(ctx, claimed[0].ID, claimed[0].LeaseToken, 2, f.now, app.Outcome{Status: "delivered", ErrorCode: app.CodeDeliveryDelivered}); app.ErrorCode(err) != app.CodeLeaseLost {
 		t.Fatalf("second finish error = %v", err)
+	}
+
+	f.sql("UPDATE newim.im_webhook_endpoints SET status='revoked',revoked_at=clock_timestamp(),updated_at=clock_timestamp() WHERE destination_id=$1", oldDestination)
+	revokedEvent := f.seedEvent(f.id("webhook_revocation_room"))
+	destination, _ := f.insertEndpoint(1, "https://example.invalid/revoked", []byte("0123456789abcdef0123456789abcdef"))
+	if n, err := f.repo.Fanout(ctx, time.Now(), 10); err != nil || n != 1 {
+		t.Fatalf("revocation fanout = %d, %v", n, err)
+	}
+	claimed, err = f.repo.Claim(ctx, time.Now(), "owner_c", 2*time.Second, 10)
+	must(t, err)
+	if len(claimed) != 1 || claimed[0].Event.ID != revokedEvent {
+		t.Fatalf("revocation claim = %+v", claimed)
+	}
+	f.sql("UPDATE newim.im_webhook_endpoints SET status='revoked',revoked_at=clock_timestamp(),updated_at=clock_timestamp() WHERE destination_id=$1", destination)
+	ok, err = f.repo.BeginAttempt(ctx, claimed[0].ID, claimed[0].LeaseToken, time.Now(), 3)
+	must(t, err)
+	if ok {
+		t.Fatal("revoked endpoint was admitted at request start")
+	}
+	if _, err = f.repo.CancelRevoked(ctx, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	if got := f.scalarString("SELECT status FROM newim.im_webhook_deliveries WHERE event_id=$1", revokedEvent); got != "cancelled" {
+		t.Fatalf("revoked delivery status = %s", got)
 	}
 }
 
@@ -175,9 +200,10 @@ func TestWebhookRedaction(t *testing.T) {
 	})
 	observer := &captureObserver{}
 	worker, err := app.NewWorker(app.Config{
-		Owner: "redaction_owner", BatchSize: 4, MaxConcurrent: 2, MaxAttempts: 2,
+		Owner: "redaction_owner", BatchSize: 4, MaxConcurrent: 2, MaxPerDestination: 2, MaxAttempts: 2,
 		MaxResponseBytes: 1024, LeaseTTL: 2 * time.Second, RequestTimeout: time.Second,
 		BaseBackoff: 10 * time.Millisecond, MaxBackoff: time.Second, HighWater: 100, LowWater: 10,
+		MaxDestinationQueue: 100, RatePerSecond: 100, RateBurst: 100,
 		IdleDelay: 10 * time.Millisecond, Clock: app.ClockFunc(func() time.Time { return f.now }), Observer: observer,
 	}, f.repo, badDoer, f.resolver([]byte("0123456789abcdef0123456789abcdef")))
 	must(t, err)

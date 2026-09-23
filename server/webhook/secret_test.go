@@ -21,6 +21,7 @@ func TestLocalSecretResolverRoundTripAndAAD(t *testing.T) {
 	material := SecretMaterial{
 		DestinationID: "destination_1",
 		Revision:      3,
+		URL:           "https://example.invalid/hook",
 		KeyID:         "key_current",
 		Nonce:         []byte("0123456789ab"),
 	}

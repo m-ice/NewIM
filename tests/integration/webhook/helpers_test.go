@@ -39,7 +39,7 @@ func openFixture(t *testing.T) *fixture {
 	must(t, err)
 	repo, err := store.Open(ctx, store.Config{DSN: dsn, AllowLocalSocket: true, MaxConnections: 8, ApplicationName: "nim_webhook_test"})
 	must(t, err)
-	f := &fixture{t: t, db: conn, repo: repo, now: time.UnixMilli(1790189001000)}
+	f := &fixture{t: t, db: conn, repo: repo, now: time.Now()}
 	t.Cleanup(func() {
 		repo.Close()
 		_ = conn.Close(context.Background())
@@ -75,7 +75,7 @@ func (f *fixture) insertEndpoint(activeRevision int64, url string, secret []byte
 	must(f.t, err)
 	aead, err := cipher.NewGCM(block)
 	must(f.t, err)
-	material := app.SecretMaterial{DestinationID: destination, Revision: activeRevision, KeyID: keyID, Nonce: nonce}
+	material := app.SecretMaterial{DestinationID: destination, Revision: activeRevision, URL: url, KeyID: keyID, Nonce: nonce}
 	ciphertext, err := app.SealSecret(aead, material, secret)
 	must(f.t, err)
 	f.sql("INSERT INTO newim.im_webhook_endpoints(destination_id,status,active_revision) VALUES($1,'active',$2)", destination, activeRevision)
@@ -98,9 +98,10 @@ func (f *fixture) worker(master []byte, doer app.Doer) *app.Worker {
 func (f *fixture) workerWithObserver(master []byte, doer app.Doer, observer app.Observer) *app.Worker {
 	f.t.Helper()
 	worker, err := app.NewWorker(app.Config{
-		Owner: "integration_owner", BatchSize: 8, MaxConcurrent: 4, MaxAttempts: 3,
+		Owner: "integration_owner", BatchSize: 8, MaxConcurrent: 4, MaxPerDestination: 2, MaxAttempts: 3,
 		MaxResponseBytes: 64 * 1024, LeaseTTL: 2 * time.Second, RequestTimeout: time.Second,
 		BaseBackoff: 10 * time.Millisecond, MaxBackoff: time.Second, HighWater: 1000, LowWater: 100,
+		MaxDestinationQueue: 1000, RatePerSecond: 100, RateBurst: 100,
 		IdleDelay: 10 * time.Millisecond, Clock: app.ClockFunc(func() time.Time { return f.now }), Observer: observer,
 	}, f.repo, doer, f.resolver(master))
 	must(f.t, err)
