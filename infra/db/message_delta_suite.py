@@ -114,10 +114,10 @@ def main():
                 commands.run(['docker','cp',db.name+':/tmp/nim-syn-005-query-plans.json',str(directory/'query-plans.json')], label='copy-query-plans')
             if args.suite == 'redaction':
                 commands.run(['docker','cp',db.name+':/tmp/nim-syn-005-redaction.json',str(directory/'redaction.json')], label='copy-redaction-evidence')
-                log = (directory/'test-redaction.log').read_text()
-                for fragment in ('payload_token_secret_dsn_identifier_sql_driver',):
+                log = (directory/'test-redaction.log').read_text().lower()
+                for fragment in ('payload_token_secret_dsn_identifier_sql_driver', 'payload', 'token', 'secret', 'dsn', 'identifier', 'sql', 'driver'):
                     if fragment in log:
-                        raise Failure('redaction sentinel appeared in test log')
+                        raise Failure('redaction fragment appeared in test log: '+fragment)
         print('Message delta suite passed; command records: '+str(directory))
     except (Failure,OSError) as exc:
         print('Message delta suite failed: '+str(exc)+'; command records: '+str(directory))

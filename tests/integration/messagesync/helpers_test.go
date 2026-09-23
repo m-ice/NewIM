@@ -92,6 +92,13 @@ func (f *fixture) read(request app.ReadRequest) (app.Page, error) {
 	return f.service.ReadAfterSeq(ctx, f.identity, request)
 }
 
+func (f *fixture) serviceWithObserver(observer app.Observer) *app.Service {
+	f.t.Helper()
+	service, err := app.NewService(f.repo, app.Config{Observer: observer, RequestTimeout: 5_000_000_000})
+	must(f.t, err)
+	return service
+}
+
 func (f *fixture) sql(statement string, args ...any) {
 	f.t.Helper()
 	_, err := f.db.Exec(ctx, statement, args...)

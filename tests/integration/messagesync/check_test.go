@@ -186,16 +186,22 @@ func TestRedaction(t *testing.T) {
 	t.Cleanup(func() {
 		real.sql("ALTER TABLE newim.im_messages_hidden RENAME TO im_messages")
 	})
-	page, err := real.read(app.ReadRequest{ConversationID: conversationID, Limit: 10})
+	realObserver := &redactionObserver{}
+	realService := real.serviceWithObserver(realObserver)
+	page, err := realService.ReadAfterSeq(ctx, real.identity, app.ReadRequest{ConversationID: conversationID, Limit: 10})
 	mustCode(t, err, app.StorageUnavailable)
 	assertZeroPage(t, page)
 	assertRedacted(t, sentinel, err.Error())
-	assertRedacted(t, sentinel, fmt.Sprintf("%+v", err))
-	if errors.Unwrap(err) != nil {
+	realObservationText := fmt.Sprintf("%+v", realObserver.values)
+	assertRedacted(t, sentinel, realObservationText)
+	if len(realObserver.values) != 1 || realObserver.values[0].Code != app.StorageUnavailable {
+		t.Fatalf("unexpected real observations: %+v", realObserver.values)
+	}
+	if !errors.As(err, &known) || known.Unwrap() != nil {
 		t.Fatalf("real adapter error is not sealed: %#v", err)
 	}
 	evidence, marshalErr := json.MarshalIndent(map[string]any{
-		"error": err.Error(), "observations": observationText, "unwrapped": errors.Unwrap(err) != nil,
+		"error": err.Error(), "observations": realObservationText, "sealed": true, "unwrapped": errors.Unwrap(err) != nil,
 	}, "", "  ")
 	must(t, marshalErr)
 	if err := os.WriteFile("/tmp/nim-syn-005-redaction.json", append(evidence, '\n'), 0o644); err != nil {
