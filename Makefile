@@ -59,7 +59,7 @@ webhook-envelope-security: toolchain
 	go test -race -shuffle=on -count=1 ./tests/compatibility/webhook -run '^(TestWebhookSecurity|TestWebhookStrictInputs|TestWebhookClockBoundaries)$$'
 
 webhook-protocol: toolchain
-	go test -race -shuffle=on -count=1 ./server/webhook -run '^(TestWorkerDeliversSignedRequest|TestWorkerNonceIsFreshPerAttempt)$$'
+	go test -race -shuffle=on -count=1 ./server/webhook -run '^(TestWorkerDeliversSignedRequest|TestWorkerNonceIsFreshPerAttempt|TestBuildEnvelopePayloadContract)$$'
 	python3 -B infra/db/webhook_suite.py protocol
 
 webhook-recovery: toolchain

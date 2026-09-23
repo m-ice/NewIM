@@ -7,6 +7,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"time"
 )
 
@@ -214,6 +215,8 @@ func (c Config) Validate() error {
 		c.MaxBackoff < c.BaseBackoff || c.MaxBackoff > time.Hour ||
 		c.HighWater < 1 || c.LowWater < 0 || c.LowWater >= c.HighWater ||
 		c.MaxDestinationQueue < 1 || c.MaxDestinationQueue > 1_000_000 ||
+		math.IsNaN(c.RatePerSecond) || math.IsInf(c.RatePerSecond, 0) ||
+		math.IsNaN(c.RateBurst) || math.IsInf(c.RateBurst, 0) ||
 		c.RatePerSecond < 0.1 || c.RatePerSecond > 1000 || c.RateBurst < 1 || c.RateBurst > 1000 ||
 		c.IdleDelay < time.Millisecond || c.IdleDelay > time.Minute {
 		return Fail(CodeInvalidConfig)

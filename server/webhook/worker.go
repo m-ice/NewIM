@@ -93,19 +93,20 @@ func (w *Worker) cycle(ctx context.Context, sem chan struct{}) error {
 	if w.paused {
 		if counts.Total > w.cfg.LowWater || counts.MaxDestination > w.cfg.LowWater {
 			w.observe("fanout", CodeBacklogPaused, 0)
-			return nil
+		} else {
+			w.paused = false
 		}
-		w.paused = false
 	}
-	if counts.Total >= w.cfg.HighWater || counts.MaxDestination >= w.cfg.MaxDestinationQueue {
+	if !w.paused && (counts.Total >= w.cfg.HighWater || counts.MaxDestination >= w.cfg.MaxDestinationQueue) {
 		w.paused = true
 	}
 	if !w.paused {
 		n, err := w.store.Fanout(ctx, now, w.cfg.BatchSize)
 		if err != nil {
-			return err
+			w.observe("fanout", ErrorCode(err), 0)
+		} else {
+			_ = n
 		}
-		_ = n
 	}
 	deliveries, err := w.store.Claim(ctx, now, w.cfg.Owner, w.cfg.LeaseTTL, w.cfg.BatchSize)
 	if err != nil {

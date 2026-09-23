@@ -373,7 +373,7 @@ func (r *Repository) Finish(ctx context.Context, deliveryID, leaseToken string, 
 	}
 	defer rollback(tx)
 	tag, err := tx.Exec(ctx, `UPDATE newim.im_webhook_deliveries
-SET status=$2::text,next_attempt_at=$3::timestamptz,
+SET status=$2::text,next_attempt_at=GREATEST($3::timestamptz,clock_timestamp()),
     completed_at=CASE WHEN $2::text IN ('delivered','dead_letter','cancelled') THEN clock_timestamp() ELSE NULL END,
     lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,
     last_http_status=NULLIF($4,0),last_error_code=NULLIF($5::text,''),updated_at=clock_timestamp()

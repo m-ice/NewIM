@@ -21,6 +21,7 @@ type testStore struct {
 	fanout      int
 	fanoutCalls int
 	counts      Counts
+	persistent  bool
 	finished    []Outcome
 	attempts    int
 }
@@ -49,7 +50,9 @@ func (s *testStore) Finish(_ context.Context, _ string, _ string, _ int, _ time.
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.finished = append(s.finished, outcome)
-	s.delivery.ID = ""
+	if !s.persistent {
+		s.delivery.ID = ""
+	}
 	return nil
 }
 
@@ -276,9 +279,10 @@ func TestWorkerRunStopsOnCancellation(t *testing.T) {
 func TestWorkerDrainsAboveHighWater(t *testing.T) {
 	now := time.UnixMilli(1790189001000)
 	store := &testStore{
-		delivery: testDelivery(nil),
-		counts:   Counts{Total: 10, MaxDestination: 10},
-		fanout:   1,
+		delivery:   testDelivery(nil),
+		counts:     Counts{Total: 10, MaxDestination: 10},
+		fanout:     1,
+		persistent: true,
 	}
 	cfg := testConfig(now)
 	cfg.HighWater = 5
@@ -287,15 +291,17 @@ func TestWorkerDrainsAboveHighWater(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err = worker.cycle(context.Background(), make(chan struct{}, 2)); err != nil {
-		t.Fatal(err)
+	for range 2 {
+		if err = worker.cycle(context.Background(), make(chan struct{}, 2)); err != nil {
+			t.Fatal(err)
+		}
 	}
 	store.mu.Lock()
 	defer store.mu.Unlock()
 	if store.fanoutCalls != 0 {
 		t.Fatalf("fanout ran while paused: %d", store.fanoutCalls)
 	}
-	if len(store.finished) != 1 || store.finished[0].Status != "delivered" {
+	if len(store.finished) != 2 || store.finished[0].Status != "delivered" {
 		t.Fatalf("paused worker did not drain existing delivery: %+v", store.finished)
 	}
 }
