@@ -79,13 +79,14 @@ func New(cfg Config, logger *slog.Logger) (*Server, error) {
 
 func newHTTPServer(handler http.Handler) *http.Server {
 	return &http.Server{
-		Handler:           handler,
-		ErrorLog:          log.New(io.Discard, "", 0),
-		ReadHeaderTimeout: defaultHeaderTimeout,
-		ReadTimeout:       defaultReadTimeout,
-		WriteTimeout:      defaultWriteTimeout,
-		IdleTimeout:       defaultIdleTimeout,
-		MaxHeaderBytes:    defaultMaxHeaderBytes,
+		Handler:                      handler,
+		DisableGeneralOptionsHandler: true,
+		ErrorLog:                     log.New(io.Discard, "", 0),
+		ReadHeaderTimeout:            defaultHeaderTimeout,
+		ReadTimeout:                  defaultReadTimeout,
+		WriteTimeout:                 defaultWriteTimeout,
+		IdleTimeout:                  defaultIdleTimeout,
+		MaxHeaderBytes:               defaultMaxHeaderBytes,
 	}
 }
 
@@ -238,18 +239,31 @@ func (s *Server) doShutdown(ctx context.Context) error {
 	select {
 	case <-done:
 	case <-ctx.Done():
-		_ = s.apiServer.Close()
-		_ = s.opsServer.Close()
+		s.closeServers()
 		<-done
 		return fail(CodeShutdownFailed)
 	}
 	close(errs)
+	var shutdownErr error
 	for err := range errs {
 		if err != nil && !errors.Is(err, http.ErrServerClosed) {
-			return fail(CodeShutdownFailed)
+			shutdownErr = err
 		}
 	}
+	if shutdownErr != nil {
+		s.closeServers()
+		return fail(CodeShutdownFailed)
+	}
 	return nil
+}
+
+func (s *Server) closeServers() {
+	if s.apiServer != nil {
+		_ = s.apiServer.Close()
+	}
+	if s.opsServer != nil {
+		_ = s.opsServer.Close()
+	}
 }
 
 // Ready reports whether both listeners have bound and serving has started.

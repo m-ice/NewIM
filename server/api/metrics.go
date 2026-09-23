@@ -84,19 +84,24 @@ func (m *metrics) writeTo(w io.Writer) error {
 }
 
 func (m *metrics) writeInflight(w io.Writer) error {
-	keys := make([]metricKey, 0, len(m.inFlight))
-	for key := range m.inFlight {
+	aggregated := make(map[metricKey]int)
+	for key, count := range m.inFlight {
+		group := metricKey{listener: key.listener, route: key.route}
+		aggregated[group] += count
+	}
+	keys := make([]metricKey, 0, len(aggregated))
+	for key := range aggregated {
 		keys = append(keys, key)
 	}
 	sort.Slice(keys, func(i, j int) bool {
 		return metricKeyString(keys[i]) < metricKeyString(keys[j])
 	})
 	for _, key := range keys {
-		if m.inFlight[key] == 0 {
+		if aggregated[key] == 0 {
 			continue
 		}
 		if _, err := fmt.Fprintf(w, "newim_http_requests_in_flight{listener=%s,route=%s} %d\n",
-			quoteLabel(key.listener), quoteLabel(key.route), m.inFlight[key]); err != nil {
+			quoteLabel(key.listener), quoteLabel(key.route), aggregated[key]); err != nil {
 			return err
 		}
 	}

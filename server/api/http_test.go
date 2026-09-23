@@ -1,9 +1,11 @@
 package api
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"go/parser"
 	"go/token"
 	"io"
@@ -142,6 +144,78 @@ func TestServerRecovery(t *testing.T) {
 		}
 	})
 
+	t.Run("accept handshake is required", func(t *testing.T) {
+		listener, err := net.Listen("tcp", "127.0.0.1:0")
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer listener.Close()
+		started := make(chan struct{}, 1)
+		wrapped := &startListener{Listener: listener, started: started}
+		select {
+		case <-started:
+			t.Fatal("listener signaled before Accept")
+		default:
+		}
+		acceptDone := make(chan error, 1)
+		go func() {
+			connection, err := wrapped.Accept()
+			if connection != nil {
+				_ = connection.Close()
+			}
+			acceptDone <- err
+		}()
+		select {
+		case <-started:
+		case <-time.After(time.Second):
+			t.Fatal("listener did not signal on Accept")
+		}
+		_ = listener.Close()
+		if err := <-acceptDone; err == nil {
+			t.Fatal("closed listener unexpectedly accepted a connection")
+		}
+	})
+
+	t.Run("Run drains an active request", func(t *testing.T) {
+		server, err := New(Config{APIAddr: "127.0.0.1:0", OpsAddr: "127.0.0.1:0", ServerVersion: "0.1.0-test"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		entered := make(chan struct{})
+		release := make(chan struct{})
+		server.apiServer.Handler = blockingHandler(t, release, entered)
+		ctx, cancel := context.WithCancel(context.Background())
+		runDone := make(chan error, 1)
+		go func() { runDone <- server.Run(ctx) }()
+		waitForReady(t, server)
+		requestDone := make(chan error, 1)
+		go func() {
+			response, err := http.Get("http://" + server.APIAddr() + "/")
+			if err == nil {
+				_ = response.Body.Close()
+			}
+			requestDone <- err
+		}()
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("Run request did not enter handler")
+		}
+		cancel()
+		select {
+		case err := <-runDone:
+			t.Fatalf("Run returned before active request completed: %v", err)
+		case <-time.After(50 * time.Millisecond):
+		}
+		close(release)
+		if err := <-requestDone; err != nil {
+			t.Fatalf("active request failed: %v", err)
+		}
+		if err := <-runDone; err != nil {
+			t.Fatalf("Run failed: %v", err)
+		}
+	})
+
 	t.Run("shutdown waits for active request", func(t *testing.T) {
 		server, listener, release := blockingServer(t)
 		defer listener.Close()
@@ -212,12 +286,12 @@ func TestServerRecovery(t *testing.T) {
 		if codeOf(err) != CodeShutdownFailed {
 			t.Fatalf("shutdown timeout code=%q err=%v", codeOf(err), err)
 		}
-		close(release)
 		select {
 		case <-requestDone:
 		case <-time.After(time.Second):
-			t.Fatal("forced-close request did not return")
+			t.Fatal("forced-close request did not return before handler release")
 		}
+		close(release)
 		select {
 		case err := <-serveDone:
 			if err != nil && !errors.Is(err, http.ErrServerClosed) {
@@ -309,6 +383,38 @@ func TestHTTPSecurity(t *testing.T) {
 		}
 		if strings.Contains(logs.String(), sentinel) {
 			t.Fatalf("panic log leaked sentinel: %q", logs.String())
+		}
+	})
+
+	t.Run("raw OPTIONS star is rejected", func(t *testing.T) {
+		server, listener, _ := blockingServer(t)
+		defer listener.Close()
+		serveDone := make(chan error, 1)
+		go func() { serveDone <- server.apiServer.Serve(listener) }()
+		connection, err := net.DialTimeout("tcp", listener.Addr().String(), time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer connection.Close()
+		if _, err := fmt.Fprintf(connection, "OPTIONS * HTTP/1.1\r\nHost: %s\r\nConnection: close\r\n\r\n", listener.Addr().String()); err != nil {
+			t.Fatal(err)
+		}
+		response, err := http.ReadResponse(bufio.NewReader(connection), &http.Request{Method: http.MethodOptions})
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer response.Body.Close()
+		body, _ := io.ReadAll(response.Body)
+		if response.StatusCode != http.StatusNotFound || !strings.Contains(string(body), HTTPRouteNotFound) {
+			t.Fatalf("raw OPTIONS * response=%d %q", response.StatusCode, body)
+		}
+		if response.Header.Get("Cache-Control") != "no-store" || response.Header.Get("X-Content-Type-Options") != "nosniff" {
+			t.Fatalf("raw OPTIONS * security headers=%v", response.Header)
+		}
+		_ = server.apiServer.Close()
+		_ = listener.Close()
+		if err := <-serveDone; err != nil && !errors.Is(err, http.ErrServerClosed) {
+			t.Fatalf("raw OPTIONS * serve return: %v", err)
 		}
 	})
 
