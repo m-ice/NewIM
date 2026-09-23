@@ -1,5 +1,12 @@
 # Server implementation
 
+`server/api` implements the loopback-only HTTP API/Ops foundation: `GET
+/api/v1/health` on the API listener and `GET /ready` plus `GET /metrics` on the
+ops listener. It binds both listeners before readiness, redacts request logs,
+and drains on SIGINT/SIGTERM. See
+[ADR 0013](../docs/adr/0013-http-api-service-foundation.md) and the
+[service specification](../specs/http/service-foundation.md).
+
 `buildinfo` reads embedded Go build metadata without repository/network access.
 `cmd/newim-buildinfo` prints it as JSON for artifact diagnostics. Unknown source
 fields remain absent; invalid metadata produces a stable error code.
@@ -11,9 +18,10 @@ For example, `server/message` validates persistence intent and
 transaction; auth, sync, and media services follow the same application/storage
 split. These are internal packages and require a trusted caller/identity.
 
-There is no public network server or UI, HTTP/WebSocket gateway, push delivery,
-or complete multi-device login/reconnect policy. Message persistence is
-implemented, but it is not exposed by a network API. Run the root `make build`,
-`make check`, and `make docs-check` commands. See
+There is no public network server or UI, WebSocket gateway, push delivery, or
+complete multi-device login/reconnect policy. The API/Ops foundation defaults
+to loopback and does not expose message persistence through a public route. Run
+the root `make build`, `make check`, `make docs-check`, `make api-check`,
+`make api-recovery`, and `make api-security` commands. See
 [architecture](../docs/architecture.md) and
 [third-party notices](../THIRD_PARTY_NOTICES.md).

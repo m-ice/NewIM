@@ -90,6 +90,8 @@ REQUIRED_TEXT = {
         ("SDK outbox", re.compile(r"\bSDK\b", re.IGNORECASE)),
         ("future boundary", re.compile(r"\bfuture\b", re.IGNORECASE)),
         ("public network boundary", re.compile(r"public\s+network", re.IGNORECASE)),
+        ("HTTP service foundation", re.compile(r"HTTP\s+service\s+foundation", re.IGNORECASE)),
+        ("loopback listener", re.compile(r"loopback", re.IGNORECASE)),
         ("push boundary", re.compile(r"\bpush\b", re.IGNORECASE)),
     ),
     "server/README.md": (
@@ -112,6 +114,8 @@ REQUIRED_LINKS = {
         "adr/0008-auth-session-core.md",
         "adr/0009-message-send-transaction.md",
         "adr/0011-media-credential-metadata.md",
+        "adr/0013-http-api-service-foundation.md",
+        "../specs/http/service-foundation.md",
         "dependencies/protocol-v1.md",
         "dependencies/conversation-sync.md",
         "dependencies/local-store.md",
@@ -119,6 +123,8 @@ REQUIRED_LINKS = {
     ),
     "server/README.md": (
         "../docs/architecture.md",
+        "../docs/adr/0013-http-api-service-foundation.md",
+        "../specs/http/service-foundation.md",
         "../THIRD_PARTY_NOTICES.md",
     ),
 }

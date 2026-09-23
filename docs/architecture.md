@@ -6,10 +6,12 @@ internal media metadata; Go/Rust protocol codecs; a Rust SDK outbox state machin
 and a native SQLite adapter. Build identity lets support and future packaging tools
 identify artifacts without fabricating unknown source metadata.
 
-The following remain future work: a public network server or UI, an HTTP/WebSocket
-gateway, push delivery, complete credential verification and multi-device login or
-kick policy, reconnect/lifecycle integration, retention/moderation/account erasure,
-and platform wrappers. This document does not claim those capabilities.
+The implementation now contains a loopback-only HTTP service foundation for
+liveness, readiness, and bounded process metrics. The following remain future
+work: a public network API or UI, a WebSocket gateway, push delivery, complete
+credential verification and multi-device login or kick policy,
+reconnect/lifecycle integration, retention/moderation/account erasure, and
+platform wrappers. This document does not claim those capabilities.
 
 ## Module boundaries
 
@@ -17,12 +19,13 @@ and platform wrappers. This document does not claim those capabilities.
 |---|---|
 | `core/domain` (planned) | Go server domain rules, independent of HTTP, wire DTOs and SQL. |
 | `core/protocol` | Versioned language-neutral wire schemas/fixtures and separate Go/Rust codecs; no UI or database authority. Media v1 is closed metadata-only. |
+| `server/api` | Policy-neutral API/Ops HTTP listeners, exact health/readiness/metrics contracts, bounded lifecycle and redaction-only request logging; no identity or message semantics. |
 | `server/auth/session` | Policy-neutral token issuance, authentication, and revocation application logic over a store port. |
 | `server/message` | Send validation, media preconditions, idempotent persistence orchestration, and persisted ACK construction. |
 | `server/sync/*` | Internal bounded conversation bootstrap/delta and message delta read services; trusted principals are supplied by their callers. |
 | `server/media` | Protocol-neutral media application rules and ports for grants, metadata, validation, and private download authorization. |
 | `server/storage/*` | PostgreSQL adapters for message, auth/session, sync, and media metadata; no wire or UI authority. |
-| `server` | Application services depend on domain rules and ports; transport/storage adapters implement those ports. The only transport executable today is the local `newim-buildinfo` diagnostic. |
+| `server` | Application services depend on domain rules and ports; transport/storage adapters implement those ports. `cmd/newim-server` runs the loopback API/Ops foundation and `cmd/newim-buildinfo` remains the local artifact diagnostic. |
 | `sdk/core` | Rust platform-neutral contracts and the host-driven outbox state machine; no Go runtime, SQLite, browser API, or UI dependency. |
 | `sdk/storage/sqlite` | Native SQLite LocalStore adapter with migrations, recovery, pending-outbox CAS, and bounded receipts. |
 | Platform wrappers (planned) | Translate host networking, lifecycle, storage and FFI concerns into SDK contracts; message semantics stay in core. |
@@ -32,7 +35,9 @@ Server version, SDK version, protocol version and database schema version have
 separate lifecycles. Only server/SDK development versions exist today. A build
 revision label is informational and provides neither authenticity nor protocol
 negotiation. The [build ADR](adr/0002-language-toolchain.md) defines exact unknown,
-validation and error behavior.
+validation and error behavior. The [HTTP service ADR](adr/0013-http-api-service-foundation.md)
+and [service specification](../specs/http/service-foundation.md) define the
+current loopback-only listener, error, metrics, and shutdown boundary.
 
 ## Implemented persistence and recovery boundaries
 
@@ -79,6 +84,9 @@ compiles the SDK for wasm. `make check` performs non-mutating formatting checks,
 in both languages, and the `docs-check` documentation guard. The guard validates
 known stale claims, current dependency/persistence markers, and local link
 targets; it does not replace independent architecture review.
+
+`make api-check`, `make api-recovery`, and `make api-security` exercise the HTTP
+contract, real two-listener lifecycle, and redaction/bounded-label boundaries.
 
 The workflow uses `ubuntu-24.04`, an explicit OS-family label whose hosted image
 continues to change. Exact language versions and action commits are fixed;

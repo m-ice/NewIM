@@ -7,8 +7,8 @@ internal 1v1 send transaction with idempotent persisted ACKs, a durable internal
 conversation-sync projection, policy-neutral opaque auth-session/token
 primitives, an internal provider-neutral media credential/metadata flow, plus a
 portable SDK local-store contract with a native SQLite adapter and a wire-neutral
-SDK Core outbox/send state machine. Storage has real migration, idempotency,
-pagination, query-plan, concurrency, rollback and recovery tests. User credential
+SDK Core outbox/send state machine, and a loopback-only HTTP API/Ops service
+foundation. Storage has real migration, idempotency, pagination, query-plan, concurrency, rollback and recovery tests. User credential
 verification, HTTP/WS/gateway login, refresh tokens, multi-device login/kick policy,
 public media endpoints, rate limiting/moderation/retention/account erasure, network
 delivery, transport/reconnect integration, a complete multi-device sync service,
@@ -83,6 +83,20 @@ make message-delta-check
 ```
 
 该目标覆盖 authz、delta、query-plan、recovery 和 redaction；它不代表公共同步协议或客户端网络接入已经完成。
+
+## HTTP service foundation
+
+The `newim-server` process exposes two loopback-only listeners by default:
+`127.0.0.1:8080` for `GET /api/v1/health`, and `127.0.0.1:9090` for
+`GET /ready` and `GET /metrics`. Both listeners bind before readiness becomes
+true, and SIGINT/SIGTERM performs a bounded drain. The service has no public
+auth, message, sync, WebSocket, push, TLS, or rate-limiting semantics yet; see
+[ADR 0013](docs/adr/0013-http-api-service-foundation.md) and the
+[service specification](specs/http/service-foundation.md).
+
+```sh
+make api-check api-recovery api-security
+```
 
 ## Build identity and schema versions
 

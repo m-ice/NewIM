@@ -1,4 +1,4 @@
-.PHONY: build check docs-check toolchain protocol-golden protocol-unknown-fields protocol-unknown-type protocol-limits media-protocol media-db media-security media-authz media-check
+.PHONY: build check docs-check api-check api-recovery api-security toolchain protocol-golden protocol-unknown-fields protocol-unknown-type protocol-limits media-protocol media-db media-security media-authz media-check
 
 export GOTOOLCHAIN := local
 
@@ -7,6 +7,20 @@ toolchain:
 
 docs-check:
 	python3 -B tests/docs/check_current_docs.py
+
+api-check: toolchain
+	go test -race -shuffle=on -count=1 ./server/api/... ./server/cmd/newim-server/...
+
+api-recovery: toolchain
+	@go test -list '^TestServerRecovery$$' ./server/api | grep -qx 'TestServerRecovery'
+	@go test -list '^TestNewIMServerProcess$$' ./server/cmd/newim-server | grep -qx 'TestNewIMServerProcess'
+	@go test -list '^TestNewIMServerSecondBindFailure$$' ./server/cmd/newim-server | grep -qx 'TestNewIMServerSecondBindFailure'
+	go test -race -shuffle=on -count=1 -run '^(TestServerRecovery|TestNewIMServerProcess|TestNewIMServerSecondBindFailure)$$' ./server/api ./server/cmd/newim-server
+
+api-security: toolchain
+	@go test -list '^TestHTTPSecurity$$' ./server/api | grep -qx 'TestHTTPSecurity'
+	@go test -list '^TestImportBoundary$$' ./server/api | grep -qx 'TestImportBoundary'
+	go test -race -shuffle=on -count=1 -run '^(TestHTTPSecurity|TestImportBoundary)$$' ./server/api
 
 build: toolchain
 	mkdir -p build
