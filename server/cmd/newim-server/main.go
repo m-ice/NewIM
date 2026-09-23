@@ -67,20 +67,33 @@ func run(args []string, stdout, stderr io.Writer, read func() (buildinfo.Info, e
 	var serverErr error
 	var workerErr error
 	serverFinished, workerFinished := false, runtimeDone == nil
-	deadline := time.NewTimer(10 * time.Second)
-	defer deadline.Stop()
+	var shutdownTimer *time.Timer
+	var shutdownDeadline <-chan time.Time
+	armShutdownDeadline := func() {
+		if shutdownTimer == nil {
+			shutdownTimer = time.NewTimer(10 * time.Second)
+			shutdownDeadline = shutdownTimer.C
+		}
+	}
+	defer func() {
+		if shutdownTimer != nil {
+			shutdownTimer.Stop()
+		}
+	}()
 	for !serverFinished || !workerFinished {
 		select {
 		case serverErr = <-serverDone:
 			serverFinished = true
 			cancelWorker()
+			armShutdownDeadline()
 		case workerErr = <-runtimeDone:
 			workerFinished = true
 			if serverErr == nil && workerErr != nil {
 				serverErr = workerErr
 			}
 			cancelServer()
-		case <-deadline.C:
+			armShutdownDeadline()
+		case <-shutdownDeadline:
 			cancelServer()
 			cancelWorker()
 			fmt.Fprintln(stderr, api.CodeShutdownFailed)
