@@ -65,29 +65,26 @@ func run(args []string, stdout, stderr io.Writer, read func() (buildinfo.Info, e
 	serverDone := make(chan error, 1)
 	go func() { serverDone <- server.Run(serverCtx) }()
 	var serverErr error
-	select {
-	case serverErr = <-serverDone:
-	case workerErr := <-runtimeDone:
-		serverErr = workerErr
-		cancelServer()
-		if err := <-serverDone; serverErr == nil {
-			serverErr = err
-		}
-	}
-	cancelWorker()
-	if runtimeDone != nil {
+	var workerErr error
+	serverFinished, workerFinished := false, runtimeDone == nil
+	deadline := time.NewTimer(10 * time.Second)
+	defer deadline.Stop()
+	for !serverFinished || !workerFinished {
 		select {
-		case workerErr := <-runtimeDone:
+		case serverErr = <-serverDone:
+			serverFinished = true
+		case workerErr = <-runtimeDone:
+			workerFinished = true
 			if serverErr == nil && workerErr != nil {
 				serverErr = workerErr
 			}
-		case <-time.After(10 * time.Second):
-			if serverErr == nil {
-				fmt.Fprintln(stderr, api.CodeShutdownFailed)
-				return 1
-			}
+			cancelServer()
+		case <-deadline.C:
+			fmt.Fprintln(stderr, api.CodeShutdownFailed)
+			return 1
 		}
 	}
+	cancelWorker()
 	if serverErr != nil {
 		fmt.Fprintln(stderr, errorCode(serverErr))
 		return 1

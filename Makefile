@@ -64,6 +64,7 @@ webhook-protocol: toolchain
 
 webhook-recovery: toolchain
 	go test -race -shuffle=on -count=1 ./server/webhook -run '^(TestWorkerRunStopsOnCancellation|TestWorkerRetryBackoffBounds|TestWorkerStorageFailureIsReturned|TestWorkerDrainsAboveHighWater|TestRetryOutcomeDeadLettersAtMax)$$'
+	go test -race -shuffle=on -count=1 ./server/cmd/newim-server -run '^TestWebhookRuntimeConfigFailsClosed$$'
 	python3 -B infra/db/webhook_suite.py recovery
 
 webhook-security: toolchain

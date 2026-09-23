@@ -224,7 +224,7 @@ func (c Config) Validate() error {
 		c.RequestTimeout < time.Millisecond || c.RequestTimeout > time.Minute ||
 		c.BaseBackoff < time.Millisecond || c.BaseBackoff > time.Minute ||
 		c.MaxBackoff < c.BaseBackoff || c.MaxBackoff > time.Hour ||
-		c.HighWater < 1 || c.LowWater < 0 || c.LowWater >= c.HighWater ||
+		c.HighWater < 1 || c.HighWater > 1_000_000 || c.LowWater < 0 || c.LowWater >= c.HighWater ||
 		c.MaxDestinationQueue < 1 || c.MaxDestinationQueue > 1_000_000 ||
 		math.IsNaN(c.RatePerSecond) || math.IsInf(c.RatePerSecond, 0) ||
 		math.IsNaN(c.RateBurst) || math.IsInf(c.RateBurst, 0) ||
