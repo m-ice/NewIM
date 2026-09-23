@@ -62,9 +62,10 @@ v1
 
 签名是 `v1=` 加 `base64url(HMAC-SHA256(secret, signingBytes))` 的无 padding 编码。
 secret 至少 32 bytes。signature 的 base64url 必须严格规范，解码后重新编码必须与
-输入完全一致。验证必须先做 constant-time HMAC 比较，再解析 envelope、绑定 header
-`X-NewIM-Event-Id` 与 body `eventId`，最后检查时间窗和原子 nonce reservation；
-失败不得回显 secret、body、signature 或完整 URL。
+输入完全一致。验证可以对 bounded body 做 size/JSON syntax 预检以避免不必要的 resolver
+调用，但该预检不是认证；必须先做 constant-time HMAC 比较，再做 semantic envelope
+解析、绑定 header `X-NewIM-Event-Id` 与 body `eventId`，最后检查时间窗和原子 nonce
+reservation；失败不得回显 secret、body、signature 或完整 URL。
 
 ## Verification
 

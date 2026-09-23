@@ -286,13 +286,23 @@ func TestWebhookSecurity(t *testing.T) {
 			return []byte(c.Secret), nil
 		})
 		guard, _ := protocol.NewMemoryWebhookReplayGuard(4)
-		err := protocol.VerifyWebhookRequest(context.Background(), headers(c), []byte("null"), time.UnixMilli(c.Now), guard, r)
-		if protocol.WebhookErrorCode(err) != protocol.WebhookInvalidEnvelope {
+		err := protocol.VerifyWebhookRequest(context.Background(), headers(c), []byte("{"), time.UnixMilli(c.Now), guard, r)
+		if protocol.WebhookErrorCode(err) != protocol.WebhookInvalidJSON {
 			t.Fatalf("malformed body error = %v", err)
 		}
 		if calls != 0 {
 			t.Fatalf("resolver called %d times for malformed body", calls)
 		}
+	})
+	t.Run("invalid_signature_precedes_identity_mismatch", func(t *testing.T) {
+		c := fixtures.Negative[2]
+		if c.Name != "identity_mismatch" {
+			t.Fatalf("unexpected fixture order: %s", c.Name)
+		}
+		c.Signature = c.Signature[:len(c.Signature)-1] + "V"
+		guard, _ := protocol.NewMemoryWebhookReplayGuard(4)
+		err := protocol.VerifyWebhookRequest(context.Background(), headers(c), []byte(c.Wire), time.UnixMilli(c.Now), guard, resolver{c.KeyID: c.Secret})
+		assertCode(t, err, protocol.WebhookInvalidSignature)
 	})
 	t.Run("transient_resolver_failure", func(t *testing.T) {
 		c := fixtures.Positive[0]

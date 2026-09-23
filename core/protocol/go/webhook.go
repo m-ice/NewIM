@@ -185,18 +185,8 @@ func EncodeWebhookEnvelope(envelope WebhookEnvelope) ([]byte, error) {
 // DecodeWebhookEnvelope validates additive fields and returns a copied payload.
 // DecodeWebhookEnvelope 校验可扩展字段并返回复制后的 payload。
 func DecodeWebhookEnvelope(wire []byte) (WebhookEnvelope, error) {
-	if len(wire) > WebhookMaxEnvelopeBytes {
-		return WebhookEnvelope{}, webhookFail(WebhookEnvelopeTooLarge)
-	}
-	if err := strictJSONLimits(wire, WebhookMaxEnvelopeBytes, WebhookMaxEnvelopeDepth); err != nil {
-		switch err {
-		case TooLarge:
-			return WebhookEnvelope{}, webhookFail(WebhookEnvelopeTooLarge)
-		case TooDeep:
-			return WebhookEnvelope{}, webhookFail(WebhookEnvelopeTooDeep)
-		default:
-			return WebhookEnvelope{}, webhookFail(WebhookInvalidJSON)
-		}
+	if err := validateWebhookBodySyntax(wire); err != nil {
+		return WebhookEnvelope{}, err
 	}
 	fields, err := objectFields(wire)
 	if err != nil {
@@ -397,12 +387,8 @@ func VerifyWebhookRequest(ctx context.Context, headers WebhookHeaders, body []by
 	if err := validateWebhookHeaders(headers); err != nil {
 		return err
 	}
-	envelope, err := DecodeWebhookEnvelope(body)
-	if err != nil {
+	if err := validateWebhookBodySyntax(body); err != nil {
 		return err
-	}
-	if headers.EventID != envelope.EventID {
-		return webhookFail(WebhookIdentityMismatch)
 	}
 	if _, err := validateWebhookSignatureEncoding(headers.Signature); err != nil {
 		return err
@@ -415,6 +401,23 @@ func VerifyWebhookRequest(ctx context.Context, headers WebhookHeaders, body []by
 		return webhookFail(WebhookKeyUnavailable)
 	}
 	return VerifyWebhookSignature(ctx, secret, headers, body, now, replay)
+}
+
+func validateWebhookBodySyntax(wire []byte) error {
+	if len(wire) > WebhookMaxEnvelopeBytes {
+		return webhookFail(WebhookEnvelopeTooLarge)
+	}
+	if err := strictJSONLimits(wire, WebhookMaxEnvelopeBytes, WebhookMaxEnvelopeDepth); err != nil {
+		switch err {
+		case TooLarge:
+			return webhookFail(WebhookEnvelopeTooLarge)
+		case TooDeep:
+			return webhookFail(WebhookEnvelopeTooDeep)
+		default:
+			return webhookFail(WebhookInvalidJSON)
+		}
+	}
+	return nil
 }
 
 // MemoryWebhookReplayGuard is a bounded single-process reference guard.

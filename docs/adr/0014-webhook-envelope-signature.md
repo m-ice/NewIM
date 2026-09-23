@@ -43,7 +43,9 @@ The outbound contract is `webhook-v1`:
   within 5 minutes of its trusted clock, atomically reserves the nonce for the full
   validity interval (plus one millisecond past the inclusive oldest boundary), and
   treats the delivery/event identity as the business idempotency key. The verifier
-  decodes the signed envelope and requires its `eventId` to equal the signed header;
+  may perform bounded size/JSON syntax preflight before resolver lookup, but it must
+  perform the constant-time HMAC comparison before semantic envelope decoding and
+  requires the decoded `eventId` to equal the signed header;
   callers that use multiple key IDs must resolve the secret through an explicit
   `WebhookKeyResolver`. Replay reservation failure is fail-closed; capacity
   exhaustion must not evict an unexpired nonce. A bounded single-process reference
