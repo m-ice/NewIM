@@ -331,6 +331,9 @@ pub struct PendingReceipt {
 /// Additive pending mutation port; existing `LocalStore` and exhaustive `Action` stay unchanged.
 /// 增量 pending 变更端口；不改既有 LocalStore 与穷尽 Action。
 pub trait PendingMutationStore {
+    /// Return the exact store fence currently owned by this adapter.
+    /// 返回适配器当前持有的精确 store fence。
+    fn current_fence(&self) -> &Fence;
     fn update_pending(&mut self, mutation: PendingMutation) -> Result<PendingReceipt, StoreError>;
     fn remove_pending(&mut self, removal: PendingRemoval) -> Result<PendingReceipt, StoreError>;
 }

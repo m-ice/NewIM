@@ -257,8 +257,9 @@ impl OutboxRecord {
         Ok(())
     }
 
-    fn store_generation_changed(&self, context: &SendContext) -> bool {
-        self.active_fence.generation != context.fence.generation
+    fn store_generation_changed(&self, context: &SendContext, current_fence: &Fence) -> bool {
+        self.active_fence != *current_fence
+            || self.active_fence.generation != context.fence.generation
     }
 
     fn connection_generation_matches(&self, context: &SendContext) -> bool {
@@ -329,7 +330,12 @@ impl OutboxRecord {
         Ok(next)
     }
 
-    fn dispatch_plan(&self, context: &SendContext, now_ms: u64) -> Result<Plan, OutboxError> {
+    fn dispatch_plan(
+        &self,
+        context: &SendContext,
+        current_fence: &Fence,
+        now_ms: u64,
+    ) -> Result<Plan, OutboxError> {
         self.ensure_identity(context)?;
         if self.state == OutboxState::PermanentFailure {
             return Ok(Plan::Terminal(self.last_code.clone()));
@@ -337,7 +343,7 @@ impl OutboxRecord {
         if self.state == OutboxState::AuthRecovery {
             return Ok(Plan::AuthRecovery(self.last_code.clone()));
         }
-        if self.store_generation_changed(context) {
+        if self.store_generation_changed(context, current_fence) {
             return Ok(Plan::PersistAuthRecovery(
                 self.with_auth_recovery(STORE_GENERATION_CHANGED),
             ));
@@ -372,6 +378,7 @@ impl OutboxRecord {
     fn failure_plan(
         &self,
         context: &SendContext,
+        current_fence: &Fence,
         failure: &SendFailure,
         now_ms: u64,
     ) -> Result<Plan, OutboxError> {
@@ -388,7 +395,7 @@ impl OutboxRecord {
         if self.state == OutboxState::AuthRecovery {
             return Ok(Plan::AuthRecovery(self.last_code.clone()));
         }
-        if self.store_generation_changed(context) {
+        if self.store_generation_changed(context, current_fence) {
             return Ok(Plan::PersistAuthRecovery(
                 self.with_auth_recovery(STORE_GENERATION_CHANGED),
             ));
@@ -549,7 +556,8 @@ pub fn plan_dispatch<S: PendingMutationStore>(
     now_ms: u64,
 ) -> Result<OutboxTransition, OutboxError> {
     let record = OutboxRecord::decode(pending)?;
-    match record.dispatch_plan(context, now_ms)? {
+    let current_fence = store.current_fence().clone();
+    match record.dispatch_plan(context, &current_fence, now_ms)? {
         Plan::Send(next) => {
             let intent = next.intent.clone();
             persist(store, &next, expected_revision)?;
@@ -583,7 +591,8 @@ pub fn apply_failure<S: PendingMutationStore>(
     now_ms: u64,
 ) -> Result<OutboxTransition, OutboxError> {
     let record = OutboxRecord::decode(pending)?;
-    match record.failure_plan(context, failure, now_ms)? {
+    let current_fence = store.current_fence().clone();
+    match record.failure_plan(context, &current_fence, failure, now_ms)? {
         Plan::Persist(next) => {
             let transition = match next.state {
                 OutboxState::RetryWait => OutboxTransition::Wait {
@@ -611,6 +620,17 @@ pub fn apply_failure<S: PendingMutationStore>(
     }
 }
 
+fn require_current_fence<S: PendingMutationStore>(
+    store: &S,
+    context: &SendContext,
+) -> Result<(), OutboxError> {
+    if context.fence == *store.current_fence() {
+        Ok(())
+    } else {
+        Err(OutboxError::GenerationMismatch)
+    }
+}
+
 /// Explicit host recovery: bind a non-terminal record to the current connection generation.
 ///
 /// This is a one-row revision-CAS transition. It requires the same trusted sender and exact
@@ -624,6 +644,7 @@ pub fn rebind_connection<S: PendingMutationStore>(
     expected_revision: u64,
     context: &SendContext,
 ) -> Result<PendingReceipt, OutboxError> {
+    require_current_fence(store, context)?;
     let record = OutboxRecord::decode(pending)?;
     record.ensure_identity(context)?;
     if record.active_fence != context.fence {
@@ -651,6 +672,7 @@ pub fn resume_auth<S: PendingMutationStore>(
     context: &SendContext,
     now_ms: u64,
 ) -> Result<OutboxTransition, OutboxError> {
+    require_current_fence(store, context)?;
     let record = OutboxRecord::decode(pending)?;
     record.ensure_identity(context)?;
     if record.state != OutboxState::AuthRecovery {
@@ -700,6 +722,7 @@ pub fn remove_terminal<S: PendingMutationStore>(
     expected_revision: u64,
     context: &SendContext,
 ) -> Result<PendingReceipt, OutboxError> {
+    require_current_fence(store, context)?;
     let record = OutboxRecord::decode(pending)?;
     record.ensure_identity(context)?;
     if !matches!(

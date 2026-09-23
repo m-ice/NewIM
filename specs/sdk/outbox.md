@@ -46,9 +46,11 @@ them.
 - `AuthRecovery`: persisted after auth failure; no automatic retry.
 - `PermanentFailure`: terminal, including `OUTBOX_RETRY_EXHAUSTED`.
 
-Dispatch requires the trusted sender/account identity and matching active store/connection
-generations. A store-generation change is persisted as `AuthRecovery`; a stale connection
-generation is not sent and does not apply a failure classification. `InFlight`/`RetryWait` are due
+Dispatch requires the trusted sender/account identity, the adapter-exposed current store fence,
+and matching active connection generation. A record whose active fence differs from the current
+store fence, or a caller context that does not carry the current store fence, is persisted as
+`AuthRecovery`; a stale connection generation is not sent and does not apply a failure
+classification. `InFlight`/`RetryWait` are due
 only at their persisted deadline. Clock rollback cannot make a
 record due early. The constants are eight total attempts, 24 hours from enqueue, 1 second base
 delay, factor 2 and 5 minutes maximum individual delay. Overflow or either cap persists
