@@ -31,6 +31,30 @@ type Config struct {
 // Repository 持有有界 pgx 池和 Webhook 持久化操作。
 type Repository struct{ pool *pgxpool.Pool }
 
+// AcquireWorkerLock enforces one webhook worker process per database.
+// AcquireWorkerLock 强制每个数据库只有一个 Webhook worker 进程。
+func (r *Repository) AcquireWorkerLock(ctx context.Context) (func(), error) {
+	if r == nil || r.pool == nil || ctx == nil {
+		return nil, app.Fail(app.CodeStorageUnavailable)
+	}
+	conn, err := r.pool.Acquire(ctx)
+	if err != nil {
+		return nil, mapStorageError(err)
+	}
+	var acquired bool
+	if err = conn.QueryRow(ctx, `SELECT pg_try_advisory_lock(hashtext('newim.webhook.worker'))`).Scan(&acquired); err != nil || !acquired {
+		conn.Release()
+		if err != nil {
+			return nil, mapStorageError(err)
+		}
+		return nil, app.Fail(app.CodeBacklogPaused)
+	}
+	return func() {
+		_, _ = conn.Exec(context.Background(), `SELECT pg_advisory_unlock(hashtext('newim.webhook.worker'))`)
+		conn.Release()
+	}, nil
+}
+
 // Open requires verified TLS for TCP or explicitly enabled local sockets.
 // Open 的 TCP 必须校验主机证书，本地套接字须显式启用。
 func Open(ctx context.Context, config Config) (*Repository, error) {
@@ -177,10 +201,10 @@ LIMIT $1 FOR UPDATE SKIP LOCKED`, limit)
 	if err = rows.Err(); err != nil {
 		return 0, mapStorageError(err)
 	}
+	var firstFanoutError error
 	for _, eventID := range eventIDs {
-		endpoints, err := tx.Query(ctx, `SELECT e.destination_id,e.active_revision
+		endpoints, err := tx.Query(ctx, `SELECT e.destination_id,COALESCE(e.active_revision,0)
 FROM newim.im_webhook_endpoints e
-JOIN newim.im_webhook_endpoint_revisions r ON r.destination_id=e.destination_id AND r.revision=e.active_revision
 WHERE e.status='active' AND e.revoked_at IS NULL
 ORDER BY e.destination_id
 LIMIT 65
@@ -206,22 +230,41 @@ FOR UPDATE`)
 			return 0, mapStorageError(err)
 		}
 		endpoints.Close()
-		fanoutError := app.Code("")
+		var fanoutError app.Code
 		if len(refs) > app.MaxEndpointsPerEvent {
 			fanoutError = app.CodeFanoutLimit
 		}
+		queueFull := false
 		for _, ref := range refs {
 			if fanoutError != "" {
-				continue
+				break
+			}
+			if ref.revision <= 0 {
+				fanoutError = app.CodeFanoutLimit
+				break
 			}
 			var pending int
 			if err = tx.QueryRow(ctx, `SELECT count(*)::int FROM newim.im_webhook_deliveries WHERE destination_id=$1 AND status IN ('pending','retry','leased')`, ref.destination).Scan(&pending); err != nil {
 				return 0, mapStorageError(err)
 			}
 			if pending >= maxDestinationQueue {
-				fanoutError = app.CodeBacklogPaused
+				queueFull = true
 				break
 			}
+		}
+		if fanoutError != "" {
+			if _, err = tx.Exec(ctx, `UPDATE newim.im_outbox_events SET webhook_fanout_error=$2 WHERE event_id=$1 AND webhook_fanout_at IS NULL`, eventID, string(fanoutError)); err != nil {
+				return 0, mapStorageError(err)
+			}
+			if firstFanoutError == nil {
+				firstFanoutError = app.Fail(fanoutError)
+			}
+			continue
+		}
+		if queueFull {
+			continue
+		}
+		for _, ref := range refs {
 			deliveryID, idErr := newID()
 			if idErr != nil {
 				return 0, app.Fail(app.CodeStorageUnavailable)
@@ -233,20 +276,14 @@ ON CONFLICT (event_id,destination_id) DO NOTHING`, deliveryID, eventID, ref.dest
 				return 0, mapStorageError(err)
 			}
 		}
-		if fanoutError != "" {
-			if _, err = tx.Exec(ctx, `UPDATE newim.im_outbox_events SET webhook_fanout_error=$2 WHERE event_id=$1 AND webhook_fanout_at IS NULL`, eventID, string(fanoutError)); err != nil {
-				return 0, mapStorageError(err)
-			}
-		} else {
-			if _, err = tx.Exec(ctx, `UPDATE newim.im_outbox_events SET webhook_fanout_at=clock_timestamp() WHERE event_id=$1 AND webhook_fanout_at IS NULL`, eventID); err != nil {
-				return 0, mapStorageError(err)
-			}
+		if _, err = tx.Exec(ctx, `UPDATE newim.im_outbox_events SET webhook_fanout_at=clock_timestamp() WHERE event_id=$1 AND webhook_fanout_at IS NULL`, eventID); err != nil {
+			return 0, mapStorageError(err)
 		}
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return 0, mapStorageError(err)
 	}
-	return len(eventIDs), nil
+	return len(eventIDs), firstFanoutError
 }
 
 // Claim leases a bounded set of due deliveries for one worker owner.

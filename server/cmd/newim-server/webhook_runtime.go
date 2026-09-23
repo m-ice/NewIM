@@ -15,8 +15,9 @@ import (
 // webhookRuntime owns the optional in-process webhook worker and its database pool.
 // webhookRuntime 持有可选的进程内 Webhook worker 及其数据库池。
 type webhookRuntime struct {
-	repo   *store.Repository
-	worker *app.Worker
+	repo        *store.Repository
+	releaseLock func()
+	worker      *app.Worker
 }
 
 // newWebhookRuntimeFromEnv creates no runtime when the DSN is absent.
@@ -39,13 +40,20 @@ func newWebhookRuntimeFromEnv(ctx context.Context, logger *slog.Logger) (*webhoo
 	if err != nil {
 		return nil, err
 	}
+	releaseLock, err := repo.AcquireWorkerLock(ctx)
+	if err != nil {
+		repo.Close()
+		return nil, err
+	}
 	resolver, err := app.NewLocalSecretResolver(masterKey)
 	if err != nil {
+		releaseLock()
 		repo.Close()
 		return nil, err
 	}
 	client, err := app.NewSecureClient(nil, app.Policy{}, 10*time.Second, 64*1024)
 	if err != nil {
+		releaseLock()
 		repo.Close()
 		return nil, err
 	}
@@ -69,11 +77,12 @@ func newWebhookRuntimeFromEnv(ctx context.Context, logger *slog.Logger) (*webhoo
 		Observer:            app.NewLogObserver(logger),
 	}, repo, client, resolver)
 	if err != nil {
+		releaseLock()
 		repo.Close()
 		return nil, err
 	}
 	clear(masterKey)
-	return &webhookRuntime{repo: repo, worker: worker}, nil
+	return &webhookRuntime{repo: repo, releaseLock: releaseLock, worker: worker}, nil
 }
 
 // Run runs the worker until the process context is cancelled.
@@ -89,6 +98,9 @@ func (r *webhookRuntime) Run(ctx context.Context) error {
 // Close 释放 Webhook 数据库池。
 func (r *webhookRuntime) Close() {
 	if r != nil && r.repo != nil {
+		if r.releaseLock != nil {
+			r.releaseLock()
+		}
 		r.repo.Close()
 	}
 }
