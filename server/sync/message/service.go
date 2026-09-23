@@ -39,13 +39,16 @@ func NewService(store Store, config Config) (*Service, error) {
 func (s *Service) ReadAfterSeq(ctx context.Context, identity session.ConnectionIdentity, request ReadRequest) (page Page, err error) {
 	started := time.Now()
 	defer func() { s.observe(started, err, page) }()
-	if s == nil || s.store == nil || ctx == nil {
+	if s == nil || s.store == nil {
 		return Page{}, Fail(StorageUnavailable)
 	}
 	// These checks deliberately precede every store call.
 	// 这些检查必须先于任何 store 调用。
 	if !validIdentity(identity) || !identifier(request.ConversationID) {
 		return Page{}, Fail(Forbidden)
+	}
+	if ctx == nil {
+		return Page{}, Fail(StorageUnavailable)
 	}
 	attemptCtx, cancel := context.WithTimeout(ctx, s.requestTimeout)
 	defer cancel()
@@ -161,6 +164,7 @@ func (s *Service) observe(started time.Time, err error, page Page) {
 	for _, item := range page.Items {
 		bytes += itemCost(item)
 	}
+	defer func() { _ = recover() }()
 	s.observer.Observe(Observation{Operation: "read_after_seq", Code: code, Elapsed: time.Since(started), Items: len(page.Items), Bytes: bytes})
 }
 

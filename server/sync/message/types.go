@@ -117,8 +117,9 @@ type Observation struct {
 	Bytes     int
 }
 
-// Observer receives best-effort content-free observations.
-// Observer 接收尽力而为且内容无关的观测。
+// Observer receives best-effort content-free observations. Implementations
+// must be concurrency-safe and must not block request completion.
+// Observer 接收尽力而为且内容无关的观测；实现必须并发安全且不得阻塞请求。
 type Observer interface{ Observe(Observation) }
 
 // Config is trusted service configuration, never request input.

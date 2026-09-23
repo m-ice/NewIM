@@ -182,7 +182,7 @@ message-recovery: toolchain
 message-errors: toolchain
 	python3 -B infra/db/message_suite.py errors
 
-.PHONY: message-delta-authz message-delta page-delta message-delta-query-plan message-delta-recovery message-delta-redaction message-delta-check
+.PHONY: message-delta-authz message-delta message-delta-query-plan message-delta-recovery message-delta-redaction message-delta-check
 message-delta-authz:
 	python3 -B infra/db/message_delta_suite.py authz
 
@@ -198,4 +198,4 @@ message-delta-recovery:
 message-delta-redaction:
 	python3 -B infra/db/message_delta_suite.py redaction
 
-message-delta-check: message-delta-authz message-delta message-delta-query-plan message-delta-recovery message-delta-redaction
+message-delta-check: toolchain message-delta-authz message-delta message-delta-query-plan message-delta-recovery message-delta-redaction

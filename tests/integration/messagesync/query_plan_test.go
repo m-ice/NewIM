@@ -31,28 +31,28 @@ SELECT 'qp_other_server_'||g,'qp_other_client_'||g,$1,$2,g,1,1,'text',g,convert_
 	firstQuery := `SELECT conversation_seq FROM newim.im_messages WHERE conversation_id=$1 ORDER BY conversation_seq ASC LIMIT 1`
 	lastQuery := `SELECT conversation_seq FROM newim.im_messages WHERE conversation_id=$1 ORDER BY conversation_seq DESC LIMIT 1`
 	anchorQuery := `SELECT EXISTS(SELECT 1 FROM newim.im_messages WHERE conversation_id=$1 AND conversation_seq=$2)`
+	headQuery := `SELECT c.last_seq,c.latest_server_msg_id,m.conversation_seq FROM newim.im_conversations c JOIN newim.im_conversation_members member ON member.conversation_id=c.conversation_id AND member.user_id=$2 LEFT JOIN newim.im_messages m ON m.conversation_id=c.conversation_id AND m.server_msg_id=c.latest_server_msg_id WHERE c.conversation_id=$1`
 	plans := map[string]json.RawMessage{
 		"page":   json.RawMessage(f.explain("page", pageQuery, conversationID, 100, 10000, 101)),
 		"first":  json.RawMessage(f.explain("first", firstQuery, conversationID)),
 		"last":   json.RawMessage(f.explain("last", lastQuery, conversationID)),
 		"anchor": json.RawMessage(f.explain("anchor", anchorQuery, conversationID, 5000)),
+		"head":   json.RawMessage(f.explain("head", headQuery, conversationID, f.user)),
 	}
 	for label, plan := range plans {
-		planText := string(plan)
-		if !strings.Contains(planText, "im_messages_conversation_seq_key") {
-			t.Fatalf("%s plan did not use im_messages_conversation_seq_key: %s", label, planText)
-		}
-		if strings.Contains(planText, "Seq Scan on im_messages") {
-			t.Fatalf("%s plan contains a message-history sequential scan: %s", label, planText)
-		}
 		if !json.Valid(plan) {
 			t.Fatalf("%s plan is not JSON", label)
 		}
+		assertNoMessageSeqScan(t, plan)
+	}
+	for _, label := range []string{"page", "first", "last", "anchor"} {
+		assertUsesSequenceIndex(t, plans[label])
 	}
 	assertPlanRowsAtMost(t, plans["page"], 101)
 	assertPlanRowsAtMost(t, plans["first"], 2)
 	assertPlanRowsAtMost(t, plans["last"], 2)
 	assertPlanRowsAtMost(t, plans["anchor"], 2)
+	assertPlanRowsAtMost(t, plans["head"], 2)
 	if err := os.WriteFile("/tmp/nim-syn-005-query-plans.json", mustJSON(t, plans), 0o644); err != nil {
 		t.Fatal(err)
 	}
@@ -72,6 +72,62 @@ func mustJSON(t *testing.T, value any) []byte {
 
 func assertPlanRowsAtMost(t *testing.T, raw json.RawMessage, maximum float64) {
 	t.Helper()
+	seen := false
+	walkPlan(t, raw, func(node map[string]any) {
+		value, ok := node["Actual Rows"]
+		if !ok {
+			return
+		}
+		number, ok := value.(json.Number)
+		if !ok {
+			return
+		}
+		rows, err := number.Float64()
+		if err != nil {
+			t.Fatalf("invalid Actual Rows %q", number)
+		}
+		seen = true
+		if rows > maximum {
+			t.Fatalf("plan actual rows %.0f exceed %.0f: %s", rows, maximum, string(raw))
+		}
+	})
+	if !seen {
+		t.Fatalf("plan has no parsed Actual Rows: %s", string(raw))
+	}
+}
+
+func assertNoMessageSeqScan(t *testing.T, raw json.RawMessage) {
+	t.Helper()
+	messageNodes := 0
+	walkPlan(t, raw, func(node map[string]any) {
+		if node["Relation Name"] != "im_messages" {
+			return
+		}
+		messageNodes++
+		if node["Node Type"] == "Seq Scan" {
+			t.Fatalf("plan contains Seq Scan on im_messages: %s", string(raw))
+		}
+	})
+	if messageNodes == 0 {
+		t.Fatalf("plan does not reference im_messages: %s", string(raw))
+	}
+}
+
+func assertUsesSequenceIndex(t *testing.T, raw json.RawMessage) {
+	t.Helper()
+	used := false
+	walkPlan(t, raw, func(node map[string]any) {
+		if node["Index Name"] == "im_messages_conversation_seq_key" {
+			used = true
+		}
+	})
+	if !used {
+		t.Fatalf("plan does not use im_messages_conversation_seq_key: %s", string(raw))
+	}
+}
+
+func walkPlan(t *testing.T, raw json.RawMessage, visit func(map[string]any)) {
+	t.Helper()
 	var value any
 	decoder := json.NewDecoder(strings.NewReader(string(raw)))
 	decoder.UseNumber()
@@ -82,15 +138,8 @@ func assertPlanRowsAtMost(t *testing.T, raw json.RawMessage, maximum float64) {
 	walk = func(node any) {
 		switch current := node.(type) {
 		case map[string]any:
-			for key, child := range current {
-				if key == "Actual Rows" {
-					if number, ok := child.(json.Number); ok {
-						rows, err := number.Float64()
-						if err == nil && rows > maximum {
-							t.Fatalf("plan actual rows %.0f exceed %.0f: %s", rows, maximum, string(raw))
-						}
-					}
-				}
+			visit(current)
+			for _, child := range current {
 				walk(child)
 			}
 		case []any:

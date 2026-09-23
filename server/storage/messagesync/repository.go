@@ -16,11 +16,6 @@ import (
 
 const requestTimeout = 5 * time.Second
 
-// readTxOptions is kept package-visible so the integration test can prove the
-// adapter rejects a non-read-only or non-repeatable transaction.
-// readTxOptions 允许包内集成测试证明适配器会拒绝非只读或非可重复读事务。
-var readTxOptions = pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}
-
 // Config is trusted database configuration, never request input.
 // Config 是可信数据库配置，不接受请求输入。
 type Config struct {
@@ -32,7 +27,10 @@ type Config struct {
 
 // Repository owns a bounded pgx pool and implements message.Store.
 // Repository 持有有界 pgx 连接池并实现 message.Store。
-type Repository struct{ pool *pgxpool.Pool }
+type Repository struct {
+	pool          *pgxpool.Pool
+	readTxOptions pgx.TxOptions
+}
 
 // Open requires verified TLS for TCP or an explicitly enabled local socket.
 // Open 的 TCP 必须校验主机证书，本地套接字须显式启用。
@@ -90,7 +88,7 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 		pool.Close()
 		return nil, app.Fail(app.StorageUnavailable)
 	}
-	return &Repository{pool: pool}, nil
+	return &Repository{pool: pool, readTxOptions: pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}}, nil
 }
 
 // Close releases all pool resources.
@@ -108,10 +106,16 @@ func (r *Repository) Read(ctx context.Context, user string, request app.ReadRequ
 }
 
 func (r *Repository) read(ctx context.Context, user string, request app.ReadRequest, afterSnapshot func() error) (app.ReadResult, error) {
-	if r == nil || r.pool == nil || ctx == nil || !identifier(user) || !identifier(request.ConversationID) {
+	if r == nil || r.pool == nil {
+		return app.ReadResult{}, app.Fail(app.StorageUnavailable)
+	}
+	if !identifier(user) || !identifier(request.ConversationID) {
 		return app.ReadResult{}, app.Fail(app.Forbidden)
 	}
-	tx, err := r.begin(ctx, readTxOptions)
+	if ctx == nil {
+		return app.ReadResult{}, app.Fail(app.StorageUnavailable)
+	}
+	tx, err := r.begin(ctx, r.readTxOptions)
 	if err != nil {
 		return app.ReadResult{}, err
 	}

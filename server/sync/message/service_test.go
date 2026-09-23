@@ -198,3 +198,40 @@ func TestObserverHasNoSensitiveFields(t *testing.T) {
 type captureObserver struct{ values []Observation }
 
 func (o *captureObserver) Observe(value Observation) { o.values = append(o.values, value) }
+
+func TestNilContextPrecedence(t *testing.T) {
+	called := false
+	service, err := NewService(storeFunc(func(context.Context, string, ReadRequest) (ReadResult, error) {
+		called = true
+		return ReadResult{}, nil
+	}), Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var zero session.ConnectionIdentity
+	page, err := service.ReadAfterSeq(nil, zero, ReadRequest{ConversationID: "conversation"})
+	if ErrorCode(err) != Forbidden || len(page.Items) != 0 || called {
+		t.Fatalf("malformed identity with nil context got page=%+v err=%v called=%v", page, err, called)
+	}
+	page, err = service.ReadAfterSeq(nil, identity(t), ReadRequest{ConversationID: "conversation"})
+	if ErrorCode(err) != StorageUnavailable || len(page.Items) != 0 || called {
+		t.Fatalf("valid identity with nil context got page=%+v err=%v called=%v", page, err, called)
+	}
+}
+
+func TestPanickingObserverCannotEscape(t *testing.T) {
+	service, err := NewService(storeFunc(func(context.Context, string, ReadRequest) (ReadResult, error) {
+		return ReadResult{LatestSeq: 0, Limit: 100}, nil
+	}), Config{Observer: panicObserver{}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := service.ReadAfterSeq(context.Background(), identity(t), ReadRequest{ConversationID: "conversation"})
+	if err != nil || page.LatestSeq != 0 {
+		t.Fatalf("panicking observer changed result: page=%+v err=%v", page, err)
+	}
+}
+
+type panicObserver struct{}
+
+func (panicObserver) Observe(Observation) { panic("observer failure") }

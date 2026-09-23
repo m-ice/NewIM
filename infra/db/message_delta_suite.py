@@ -112,6 +112,12 @@ def main():
                 run_test(db, binaries['messagesync'], TESTS[args.suite], label=args.suite)
             if args.suite == 'query-plan':
                 commands.run(['docker','cp',db.name+':/tmp/nim-syn-005-query-plans.json',str(directory/'query-plans.json')], label='copy-query-plans')
+            if args.suite == 'redaction':
+                commands.run(['docker','cp',db.name+':/tmp/nim-syn-005-redaction.json',str(directory/'redaction.json')], label='copy-redaction-evidence')
+                log = (directory/'test-redaction.log').read_text()
+                for fragment in ('payload_token_secret_dsn_identifier_sql_driver',):
+                    if fragment in log:
+                        raise Failure('redaction sentinel appeared in test log')
         print('Message delta suite passed; command records: '+str(directory))
     except (Failure,OSError) as exc:
         print('Message delta suite failed: '+str(exc)+'; command records: '+str(directory))

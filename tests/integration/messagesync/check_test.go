@@ -4,8 +4,11 @@ package messagesync_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
+	"fmt"
 	"math"
+	"os"
 	"strings"
 	"testing"
 
@@ -158,15 +161,15 @@ func TestDelta(t *testing.T) {
 }
 
 func TestRedaction(t *testing.T) {
-	sentinel := "payload_TOKEN_secret_DSN_SELECT_alice"
+	const sentinel = "payload_token_secret_dsn_identifier_sql_driver"
 	observer := &redactionObserver{}
 	service, err := app.NewService(redactionStore{err: errors.New(sentinel)}, app.Config{Observer: observer})
 	must(t, err)
 	_, err = service.ReadAfterSeq(context.Background(), fIdentity(t), app.ReadRequest{ConversationID: "conversation"})
 	mustCode(t, err, app.StorageUnavailable)
-	if strings.Contains(err.Error(), sentinel) || strings.Contains(err.Error(), "SELECT") || strings.Contains(err.Error(), "DSN") {
-		t.Fatalf("sensitive text escaped error: %v", err)
-	}
+	assertRedacted(t, sentinel, err.Error())
+	observationText := fmt.Sprintf("%+v", observer.values)
+	assertRedacted(t, sentinel, observationText)
 	var known *app.Error
 	if !errors.As(err, &known) || known.Unwrap() != nil {
 		t.Fatalf("error is not sealed: %#v", err)
@@ -186,8 +189,26 @@ func TestRedaction(t *testing.T) {
 	page, err := real.read(app.ReadRequest{ConversationID: conversationID, Limit: 10})
 	mustCode(t, err, app.StorageUnavailable)
 	assertZeroPage(t, page)
-	if strings.Contains(err.Error(), "im_messages") || strings.Contains(err.Error(), "SELECT") || strings.Contains(err.Error(), "postgres") {
-		t.Fatalf("adapter driver detail escaped sealed error: %v", err)
+	assertRedacted(t, sentinel, err.Error())
+	assertRedacted(t, sentinel, fmt.Sprintf("%+v", err))
+	if errors.Unwrap(err) != nil {
+		t.Fatalf("real adapter error is not sealed: %#v", err)
+	}
+	evidence, marshalErr := json.MarshalIndent(map[string]any{
+		"error": err.Error(), "observations": observationText, "unwrapped": errors.Unwrap(err) != nil,
+	}, "", "  ")
+	must(t, marshalErr)
+	if err := os.WriteFile("/tmp/nim-syn-005-redaction.json", append(evidence, '\n'), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func assertRedacted(t *testing.T, sentinel, value string) {
+	t.Helper()
+	for _, fragment := range []string{sentinel, "payload", "token", "secret", "dsn", "identifier", "sql", "driver", "im_messages", "postgres"} {
+		if strings.Contains(strings.ToLower(value), fragment) {
+			t.Fatalf("redaction fragment %q escaped: %q", fragment, value)
+		}
 	}
 }
 

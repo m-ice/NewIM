@@ -34,13 +34,13 @@ func TestReadTransactionGuard(t *testing.T) {
 	}
 	defer repo.Close()
 
-	original := readTxOptions
-	readTxOptions = pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadWrite}
+	original := repo.readTxOptions
+	repo.SetReadTxOptionsForTest(pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadWrite})
 	_, err = repo.Read(ctx, "guard_user", app.ReadRequest{ConversationID: "guard_conversation", Limit: 10})
 	if app.ErrorCode(err) != app.StorageUnavailable {
 		t.Fatalf("wrong transaction mode got %v want %s", err, app.StorageUnavailable)
 	}
-	readTxOptions = original
+	repo.SetReadTxOptionsForTest(original)
 
 	_, err = repo.Read(ctx, "guard_user", app.ReadRequest{ConversationID: "guard_conversation", Limit: 10})
 	if err != nil {
