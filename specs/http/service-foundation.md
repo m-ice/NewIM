@@ -20,9 +20,13 @@ Routes are exact raw paths: trailing slashes, percent-encoded aliases, and the
 special `OPTIONS *` target are not accepted as aliases. Health is liveness only;
 it does not probe a database. Readiness is true only after both listeners bind
 and serving starts, and becomes false before shutdown drain begins. A trusted
-process composer may add bounded exact `/api/v1/` GET routes; NIM-SRV-006 adds
-`route="session"` only when an explicit loopback auth DSN is configured. The
-foundation itself still does not import auth or storage.
+process composer may add bounded exact `/api/v1/` routes. Omitted or nil
+`AllowedMethods` preserves the GET default; non-nil empty input is invalid.
+ADR 0019 amends ADR 0018's GET-only dynamic route decision to allow only
+`GET` and `DELETE` for a newly registered exact path. NIM-SRV-006 adds the
+GET-only `route="session"` and NIM-SRV-007 adds the DELETE-only
+`route="session_token_revoke"` only when an explicit loopback auth DSN is
+configured. The foundation itself still does not import auth or storage.
 
 ## Errors
 
@@ -34,9 +38,9 @@ Application-handled errors are JSON:
 
 | Status | Code | Condition |
 | --- | --- | --- |
-| `400` | `HTTP_BODY_NOT_ALLOWED` | `GET` has a body or chunked transfer |
+| `400` | `HTTP_BODY_NOT_ALLOWED` | An allowed method has a body or chunked transfer |
 | `404` | `HTTP_ROUTE_NOT_FOUND` | Unknown path, including trailing slash |
-| `405` | `HTTP_METHOD_NOT_ALLOWED` | Known path, non-`GET`; includes `Allow: GET` |
+| `405` | `HTTP_METHOD_NOT_ALLOWED` | Known path with a method outside its AllowedMethods; includes exact `Allow` |
 | `500` | `HTTP_INTERNAL_ERROR` | Recovered handler panic |
 | `503` | `SERVER_NOT_READY` | `/ready` while draining |
 
@@ -58,7 +62,7 @@ newim_http_request_duration_seconds_count{listener,route,method}
 newim_http_requests_total{listener,route,method,status}
 ```
 
-`listener` is `api|ops`; `route` is `health|ready|metrics|unmatched` plus explicitly registered bounded names (`session`); `method`
+`listener` is `api|ops`; `route` is `health|ready|metrics|unmatched` plus explicitly registered bounded names (`session`, `session_token_revoke`); `method`
 is one of the bounded HTTP method classes; `status` is a three-digit handler
 status. Request paths, query strings, headers, client addresses, tokens,
 message data, and revisions are never labels.
@@ -78,7 +82,9 @@ message data, and revisions are never labels.
 
 ## Non-goals
 
-The service does not contain login, session/device policy, read state, message
-or conversation APIs, WebSocket, push, webhook, bot, group, moderation,
-retention, FeatureGate, license, or database integration. These require their
+The service contains only the explicit loopback session verification and
+current-token revocation routes described above. It does not contain login,
+refresh, session-wide logout/kick, device policy, read state, message or
+conversation APIs, WebSocket/gateway, push, webhook, bot, group, moderation,
+retention, FeatureGate, license, or public-ingress behavior. These require their
 own registered tasks and independent acceptance.

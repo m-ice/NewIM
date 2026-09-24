@@ -56,6 +56,7 @@ make db-prepare
 make db-schema db-migrations db-sequence db-repair
 make sync-check
 make auth-check auth-recovery auth-policy auth-http-check auth-http-security
+make auth-route-check auth-logout-check auth-logout-security
 make media-protocol media-db media-security media-authz media-check
 make message-check message-recovery message-errors
 make webhook-protocol webhook-recovery webhook-security webhook-redaction
@@ -101,7 +102,11 @@ explicitly configured and the API listener is a loopback IP literal; without
 that setting the route stays absent. This still does not complete login or
 authorization; see [ADR 0017](docs/adr/0017-bearer-session-http.md),
 [ADR 0018](docs/adr/0018-bearer-session-route-mount.md) and the
-[bearer handler specification](specs/http/bearer-session.md).
+[bearer handler specification](specs/http/bearer-session.md). A separate
+`DELETE /api/v1/session/tokens/current` route atomically revokes only the
+presented token and treats retries as idempotent; it does not revoke the session
+or sibling tokens. See [ADR 0019](docs/adr/0019-bearer-token-revocation.md) and
+the [token revocation specification](specs/http/session-logout.md).
 
 The same process can optionally run the internal Webhook worker when explicit
 DSN/master-key configuration is present. It consumes the message outbox with

@@ -85,6 +85,7 @@ func (s SessionSnapshot) RevokedAt() *time.Time { return cloneTime(s.revokedAt) 
 type Store interface {
 	Issue(context.Context, SessionBinding, func() (IssuedToken, error)) (IssuedToken, error)
 	Authenticate(context.Context, string, func(TokenSnapshot) error) error
+	RevokeBearer(context.Context, string, func(TokenSnapshot) error, time.Time) (RevocationOutcome, error)
 	LookupSession(context.Context, string) (SessionSnapshot, error)
 	RevokeSession(context.Context, SessionBinding, time.Time) (RevocationOutcome, error)
 	RevokeToken(context.Context, string, string, time.Time) (RevocationOutcome, error)

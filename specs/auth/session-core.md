@@ -21,6 +21,7 @@ Issue(ctx, IssueRequest) (IssuedToken, error)
 Authenticate(ctx, AuthenticateRequest) (ConnectionIdentity, error)
 RevokeSession(ctx, SessionBinding) (RevocationOutcome, error)
 RevokeToken(ctx, userID, tokenID string) (RevocationOutcome, error)
+RevokeBearer(ctx, rawToken string) (RevocationOutcome, error)
 PlanLogin(ctx, LoginRequest) (LoginPlan, error)
 ```
 
@@ -54,6 +55,26 @@ a `ConnectionIdentity`, does not issue or refresh a token, and does not select a
 device or kick policy. Failure semantics and observation redaction are the same
 as `Authenticate`; the observation operation is `authenticate_bearer`.
 
+## Bearer token revocation extension
+
+`RevokeBearer(ctx, rawToken)` is the idempotent token-only revocation operation
+added by NIM-SRV-007. It parses the canonical raw token, derives its token ID
+and SHA-256 digest, and calls the store's atomic `RevokeBearer` port. The adapter
+resolves the token's session, locks session before token, invokes the
+application digest-verification callback in that locked snapshot and updates
+only the presented token's `revoked_at`.
+
+The callback does not check expiry, token revocation or session revocation to
+decide whether to revoke: a matching digest on an expired/revoked/revoked-session
+token still completes or confirms revocation and returns 204. A digest mismatch,
+missing token/session, malformed token or invalid input fails closed. Repeated
+revocation returns `AUTH_REVOKE_NOOP` without rewriting `revoked_at`; the first
+active revocation returns `AUTH_REVOKE_OK`.
+
+The service emits one bounded `revoke_bearer` observation per operation. It does
+not create a connection identity, issue/refresh a token, select a device, call
+`RevokeSession` in production or change any session-wide policy.
+
 ## Token contract
 
 Raw form:
@@ -81,9 +102,11 @@ transaction is committed after verification. Commit failure maps to
 
 Session revocation locks the session row before updating its tokens. Token
 revocation resolves the token, locks the owning session first, checks ownership,
-then locks the token. A duplicate same-owner revoke returns
-`AUTH_REVOKE_NOOP`; an active target returns `AUTH_REVOKE_OK`. Missing and
-cross-account targets never mutate state.
+then locks the token. Bearer revocation uses the same session-before-token lock
+order but derives ownership from the locked token/session snapshot rather than
+caller-supplied IDs. A duplicate same-owner revoke or matching bearer retry
+returns `AUTH_REVOKE_NOOP`; an active target returns `AUTH_REVOKE_OK`. Missing,
+cross-account and digest-mismatched targets never mutate state.
 
 ## Error and observation contract
 

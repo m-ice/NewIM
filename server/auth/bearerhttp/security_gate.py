@@ -2,33 +2,42 @@
 """Fail-closed runner for named bearer HTTP security tests."""
 from __future__ import annotations
 
+import argparse
 import json
 import subprocess
 import sys
 from pathlib import Path
 
-TESTS = ("TestSessionHandlerContract", "TestSessionHandlerSecurity")
+SESSION_TESTS = ("TestSessionHandlerContract", "TestSessionHandlerSecurity")
+LOGOUT_TESTS = ("TestTokenRevocationHandlerContract", "TestTokenRevocationHandlerSecurity")
+SUITES = {"session": SESSION_TESTS, "logout": LOGOUT_TESTS}
 ROOT = Path(__file__).resolve().parents[3]
 
 
-def validation_errors(events: list[dict], returncode: int) -> list[str]:
+def validation_errors(events: list[dict], returncode: int, tests: tuple[str, ...]) -> list[str]:
     errors = []
-    if returncode != 0:
+    if returncode:
         errors.append("go test failed")
 
     def has(test: str, action: str) -> bool:
         return any(event.get("Action") == action and event.get("Test") == test for event in events)
 
-    for test in TESTS:
-        if not has(test, "run") or not has(test, "pass"):
-            errors.append(f"{test} did not run and pass")
-        if has(test, "skip") or has(test, "fail"):
-            errors.append(f"{test} skipped or failed")
+    skipped = [event.get("Test", "") for event in events if event.get("Action") == "skip"]
+    if skipped:
+        errors.append("skipped tests observed: " + ", ".join(skipped))
+    failed = [event.get("Test", "") for event in events if event.get("Action") == "fail"]
+    if failed:
+        errors.append("failed test events observed: " + ", ".join(failed))
+    for test in tests:
+        if not has(test, "run"):
+            errors.append(f"{test} did not run")
+        if not has(test, "pass"):
+            errors.append(f"{test} did not pass")
     return errors
 
 
-def run_tests() -> int:
-    pattern = "^(TestSessionHandlerContract|TestSessionHandlerSecurity)$"
+def run_tests(tests: tuple[str, ...]) -> int:
+    pattern = "^(" + "|".join(tests) + ")$"
     argv = [
         "go", "test", "-json", "-race", "-shuffle=on", "-count=1",
         "-run", pattern, "./server/auth/bearerhttp",
@@ -49,39 +58,40 @@ def run_tests() -> int:
             continue
         if isinstance(event, dict):
             events.append(event)
-    errors = validation_errors(events, result.returncode)
+    errors = validation_errors(events, result.returncode, tests)
     for error in errors:
         print(f"security gate: {error}", file=sys.stderr)
     return 1 if errors else 0
 
 
 def self_test() -> int:
-    pass_events = [
-        {"Action": "run", "Test": test} for test in TESTS
-    ] + [
-        {"Action": "pass", "Test": test} for test in TESTS
-    ]
+    name = "TestTokenRevocationHandlerContract"
+    passing = [{"Action": "run", "Test": name}, {"Action": "pass", "Test": name}]
     cases = [
-        ("passing", pass_events, 0, False),
+        ("passing", passing, 0, False),
         ("empty", [], 0, True),
-        ("skipped", [{"Action": "skip", "Test": TESTS[0]}], 0, True),
-        ("failed", [{"Action": "fail", "Test": TESTS[0]}], 1, True),
+        ("skipped", [{"Action": "skip", "Test": name}], 0, True),
+        ("subtest-skip", passing + [{"Action": "skip", "Test": name + "/child"}], 0, True),
+        ("failed", [{"Action": "fail", "Test": name}], 1, True),
+        ("missing-pass", [{"Action": "run", "Test": name}], 0, True),
     ]
-    for name, events, returncode, want_error in cases:
-        errors = validation_errors(events, returncode)
+    for label, events, returncode, want_error in cases:
+        errors = validation_errors(events, returncode, (name,))
         if bool(errors) != want_error:
-            print(f"security gate self-test {name} failed: {errors}", file=sys.stderr)
+            print(f"security gate self-test {label} failed: {errors}", file=sys.stderr)
             return 1
+    print("security gate self-test: OK")
     return 0
 
 
 def main() -> int:
-    if sys.argv[1:] == ["--self-test"]:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--suite", choices=SUITES, default="session")
+    parser.add_argument("--self-test", action="store_true")
+    args = parser.parse_args()
+    if args.self_test:
         return self_test()
-    if sys.argv[1:]:
-        print("security gate accepts no arguments except --self-test", file=sys.stderr)
-        return 2
-    return run_tests()
+    return run_tests(SUITES[args.suite])
 
 
 if __name__ == "__main__":

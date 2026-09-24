@@ -17,8 +17,9 @@ import (
 // authRuntime owns the optional bearer-session route and its database pool.
 // authRuntime 持有可选的 bearer-session 路由及其数据库池。
 type authRuntime struct {
-	repo    *store.Repository
-	handler *bearerhttp.SessionHandler
+	repo         *store.Repository
+	handler      *bearerhttp.SessionHandler
+	tokenRevoker *bearerhttp.TokenRevocationHandler
 }
 
 // newAuthRuntimeFromEnv returns no runtime when NEWIM_AUTH_DSN is absent.
@@ -53,8 +54,16 @@ func newAuthRuntimeFromEnv(ctx context.Context, cfg api.Config, logger *slog.Log
 		repo.Close()
 		return nil, nil, err
 	}
-	runtime := &authRuntime{repo: repo, handler: handler}
-	return runtime, []api.APIRoute{{Name: "session", Path: bearerhttp.Route, Handler: handler}}, nil
+	tokenRevoker, err := bearerhttp.NewTokenRevocationHandler(service)
+	if err != nil {
+		repo.Close()
+		return nil, nil, err
+	}
+	runtime := &authRuntime{repo: repo, handler: handler, tokenRevoker: tokenRevoker}
+	return runtime, []api.APIRoute{
+		{Name: "session", Path: bearerhttp.Route, Handler: handler},
+		{Name: "session_token_revoke", Path: bearerhttp.TokenRoute, AllowedMethods: []string{"DELETE"}, Handler: tokenRevoker},
+	}, nil
 }
 
 // Close releases the auth database pool.

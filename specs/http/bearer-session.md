@@ -10,7 +10,9 @@ The handler handles the exact escaped path `/api/v1/session` and only accepts
 `GET`. `newim-server` may mount it only when `NEWIM_AUTH_DSN` is explicitly
 configured and the API listener is a loopback IP literal. Without that DSN the
 route remains absent and the process opens no auth database pool. The handler
-itself still does not create a listener.
+itself still does not create a listener. ADR 0019 and
+`specs/http/session-logout.md` define the separate exact `DELETE` route that
+revokes only the presented token; this GET route remains unchanged.
 
 ## Request
 

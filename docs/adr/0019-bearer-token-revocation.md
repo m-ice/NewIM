@@ -53,7 +53,7 @@ whether a token was active, expired, revoked or session-revoked.
 ## Atomic storage boundary
 
 `server/auth/session.Store` adds a `RevokeBearer` port. The PostgreSQL adapter
-first resolves the token row's session, locks the session before the token,
+first resolves the token row's session, enforces session before token locking,
 constructs the existing bounded `TokenSnapshot`, and invokes an application
 callback for constant-time digest verification while both rows are locked. The
 adapter then updates only `newim.im_auth_tokens.revoked_at` and commits one
@@ -72,7 +72,7 @@ digest, revocation timestamp and lookup keys.
 ## Route method gate amendment
 
 ADR 0018 and `specs/http/service-foundation.md` previously admitted only
-trusted dynamic GET routes. ADR 0019 amends that narrow method contract:
+trusted dynamic GET routes. ADR 0019 amends ADR 0018's narrow method contract:
 
 - omitted or nil `APIRoute.AllowedMethods` keeps the existing GET default;
 - a non-nil empty list is invalid and fails startup;

@@ -107,6 +107,10 @@ func TestAuthRoute(t *testing.T) {
 		if status != http.StatusNotFound || !strings.Contains(string(body), "HTTP_ROUTE_NOT_FOUND") {
 			t.Fatalf("no-dsn session status=%d body=%q", status, body)
 		}
+		body, status, _ = doTokenRevokeRequest(t, "http://"+server.api, "")
+		if status != http.StatusNotFound || !strings.Contains(string(body), "HTTP_ROUTE_NOT_FOUND") {
+			t.Fatalf("no-dsn token revoke status=%d body=%q", status, body)
+		}
 		if got := activeAuthConnections(t, f); got != 0 {
 			t.Fatalf("no-dsn opened %d auth connections", got)
 		}
@@ -163,9 +167,11 @@ func TestAuthRoute(t *testing.T) {
 
 	t.Run("loopback-route-real-postgresql", func(t *testing.T) {
 		f := openFixture(t)
+		f.now.Store(time.Now().Unix())
 		service := f.service(&captureObserver{}, nil, nil)
 		binding := f.seedBinding("route_valid")
 		token := f.issue(service, binding, time.Hour)
+		sibling := f.issue(service, binding, time.Hour)
 		expiredBinding := f.seedBinding("route_expired")
 		expired := f.issue(service, expiredBinding, time.Hour)
 		f.sql("UPDATE newim.im_auth_tokens SET created_at=now() - interval '2 minutes', expires_at=now() - interval '1 minute' WHERE token_id=$1", expired.TokenID())
@@ -211,6 +217,32 @@ func TestAuthRoute(t *testing.T) {
 			t.Fatalf("body precedence status=%d headers=%v body=%q", status, headers, body)
 		}
 
+		body, status, headers = doRawRequest(t, http.MethodGet, "http://"+server.api+bearer.TokenRoute, nil, "")
+		if status != http.StatusMethodNotAllowed || headers.Get("Allow") != http.MethodDelete || !strings.Contains(string(body), "HTTP_METHOD_NOT_ALLOWED") {
+			t.Fatalf("revoke method status=%d headers=%v body=%q", status, headers, body)
+		}
+		body, status, headers = doRawRequest(t, http.MethodDelete, "http://"+server.api+bearer.TokenRoute, strings.NewReader("body"), "")
+		if status != http.StatusBadRequest || !strings.Contains(string(body), "HTTP_BODY_NOT_ALLOWED") {
+			t.Fatalf("revoke body status=%d headers=%v body=%q", status, headers, body)
+		}
+		body, status, headers = doTokenRevokeRequest(t, "http://"+server.api, "Bearer "+token.RawToken())
+		if status != http.StatusNoContent || len(body) != 0 || headers.Get("WWW-Authenticate") != "" {
+			t.Fatalf("revoke status=%d headers=%v body=%q stderr=%q", status, headers, body, server.stderr.String())
+		}
+		if !f.tokenRevoked(binding, token.TokenID()) || f.tokenRevoked(binding, sibling.TokenID()) || f.sessionRevoked(binding) {
+			t.Fatalf("revoke state target=%t sibling=%t session=%t", f.tokenRevoked(binding, token.TokenID()), f.tokenRevoked(binding, sibling.TokenID()), f.sessionRevoked(binding))
+		}
+		body, status, _ = doSessionRequest(t, "http://"+server.api, "Bearer "+token.RawToken())
+		if status != http.StatusUnauthorized {
+			t.Fatalf("revoked session introspect status=%d body=%q", status, body)
+		}
+		if _, status, _ = doSessionRequest(t, "http://"+server.api, "Bearer "+sibling.RawToken()); status != http.StatusOK {
+			t.Fatalf("sibling session introspect status=%d", status)
+		}
+		if _, status, _ = doTokenRevokeRequest(t, "http://"+server.api, "Bearer "+token.RawToken()); status != http.StatusNoContent {
+			t.Fatalf("idempotent revoke status=%d", status)
+		}
+
 		body, status, headers = doSessionRequest(t, "http://"+server.api, "Bearer "+expired.RawToken())
 		if status != http.StatusUnauthorized || headers.Get("WWW-Authenticate") != `Bearer realm="newim-session"` {
 			t.Fatalf("expired status=%d headers=%v body=%q", status, headers, body)
@@ -239,10 +271,10 @@ func TestAuthRoute(t *testing.T) {
 		defer metricsResponse.Body.Close()
 		metricsBody, err := io.ReadAll(metricsResponse.Body)
 		must(t, err)
-		if !strings.Contains(string(metricsBody), `route="session"`) || strings.Contains(string(metricsBody), token.RawToken()) {
+		if !strings.Contains(string(metricsBody), `route="session"`) || !strings.Contains(string(metricsBody), `route="session_token_revoke"`) || strings.Contains(string(metricsBody), token.RawToken()) {
 			t.Fatalf("metrics route/redaction missing: %s", metricsBody)
 		}
-		for _, forbidden := range []string{token.RawToken(), localDSN, "SELECT ", "im_auth_tokens", "im_sessions"} {
+		for _, forbidden := range []string{token.RawToken(), sibling.RawToken(), localDSN, "SELECT ", "im_auth_tokens", "im_sessions"} {
 			if strings.Contains(server.stdout.String(), forbidden) || strings.Contains(server.stderr.String(), forbidden) {
 				t.Fatalf("server log leaked %q; stdout=%q stderr=%q", forbidden, server.stdout.String(), server.stderr.String())
 			}

@@ -71,6 +71,10 @@ func (s *testStore) Authenticate(_ context.Context, tokenID string, verify func(
 	return nil
 }
 
+func (s *testStore) RevokeBearer(context.Context, string, func(app.TokenSnapshot) error, time.Time) (app.RevocationOutcome, error) {
+	return "", app.Fail(app.AuthStorageUnavailable)
+}
+
 func (s *testStore) LookupSession(context.Context, string) (app.SessionSnapshot, error) {
 	return app.SessionSnapshot{}, app.Fail(app.AuthStorageUnavailable)
 }

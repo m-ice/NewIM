@@ -93,6 +93,8 @@ REQUIRED_TEXT = {
         ("HTTP service foundation", re.compile(r"HTTP\s+service\s+foundation", re.IGNORECASE)),
         ("loopback listener", re.compile(r"loopback", re.IGNORECASE)),
         ("push boundary", re.compile(r"\bpush\b", re.IGNORECASE)),
+        ("current token revocation", re.compile(r"current[- ]token\s+revocation", re.IGNORECASE)),
+        ("DELETE token route", re.compile(r"DELETE\s+/api/v1/session/tokens/current", re.IGNORECASE)),
     ),
     "server/README.md": (
         ("server message package", re.compile(r"server/message", re.IGNORECASE)),
@@ -104,6 +106,8 @@ REQUIRED_TEXT = {
         ("PostgreSQL persistence", re.compile(r"\bPostgreSQL\b", re.IGNORECASE)),
         ("no public network server", re.compile(r"no\s+public\s+network\s+server", re.IGNORECASE)),
         ("UI boundary", re.compile(r"\bUI\b", re.IGNORECASE)),
+        ("current token revocation", re.compile(r"current[- ]token\s+revocation", re.IGNORECASE)),
+        ("DELETE token route", re.compile(r"DELETE\s+/api/v1/session/tokens/current", re.IGNORECASE)),
     ),
 }
 
@@ -115,7 +119,9 @@ REQUIRED_LINKS = {
         "adr/0009-message-send-transaction.md",
         "adr/0011-media-credential-metadata.md",
         "adr/0013-http-api-service-foundation.md",
+        "adr/0019-bearer-token-revocation.md",
         "../specs/http/service-foundation.md",
+        "../specs/http/session-logout.md",
         "dependencies/protocol-v1.md",
         "dependencies/conversation-sync.md",
         "dependencies/local-store.md",
@@ -124,10 +130,45 @@ REQUIRED_LINKS = {
     "server/README.md": (
         "../docs/architecture.md",
         "../docs/adr/0013-http-api-service-foundation.md",
+        "../docs/adr/0019-bearer-token-revocation.md",
         "../specs/http/service-foundation.md",
+        "../specs/http/session-logout.md",
         "../THIRD_PARTY_NOTICES.md",
     ),
 }
+
+CONTRACTS = (
+    (
+        "docs/adr/0019-bearer-token-revocation.md",
+        (
+            "amends adr 0018",
+            "delete /api/v1/session/tokens/current",
+            "does not revoke its session",
+            "session before token",
+        ),
+    ),
+    (
+        "specs/http/service-foundation.md",
+        (
+            "adr 0019",
+            "allowedmethods",
+            "get",
+            "delete",
+        ),
+    ),
+    (
+        ".github/workflows/ci.yml",
+        (
+            "make auth-logout-check",
+            "make auth-logout-security",
+        ),
+    ),
+)
+
+CONTRACT_NEGATIVE_FIXTURES = (
+    ("missing-marker", "one marker only", ("one marker only", "second marker"), True),
+    ("all-markers", "one marker only and second marker", ("one marker only", "second marker"), False),
+)
 
 MARKDOWN_LINK = re.compile(r"\[[^\]]+\]\(([^)]+)\)")
 
@@ -202,8 +243,41 @@ def validate_document(path: Path) -> list[str]:
     return errors
 
 
+def contract_errors(text: str, markers: tuple[str, ...]) -> list[str]:
+    normalized = normalize(text).lower()
+    return [f"missing required contract marker {marker!r}" for marker in markers if marker.lower() not in normalized]
+
+
+def check_contracts() -> list[str]:
+    errors = []
+    for relative, markers in CONTRACTS:
+        path = ROOT / relative
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            errors.append(f"{relative}: cannot read contract: {exc}")
+            continue
+        errors.extend(f"{relative}: {error}" for error in contract_errors(text, markers))
+    return errors
+
+
+def check_contract_negative_fixtures() -> list[str]:
+    errors = []
+    for name, text, markers, want_error in CONTRACT_NEGATIVE_FIXTURES:
+        found = contract_errors(text, markers)
+        if bool(found) != want_error:
+            errors.append(f"contract negative fixture {name!r} did not produce expected result")
+    return errors
+
+
 def run_document_check() -> list[str]:
     errors = check_negative_fixtures()
+    if errors:
+        return errors
+    errors = check_contract_negative_fixtures()
+    if errors:
+        return errors
+    errors = check_contracts()
     if errors:
         return errors
     for path in DOCUMENTS:
@@ -249,7 +323,7 @@ def main() -> int:
     args = parser.parse_args()
 
     if args.self_test:
-        errors = check_negative_fixtures()
+        errors = check_negative_fixtures() + check_contract_negative_fixtures()
         if errors:
             return report(errors)
         print(
@@ -261,7 +335,7 @@ def main() -> int:
     if args.stale_fixture is not None:
         return check_stale_fixture(args.stale_fixture)
 
-    fixture_errors = check_negative_fixtures()
+    fixture_errors = check_negative_fixtures() + check_contract_negative_fixtures()
     if fixture_errors:
         return report(fixture_errors)
     errors = run_document_check()

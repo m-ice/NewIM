@@ -27,7 +27,11 @@ uses strict route/method/body/header checks, returns stable redacted errors and
 does not provide login, device/kick policy, a public listener, or rate limiting.
 See [ADR 0017](../docs/adr/0017-bearer-session-http.md),
 [ADR 0018](../docs/adr/0018-bearer-session-route-mount.md) and the
-[bearer handler specification](../specs/http/bearer-session.md).
+[bearer handler specification](../specs/http/bearer-session.md). The same
+loopback runtime also mounts `DELETE /api/v1/session/tokens/current` for current
+token revocation: it revokes only the presented token idempotently and never
+performs session-wide logout. See [ADR 0019](../docs/adr/0019-bearer-token-revocation.md) and the
+[token revocation specification](../specs/http/session-logout.md).
 
 `server/webhook` and `server/storage/webhook` add an internal at-least-once
 webhook delivery core over the existing message outbox. The worker is optional
@@ -42,7 +46,8 @@ complete multi-device login/reconnect policy. The API/Ops foundation defaults
 to loopback and does not expose message persistence through a public route. Run
 the root `make build`, `make check`, `make docs-check`, `make api-check`,
 `make api-recovery`, `make api-security`, `make auth-http-check`,
-`make auth-http-security`, `make auth-route-check`, `make webhook-protocol`,
+`make auth-http-security`, `make auth-route-check`, `make auth-logout-check`,
+`make auth-logout-security`, `make webhook-protocol`,
 `make webhook-recovery`,
 `make webhook-security`, and `make webhook-redaction`
 commands. See

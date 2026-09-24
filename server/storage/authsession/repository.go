@@ -197,6 +197,67 @@ func (r *Repository) Authenticate(ctx context.Context, tokenID string, verify fu
 	return nil
 }
 
+// RevokeBearer locks the session before the presented token, verifies the
+// application-supplied proof and revokes only that token. A repeated revoke is
+// a no-op and never rewrites the original revocation time.
+// RevokeBearer 按会话后令牌顺序加锁，校验应用提供的证明并仅撤销该令牌；重复撤销不改写原撤销时间。
+func (r *Repository) RevokeBearer(ctx context.Context, tokenID string, verify func(app.TokenSnapshot) error, revokedAt time.Time) (app.RevocationOutcome, error) {
+	if ctx == nil || !lowerHexTokenID(tokenID) || verify == nil || revokedAt.IsZero() {
+		return "", app.Fail(app.AuthInvalidInput)
+	}
+	tx, err := r.begin(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return "", err
+	}
+	defer rollback(tx)
+	var sessionID string
+	err = tx.QueryRow(ctx, "SELECT session_id FROM newim.im_auth_tokens WHERE token_id=$1", tokenID).Scan(&sessionID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", app.Fail(app.AuthTokenUnknown)
+	}
+	if err != nil {
+		return "", app.Fail(app.AuthStorageUnavailable)
+	}
+	var userID, deviceID string
+	var sessionRevokedAt *time.Time
+	err = tx.QueryRow(ctx, "SELECT user_id,device_id,revoked_at FROM newim.im_sessions WHERE session_id=$1 FOR UPDATE", sessionID).Scan(&userID, &deviceID, &sessionRevokedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", app.Fail(app.AuthTokenUnknown)
+	}
+	if err != nil {
+		return "", app.Fail(app.AuthStorageUnavailable)
+	}
+	var digest []byte
+	var expiresAt time.Time
+	var tokenRevokedAt *time.Time
+	err = tx.QueryRow(ctx, "SELECT token_digest,expires_at,revoked_at FROM newim.im_auth_tokens WHERE token_id=$1 FOR UPDATE", tokenID).Scan(&digest, &expiresAt, &tokenRevokedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return "", app.Fail(app.AuthTokenUnknown)
+	}
+	if err != nil {
+		return "", app.Fail(app.AuthStorageUnavailable)
+	}
+	snapshot, err := app.NewTokenSnapshot(tokenID, digest, app.SessionBinding{UserID: userID, DeviceID: deviceID, SessionID: sessionID}, expiresAt, tokenRevokedAt, sessionRevokedAt)
+	if err != nil {
+		return "", app.Fail(app.AuthStorageUnavailable)
+	}
+	if err = verify(snapshot); err != nil {
+		return "", fixed(err)
+	}
+	if tokenRevokedAt == nil {
+		if _, err = tx.Exec(ctx, "UPDATE newim.im_auth_tokens SET revoked_at=$2 WHERE token_id=$1 AND revoked_at IS NULL", tokenID, revokedAt); err != nil {
+			return "", app.Fail(app.AuthStorageUnavailable)
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return "", app.Fail(app.AuthStorageUnavailable)
+	}
+	if tokenRevokedAt != nil {
+		return app.RevokeNoop, nil
+	}
+	return app.RevokeOK, nil
+}
+
 // LookupSession returns a bounded non-mutating session view for policy validation.
 // LookupSession 返回有界只读会话视图，供策略校验使用。
 func (r *Repository) LookupSession(ctx context.Context, sessionID string) (app.SessionSnapshot, error) {

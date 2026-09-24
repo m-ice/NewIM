@@ -203,7 +203,7 @@ sync-migrations:
 
 sync-check: sync-bootstrap sync-delta sync-cursor sync-query-plan sync-recovery sync-migrations
 
-.PHONY: auth-check auth-recovery auth-policy auth-http-check auth-http-security auth-route-check
+.PHONY: auth-check auth-recovery auth-policy auth-http-check auth-http-security auth-route-check auth-logout-check auth-logout-security
 auth-check: toolchain
 	python3 -B infra/db/auth_suite.py check
 
@@ -227,6 +227,14 @@ auth-route-check: toolchain
 	python3 -B server/cmd/newim-server/route_gate.py --self-test
 	python3 -B server/cmd/newim-server/route_gate.py
 	python3 -B infra/db/auth_suite.py route
+
+auth-logout-check: toolchain
+	python3 -B infra/db/auth_suite.py --self-test
+	python3 -B infra/db/auth_suite.py logout
+
+auth-logout-security: toolchain
+	python3 -B server/auth/bearerhttp/security_gate.py --self-test
+	python3 -B server/auth/bearerhttp/security_gate.py --suite logout
 
 .PHONY: message-check message-recovery message-errors
 message-check: toolchain

@@ -44,6 +44,52 @@ func (s BearerSession) ExpiresAt() time.Time { return s.expiresAt }
 
 // AuthenticateBearer resolves the trusted binding from the persisted token row.
 // AuthenticateBearer 从持久化令牌行解析可信绑定，不接受调用方预供身份。
+// RevokeBearer durably revokes only the token proven by rawToken.
+// RevokeBearer 仅持久撤销 rawToken 所证明的令牌，不撤销 session 或其他令牌。
+func (s *Service) RevokeBearer(ctx context.Context, rawToken string) (outcome RevocationOutcome, err error) {
+	started := time.Now()
+	var tokenID, observedSessionID string
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = Fail(AuthStorageUnavailable)
+			s.observe("revoke_bearer", started, err, tokenID, observedSessionID, revocationObservationCode(outcome))
+			panic(recovered)
+		}
+		s.observe("revoke_bearer", started, err, tokenID, observedSessionID, revocationObservationCode(outcome))
+	}()
+	if s == nil || s.store == nil {
+		return "", Fail(AuthStorageUnavailable)
+	}
+	if ctx == nil {
+		return "", Fail(AuthInvalidInput)
+	}
+	tokenID, digest, err := parseRawToken(rawToken)
+	if err != nil {
+		return "", err
+	}
+	verify := func(snapshot TokenSnapshot) error {
+		if !snapshot.VerifyDigest(digest) {
+			return Fail(AuthTokenUnknown)
+		}
+		observedSessionID = snapshot.Binding().SessionID
+		return nil
+	}
+	now, err := s.currentTime()
+	if err != nil {
+		return "", err
+	}
+	attemptCtx, cancel := context.WithTimeout(ctx, s.requestTimeout)
+	defer cancel()
+	outcome, err = s.store.RevokeBearer(attemptCtx, tokenID, verify, now)
+	if err != nil {
+		return "", redactedError(err)
+	}
+	if outcome != RevokeOK && outcome != RevokeNoop {
+		return "", Fail(AuthStorageUnavailable)
+	}
+	return outcome, nil
+}
+
 func (s *Service) AuthenticateBearer(ctx context.Context, rawToken string) (session BearerSession, err error) {
 	started := time.Now()
 	var tokenID, observedSessionID string

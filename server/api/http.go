@@ -8,6 +8,7 @@ import (
 	"log/slog"
 	"net"
 	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -310,7 +311,7 @@ func (s *Server) OpsAddr() string {
 
 func (s *Server) makeHandler(listener string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		route, ok, routeHandler := s.resolveRoute(listener, r.URL.EscapedPath())
+		route, ok := s.resolveRoute(listener, r.URL.EscapedPath())
 		method := normalizeMethod(r.Method)
 		started := time.Now()
 		recorder := &responseRecorder{ResponseWriter: w}
@@ -323,29 +324,29 @@ func (s *Server) makeHandler(listener string) http.Handler {
 			writeError(recorder, http.StatusNotFound, HTTPRouteNotFound)
 			return
 		}
-		if r.Method != http.MethodGet {
-			s.metrics.begin(listener, route, method)
-			defer func() { s.finish(recorder, listener, route, method, started) }()
-			recorder.Header().Set("Allow", http.MethodGet)
+		if !allowsMethod(route.AllowedMethods, r.Method) {
+			s.metrics.begin(listener, route.Name, method)
+			defer func() { s.finish(recorder, listener, route.Name, method, started) }()
+			recorder.Header().Set("Allow", strings.Join(route.AllowedMethods, ", "))
 			writeError(recorder, http.StatusMethodNotAllowed, HTTPMethodNotAllowed)
 			return
 		}
 		if requestHasBody(r) {
-			s.metrics.begin(listener, route, method)
-			defer func() { s.finish(recorder, listener, route, method, started) }()
+			s.metrics.begin(listener, route.Name, method)
+			defer func() { s.finish(recorder, listener, route.Name, method, started) }()
 			writeError(recorder, http.StatusBadRequest, HTTPBodyNotAllowed)
 			return
 		}
 
-		s.metrics.begin(listener, route, method)
-		defer func() { s.finish(recorder, listener, route, method, started) }()
-		defer s.recoverRequest(listener, route, method, recorder)
+		s.metrics.begin(listener, route.Name, method)
+		defer func() { s.finish(recorder, listener, route.Name, method, started) }()
+		defer s.recoverRequest(listener, route.Name, method, recorder)
 
-		if routeHandler != nil {
-			routeHandler.ServeHTTP(recorder, r)
+		if route.Handler != nil {
+			route.Handler.ServeHTTP(recorder, r)
 			return
 		}
-		switch route {
+		switch route.Name {
 		case "health":
 			writeJSON(recorder, http.StatusOK, `{"status":"ok"}`+"\n")
 		case "ready":
@@ -386,26 +387,27 @@ func (s *Server) logRequest(listener, route, method string, status int) {
 	)
 }
 
-func (s *Server) resolveRoute(listener, path string) (string, bool, http.Handler) {
+func (s *Server) resolveRoute(listener, path string) (APIRoute, bool) {
+	getOnly := []string{http.MethodGet}
 	switch listener {
 	case "api":
 		if path == "/api/v1/health" {
-			return "health", true, nil
+			return APIRoute{Name: "health", Path: path, AllowedMethods: getOnly}, true
 		}
 		if s != nil {
 			if route, ok := s.apiRoutes[path]; ok {
-				return route.Name, true, route.Handler
+				return route, true
 			}
 		}
 	case "ops":
 		switch path {
 		case "/ready":
-			return "ready", true, nil
+			return APIRoute{Name: "ready", Path: path, AllowedMethods: getOnly}, true
 		case "/metrics":
-			return "metrics", true, nil
+			return APIRoute{Name: "metrics", Path: path, AllowedMethods: getOnly}, true
 		}
 	}
-	return "", false, nil
+	return APIRoute{}, false
 }
 
 func normalizeMethod(method string) string {

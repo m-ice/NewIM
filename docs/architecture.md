@@ -14,8 +14,10 @@ credential verification and multi-device login or kick policy,
 reconnect/lifecycle integration, retention/moderation/account erasure, and
 platform wrappers. This document does not claim those capabilities. A
 bearer-session HTTP handler validates already-issued tokens when an explicit
-loopback auth DSN is configured; it is absent without that setting and does not
-provide login or complete authentication.
+loopback auth DSN is configured; a separate exact DELETE route idempotently
+revokes only the presented token and does not perform session-wide logout. They
+are absent without that setting and do not provide login, refresh or complete
+authentication.
 
 ## Module boundaries
 
@@ -24,8 +26,8 @@ provide login or complete authentication.
 | `core/domain` (planned) | Go server domain rules, independent of HTTP, wire DTOs and SQL. |
 | `core/protocol` | Versioned language-neutral wire schemas/fixtures and separate Go/Rust codecs; no UI or database authority. Media v1 is closed metadata-only. |
 | `server/api` | Policy-neutral API/Ops HTTP listeners, exact health/readiness/metrics contracts, bounded lifecycle and redaction-only request logging; no identity or message semantics. |
-| `server/auth/session` | Policy-neutral token issuance, authentication, and revocation application logic over a store port, including persisted-binding-only bearer resolution. |
-| `server/auth/bearerhttp` | Policy-neutral `GET /api/v1/session` handler with strict Authorization/header/body/route rules and stable HTTP errors; mounted only by explicit loopback auth composition. |
+| `server/auth/session` | Policy-neutral token issuance, authentication, bearer resolution and token/session revocation over a store port, including atomic token-only `RevokeBearer`. |
+| `server/auth/bearerhttp` | Policy-neutral `GET /api/v1/session` and exact `DELETE /api/v1/session/tokens/current` handlers with strict Authorization/body/route/method rules and stable HTTP errors; mounted only by explicit loopback auth composition. |
 | `server/message` | Send validation, media preconditions, idempotent persistence orchestration, and persisted ACK construction. |
 | `server/sync/*` | Internal bounded conversation bootstrap/delta and message delta read services; trusted principals are supplied by their callers. |
 | `server/media` | Protocol-neutral media application rules and ports for grants, metadata, validation, and private download authorization. |
@@ -61,11 +63,13 @@ See [ADR 0009](adr/0009-message-send-transaction.md) and
 [ADR 0015](adr/0015-webhook-delivery.md).
 
 `server/auth/session` implements opaque token issue/authenticate/revoke operations
-with persisted session/token bindings and revocation checks. `AuthenticateBearer`
-resolves an already-issued raw token without trusting caller-provided identity;
-`server/auth/bearerhttp` exposes that result as a strict HTTP handler; the
-`newim-server` process mounts it only for an explicitly configured loopback auth
-DSN, while readiness remains process-only. `server/sync/*`
+with persisted session/token bindings, constant-time digest checks, session-wide
+revocation and atomic token-only `RevokeBearer`. `AuthenticateBearer` resolves an
+already-issued raw token without trusting caller-provided identity;
+`server/auth/bearerhttp` exposes verification and idempotent current-token
+revocation as strict HTTP handlers; the `newim-server` process mounts them only
+for an explicitly configured loopback auth DSN, while readiness remains
+process-only. `server/sync/*`
 implements bounded, resumable internal bootstrap, conversation delta, and message
 delta reads using server-assigned sequence and pagination contracts; this is not a
 public sync endpoint. PostgreSQL media persistence stores metadata, complete
@@ -82,6 +86,8 @@ PostgreSQL persistence plus sync as truth; WebSocket remains the intended realti
 path, but no public WebSocket transport is implemented. Push is future notification
 infrastructure, not the message truth source. See
 [ADR 0008](adr/0008-auth-session-core.md),
+[ADR 0019](adr/0019-bearer-token-revocation.md),
+[token revocation specification](../specs/http/session-logout.md),
 [ADR 0007](adr/0007-internal-conversation-sync.md),
 [ADR 0011](adr/0011-media-credential-metadata.md),
 [ADR 0005](adr/0005-local-store.md), and
