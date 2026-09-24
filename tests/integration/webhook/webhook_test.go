@@ -113,20 +113,15 @@ func TestWebhookRecovery(t *testing.T) {
 	if len(claimed) != 1 || claimed[0].Attempts != 0 {
 		t.Fatalf("initial claim = %+v", claimed)
 	}
-	ok, err := f.repo.BeginAttempt(ctx, claimed[0].ID, claimed[0].LeaseToken, f.now, 3, time.Second)
-	must(t, err)
-	if !ok {
-		t.Fatal("first attempt was not admitted")
-	}
-	// Simulate a worker crash before the HTTP request: the expired lease is
-	// reclaimed without consuming an HTTP attempt.
+	// Simulate a worker crash after Claim but before BeginAttempt: lease expiry
+	// must not consume an HTTP-attempt slot.
 	f.sql("UPDATE newim.im_webhook_deliveries SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE delivery_id=$1", claimed[0].ID)
 	claimed, err = f.repo.Claim(ctx, time.Now(), "owner_b", 2*time.Second, 10)
 	must(t, err)
-	if len(claimed) != 1 || claimed[0].Attempts != 1 {
-		t.Fatalf("claim-after-crash attempts = %+v", claimed)
+	if len(claimed) != 1 || claimed[0].Attempts != 0 {
+		t.Fatalf("claim-after-crash-before-attempt = %+v", claimed)
 	}
-	ok, err = f.repo.BeginAttempt(ctx, claimed[0].ID, "wrong_token", f.now, 3, time.Second)
+	ok, err := f.repo.BeginAttempt(ctx, claimed[0].ID, "wrong_token", f.now, 3, time.Second)
 	must(t, err)
 	if ok {
 		t.Fatal("stale lease token was admitted")
@@ -135,6 +130,18 @@ func TestWebhookRecovery(t *testing.T) {
 	must(t, err)
 	if !ok {
 		t.Fatal("live lease was not admitted")
+	}
+	if got := f.scalarInt64("SELECT attempts FROM newim.im_webhook_deliveries WHERE delivery_id=$1", claimed[0].ID); got != 1 {
+		t.Fatalf("attempt accounting after BeginAttempt = %d", got)
+	}
+
+	// Simulate a crash after BeginAttempt but before the HTTP request: the
+	// consumed attempt must remain counted when the lease is reclaimed.
+	f.sql("UPDATE newim.im_webhook_deliveries SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE delivery_id=$1", claimed[0].ID)
+	claimed, err = f.repo.Claim(ctx, time.Now(), "owner_c", 2*time.Second, 10)
+	must(t, err)
+	if len(claimed) != 1 || claimed[0].Attempts != 1 {
+		t.Fatalf("claim-after-attempt-crash = %+v", claimed)
 	}
 	if err = f.repo.Finish(ctx, claimed[0].ID, "wrong_token", 2, f.now, app.Outcome{Status: "delivered", ErrorCode: app.CodeDeliveryDelivered}); app.ErrorCode(err) != app.CodeLeaseLost {
 		t.Fatalf("stale finish error = %v", err)
@@ -278,19 +285,18 @@ func TestWebhookReceiverAmbiguity(t *testing.T) {
 	client, err := app.NewSecureClient(nil, app.Policy{AllowHTTP: true, AllowLoopback: true}, time.Second, 64*1024)
 	must(t, err)
 
-	failedStore := &finishFailStore{Store: f.repo, fail: true}
-	first := newFixtureWorker(t, f, failedStore, client, master, 3, 1000, 100, 10*time.Millisecond)
+	first := newFixtureWorker(t, f, f.repo, &lostResponseDoer{next: client}, master, 3, 1000, 100, 10*time.Millisecond)
 	runWorkerUntil(t, first, 3*time.Second, func() bool {
-		return f.optionalString("SELECT status FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID) == "leased" &&
+		return f.optionalString("SELECT status FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID) == "retry" &&
 			f.scalarInt64("SELECT attempts FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID) == 1
 	})
-	if got := f.scalarString("SELECT status FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID); got != "leased" {
-		t.Fatalf("delivery status after lost completion = %s", got)
+	if got := f.scalarString("SELECT status FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID); got != "retry" {
+		t.Fatalf("delivery status after lost response = %s", got)
 	}
 	if got := f.scalarInt64("SELECT attempts FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID); got != 1 {
-		t.Fatalf("attempts after lost completion = %d", got)
+		t.Fatalf("attempts after lost response = %d", got)
 	}
-	f.sql("UPDATE newim.im_webhook_deliveries SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE event_id=$1", eventID)
+	f.sql("UPDATE newim.im_webhook_deliveries SET next_attempt_at=clock_timestamp()-interval '1 second' WHERE event_id=$1", eventID)
 
 	observer := &captureObserver{}
 	second := newFixtureWorker(t, f, f.repo, client, master, 3, 1000, 100, 10*time.Millisecond, observer)
@@ -381,16 +387,27 @@ func TestWebhookRetryAndBacklog(t *testing.T) {
 	})
 }
 
-type finishFailStore struct {
-	app.Store
-	fail bool
+type lostResponseDoer struct {
+	next    app.Doer
+	mu      sync.Mutex
+	dropped bool
 }
 
-func (s *finishFailStore) Finish(ctx context.Context, deliveryID, leaseToken string, attempts int, now time.Time, outcome app.Outcome) error {
-	if s.fail {
-		return errors.New("injected completion loss")
+func (d *lostResponseDoer) Do(ctx context.Context, target string, headers map[string]string, body []byte) (app.Response, error) {
+	response, err := d.next.Do(ctx, target, headers, body)
+	if err != nil {
+		return response, err
 	}
-	return s.Store.Finish(ctx, deliveryID, leaseToken, attempts, now, outcome)
+	d.mu.Lock()
+	drop := !d.dropped
+	if drop {
+		d.dropped = true
+	}
+	d.mu.Unlock()
+	if drop {
+		return app.Response{}, errors.New("injected lost HTTP response")
+	}
+	return response, nil
 }
 
 func newFixtureWorker(t *testing.T, f *fixture, store app.Store, doer app.Doer, master []byte, maxAttempts, highWater, lowWater int, idleDelay time.Duration, observers ...app.Observer) *app.Worker {
