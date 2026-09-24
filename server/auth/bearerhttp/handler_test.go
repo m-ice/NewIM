@@ -148,7 +148,7 @@ func decodeCode(t *testing.T, body []byte) Code {
 func TestSessionHandlerContract(t *testing.T) {
 	store := newTestStore()
 	service, _, token := newTestService(t, store)
-	handler, err := NewHandler(service)
+	handler, err := NewSessionHandler(service)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -226,7 +226,7 @@ func TestSessionHandlerContract(t *testing.T) {
 
 func TestSessionHandlerSecurity(t *testing.T) {
 	sentinel := "Bearer n1_sentinel-sentinel-sentinel-sentinel"
-	handler, err := NewHandler(authenticatorFunc(func(context.Context, string) (app.BearerSession, error) {
+	handler, err := NewSessionHandler(authenticatorFunc(func(context.Context, string) (app.BearerSession, error) {
 		return app.BearerSession{}, app.Fail(app.AuthTokenUnknown)
 	}))
 	if err != nil {
@@ -237,7 +237,7 @@ func TestSessionHandlerSecurity(t *testing.T) {
 		t.Fatalf("sentinel response status=%d body=%q", recorder.Code, recorder.Body.String())
 	}
 
-	panicHandler, err := NewHandler(authenticatorFunc(func(context.Context, string) (app.BearerSession, error) {
+	panicHandler, err := NewSessionHandler(authenticatorFunc(func(context.Context, string) (app.BearerSession, error) {
 		panic("sensitive panic sentinel")
 	}))
 	if err != nil {
@@ -251,7 +251,7 @@ func TestSessionHandlerSecurity(t *testing.T) {
 		t.Fatalf("panic response status=%d body=%q", recorder.Code, recorder.Body.String())
 	}
 
-	unavailableHandler, err := NewHandler(authenticatorFunc(func(context.Context, string) (app.BearerSession, error) {
+	unavailableHandler, err := NewSessionHandler(authenticatorFunc(func(context.Context, string) (app.BearerSession, error) {
 		return app.BearerSession{}, app.Fail(app.AuthStorageUnavailable)
 	}))
 	if err != nil {
@@ -266,7 +266,7 @@ func TestSessionHandlerSecurity(t *testing.T) {
 }
 
 func TestNewHandlerRequiresAuthenticator(t *testing.T) {
-	if _, err := NewHandler(nil); ErrorCode(err) != CodeUnavailable {
+	if _, err := NewSessionHandler(nil); ErrorCode(err) != CodeUnavailable {
 		t.Fatalf("missing authenticator got %v", err)
 	}
 }

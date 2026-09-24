@@ -218,10 +218,8 @@ auth-http-check: toolchain
 	python3 -B infra/db/auth_suite.py http
 
 auth-http-security: toolchain
-	@names=$$(go test -list '^TestSessionHandler' ./server/auth/bearerhttp); \
-	printf '%s\n' "$$names" | grep -qx TestSessionHandlerContract; \
-	printf '%s\n' "$$names" | grep -qx TestSessionHandlerSecurity
-	go test -race -shuffle=on -count=1 -run '^(TestSessionHandlerContract|TestSessionHandlerSecurity)$$' ./server/auth/bearerhttp
+	python3 -B server/auth/bearerhttp/security_gate.py --self-test
+	python3 -B server/auth/bearerhttp/security_gate.py
 
 .PHONY: message-check message-recovery message-errors
 message-check: toolchain

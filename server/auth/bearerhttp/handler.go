@@ -60,30 +60,32 @@ type Authenticator interface {
 	AuthenticateBearer(context.Context, string) (app.BearerSession, error)
 }
 
-// Handler handles exactly GET /api/v1/session when mounted by a future owner.
-// Handler 在被后续装配后处理精确的 GET /api/v1/session。
-type Handler struct {
+// SessionHandler handles exactly GET /api/v1/session when mounted by a future owner.
+// SessionHandler 在被后续装配后处理精确的 GET /api/v1/session。
+type SessionHandler struct {
 	authenticator Authenticator
 }
 
-// NewHandler validates the required trusted authenticator.
-// NewHandler 校验必需的受信 authenticator。
-func NewHandler(authenticator Authenticator) (*Handler, error) {
+// NewSessionHandler validates the required trusted authenticator.
+// NewSessionHandler 校验必需的受信 authenticator。
+func NewSessionHandler(authenticator Authenticator) (*SessionHandler, error) {
 	if authenticator == nil {
 		return nil, &Error{Code: CodeUnavailable}
 	}
-	return &Handler{authenticator: authenticator}, nil
+	return &SessionHandler{authenticator: authenticator}, nil
 }
 
 // ServeHTTP applies route, method, body, bearer and authentication checks.
 // ServeHTTP 依次执行 route、method、body、bearer 与 authentication 校验。
-func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+func (h *SessionHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	recorder := &responseRecorder{ResponseWriter: w}
 	defer func() {
-		if recover() != nil {
+		if recovered := recover(); recovered != nil {
 			if !recorder.wroteHeader {
 				writeError(recorder, http.StatusInternalServerError, CodeInternalError)
+				return
 			}
+			panic(recovered)
 		}
 	}()
 	if h == nil || h.authenticator == nil {

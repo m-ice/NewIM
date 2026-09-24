@@ -48,6 +48,11 @@ func (s *Service) AuthenticateBearer(ctx context.Context, rawToken string) (sess
 	started := time.Now()
 	var tokenID, observedSessionID string
 	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = Fail(AuthStorageUnavailable)
+			s.observe("authenticate_bearer", started, err, tokenID, observedSessionID, AuthAuthenticateOK)
+			panic(recovered)
+		}
 		s.observe("authenticate_bearer", started, err, tokenID, observedSessionID, AuthAuthenticateOK)
 	}()
 	if s == nil || s.store == nil {

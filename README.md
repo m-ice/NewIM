@@ -69,9 +69,9 @@ image verification, migration, backup and recovery contracts, and its
 [dependency provenance](infra/db/DEPENDENCIES.md).
 
 The GitHub workflow declares the same preparation, build, check, SQLite and
-PostgreSQL suites, the six conversation-sync suites, the three auth suites and
-the four media suites, the three message-send suites and the explicit SDK
-outbox gate on Ubuntu 24.04. A successful local run does not establish that a
+PostgreSQL suites, the six conversation-sync suites, the three durable auth
+suites plus the bearer HTTP auth gates, the four media suites, the three
+message-send suites and the explicit SDK outbox gate on Ubuntu 24.04. A successful local run does not establish that a
 hosted CI job ran.
 
 ## 内部消息增量读取
