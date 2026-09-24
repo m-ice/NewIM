@@ -270,11 +270,11 @@ func buildEnvelope(event Event) ([]byte, error) {
 func messagePayload(event Event, omitBody bool) any {
 	payload := json.RawMessage(`{}`)
 	digest := ""
-	size := 0
+	payloadSize := ""
 	if omitBody {
 		sum := sha256.Sum256(event.Payload)
 		digest = hex.EncodeToString(sum[:])
-		size = len(event.Payload)
+		payloadSize = strconv.Itoa(len(event.Payload))
 	} else {
 		payload = event.Payload
 	}
@@ -305,7 +305,7 @@ func messagePayload(event Event, omitBody bool) any {
 		Payload:         payload,
 		PayloadOmitted:  omitBody,
 		PayloadSHA256:   digest,
-		PayloadSize:     strconv.Itoa(size),
+		PayloadSize:     payloadSize,
 	}
 }
 

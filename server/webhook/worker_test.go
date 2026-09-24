@@ -2,11 +2,14 @@ package webhook
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -65,6 +68,25 @@ func (r testResolver) Resolve(context.Context, SecretMaterial) ([]byte, error) {
 type testDoer struct {
 	status int
 	err    error
+}
+
+type headerCaptureDoer struct {
+	mu      sync.Mutex
+	status  int
+	headers []map[string]string
+	bodies  [][]byte
+}
+
+func (d *headerCaptureDoer) Do(_ context.Context, _ string, headers map[string]string, body []byte) (Response, error) {
+	d.mu.Lock()
+	defer d.mu.Unlock()
+	clonedHeaders := make(map[string]string, len(headers))
+	for key, value := range headers {
+		clonedHeaders[key] = value
+	}
+	d.headers = append(d.headers, clonedHeaders)
+	d.bodies = append(d.bodies, append([]byte(nil), body...))
+	return Response{StatusCode: d.status}, nil
 }
 
 type captureObserver struct {
@@ -341,17 +363,40 @@ func TestWorkerConfigRejectsLeaseShorterThanRequest(t *testing.T) {
 
 func TestWorkerNonceIsFreshPerAttempt(t *testing.T) {
 	now := time.UnixMilli(1790189001000)
-	delivery := testDelivery(nil)
-	headers1, err := signedHeaders([]byte("0123456789abcdef0123456789abcdef"), delivery, []byte(`{}`), now)
+	store := &testStore{delivery: testDelivery(nil), persistent: true}
+	doer := &headerCaptureDoer{status: http.StatusServiceUnavailable}
+	cfg := testConfig(now)
+	clockCalls := 0
+	cfg.Clock = ClockFunc(func() time.Time {
+		clockCalls++
+		return now.Add(time.Duration(clockCalls) * time.Millisecond)
+	})
+	secret := []byte("0123456789abcdef0123456789abcdef")
+	worker, err := NewWorker(cfg, store, doer, testResolver{secret: secret})
 	if err != nil {
 		t.Fatal(err)
 	}
-	headers2, err := signedHeaders([]byte("0123456789abcdef0123456789abcdef"), delivery, []byte(`{}`), now.Add(time.Millisecond))
-	if err != nil {
-		t.Fatal(err)
+	for range 2 {
+		if err = worker.cycle(context.Background(), make(chan struct{}, 1)); err != nil {
+			t.Fatal(err)
+		}
 	}
+	doer.mu.Lock()
+	defer doer.mu.Unlock()
+	if len(doer.headers) != 2 {
+		t.Fatalf("attempts = %d want 2", len(doer.headers))
+	}
+	headers1, headers2 := doer.headers[0], doer.headers[1]
 	if headers1[protocol.WebhookHeaderNonce] == headers2[protocol.WebhookHeaderNonce] {
 		t.Fatal("nonce was reused across attempts")
+	}
+	if headers1[protocol.WebhookHeaderTimestamp] == headers2[protocol.WebhookHeaderTimestamp] {
+		t.Fatal("timestamp was not refreshed across attempts")
+	}
+	for _, headers := range doer.headers {
+		if headers[protocol.WebhookHeaderEventID] != "event_1" || headers[protocol.WebhookHeaderDeliveryID] != "delivery_1" {
+			t.Fatalf("attempt identity changed: %v", headers)
+		}
 	}
 	if _, err = base64.RawURLEncoding.DecodeString(headers1[protocol.WebhookHeaderNonce]); err != nil {
 		t.Fatal(err)
@@ -372,17 +417,15 @@ func TestBuildEnvelopePayloadContract(t *testing.T) {
 	if err = json.Unmarshal(envelope.Payload, &payload); err != nil {
 		t.Fatal(err)
 	}
-	for _, key := range []string{"clientMsgId", "conversationId", "conversationSeq", "serverMsgId", "serverTime", "senderId", "type", "protocolVersion", "version", "payload"} {
-		if _, ok := payload[key]; !ok {
-			t.Fatalf("message.persisted payload missing %s: %s", key, envelope.Payload)
-		}
-	}
+	normalKeys := []string{"clientMsgId", "conversationId", "conversationSeq", "serverMsgId", "serverTime", "senderId", "type", "protocolVersion", "version", "payload"}
+	assertWebhookPayloadKeys(t, payload, normalKeys)
 	var version int
 	if err = json.Unmarshal(payload["version"], &version); err != nil || version != delivery.Event.SchemaVersion {
 		t.Fatalf("payload version = %d, %v", version, err)
 	}
 
-	delivery.Event.Payload = json.RawMessage(`{"data":"` + strings.Repeat("a", 70000) + `"}`)
+	originalPayload := json.RawMessage(`{"data":"` + strings.Repeat("a", 70000) + `"}`)
+	delivery.Event.Payload = originalPayload
 	body, err = buildEnvelope(delivery.Event)
 	if err != nil {
 		t.Fatalf("fallback envelope rejected: %v", err)
@@ -395,16 +438,36 @@ func TestBuildEnvelopePayloadContract(t *testing.T) {
 	if err = json.Unmarshal(envelope.Payload, &payload); err != nil {
 		t.Fatal(err)
 	}
+	fallbackKeys := append(append([]string(nil), normalKeys...), "payloadOmitted", "payloadSha256", "payloadSize")
+	assertWebhookPayloadKeys(t, payload, fallbackKeys)
 	var omitted bool
 	var digest string
 	if err = json.Unmarshal(payload["payloadOmitted"], &omitted); err != nil || !omitted {
 		t.Fatalf("payloadOmitted = %v, %v", omitted, err)
 	}
-	if err = json.Unmarshal(payload["payloadSha256"], &digest); err != nil || len(digest) != 64 {
+	sum := sha256.Sum256(originalPayload)
+	wantDigest := hex.EncodeToString(sum[:])
+	if err = json.Unmarshal(payload["payloadSha256"], &digest); err != nil || digest != wantDigest {
 		t.Fatalf("payloadSha256 = %q, %v", digest, err)
 	}
 	var size string
-	if err = json.Unmarshal(payload["payloadSize"], &size); err != nil || size == "" {
+	if err = json.Unmarshal(payload["payloadSize"], &size); err != nil || size != strconv.Itoa(len(originalPayload)) {
 		t.Fatalf("payloadSize is not a decimal string: %q, %v", size, err)
+	}
+}
+
+func assertWebhookPayloadKeys(t *testing.T, payload map[string]json.RawMessage, want []string) {
+	t.Helper()
+	if len(payload) != len(want) {
+		t.Fatalf("payload key count = %d want %d: %v", len(payload), len(want), payload)
+	}
+	allowed := make(map[string]struct{}, len(want))
+	for _, key := range want {
+		allowed[key] = struct{}{}
+	}
+	for key := range payload {
+		if _, ok := allowed[key]; !ok {
+			t.Fatalf("unexpected payload key %s: %v", key, payload)
+		}
 	}
 }
