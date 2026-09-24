@@ -63,9 +63,10 @@ webhook-protocol: toolchain
 	python3 -B infra/db/webhook_suite.py protocol
 
 webhook-recovery: toolchain
-	go test -race -shuffle=on -count=1 ./server/webhook -run '^(TestWorkerRunStopsOnCancellation|TestWorkerRetryBackoffBounds|TestWorkerStorageFailureIsReturned|TestWorkerDrainsAboveHighWater|TestRetryOutcomeDeadLettersAtMax)$$'
-	go test -race -shuffle=on -count=1 ./server/cmd/newim-server -run '^TestWebhookRuntimeConfigFailsClosed$$'
+	go test -race -shuffle=on -count=1 ./server/webhook -run '^(TestWorkerRunStopsOnCancellation|TestWorkerRetryBackoffBounds|TestWorkerStorageFailureIsReturned|TestWorkerDrainsAboveHighWater|TestWorkerRetriesAndDeadLetters|TestRetryOutcomeDeadLettersAtMax)$$'
+	go test -race -shuffle=on -count=1 ./server/cmd/newim-server -run '^(TestWebhookRuntimeConfigFailsClosed|TestJoinRuntimeAndServerShutdownOrder)$$'
 	python3 -B infra/db/webhook_suite.py recovery
+	python3 -B infra/db/webhook_suite.py lifecycle
 
 webhook-security: toolchain
 	go test -race -shuffle=on -count=1 ./server/webhook -run '^(TestSecureClient.*|TestWorkerConfigRejectsLeaseShorterThanRequest|TestRetryAfterParsing)$$'

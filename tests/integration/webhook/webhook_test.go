@@ -5,6 +5,7 @@ package webhook_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -168,6 +169,267 @@ func TestWebhookRecovery(t *testing.T) {
 	if got := f.scalarString("SELECT status FROM newim.im_webhook_deliveries WHERE event_id=$1", revokedEvent); got != "cancelled" {
 		t.Fatalf("revoked delivery status = %s", got)
 	}
+}
+
+func TestWebhookConcurrentRecovery(t *testing.T) {
+	f := openFixture(t)
+	if _, master := f.insertEndpoint(1, "https://example.invalid/concurrent", []byte("0123456789abcdef0123456789abcdef")); len(master) == 0 {
+		t.Fatal("endpoint master key missing")
+	}
+	const eventCount = 8
+	for range eventCount {
+		f.seedEvent(f.id("webhook_concurrent_room"))
+	}
+
+	type fanoutResult struct {
+		count int
+		err   error
+	}
+	start := make(chan struct{})
+	fanouts := make(chan fanoutResult, 2)
+	for range 2 {
+		go func() {
+			<-start
+			count, err := f.repo.Fanout(context.Background(), time.Now(), eventCount, 1000, 10000)
+			fanouts <- fanoutResult{count: count, err: err}
+		}()
+	}
+	close(start)
+	fanned := 0
+	for range 2 {
+		result := <-fanouts
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		fanned += result.count
+	}
+	if fanned != eventCount {
+		t.Fatalf("concurrent fanout count = %d want %d", fanned, eventCount)
+	}
+	if got := f.scalarInt64("SELECT count(*) FROM newim.im_webhook_deliveries WHERE event_id LIKE 'webhook_event_%' AND status='pending'"); got != eventCount {
+		t.Fatalf("pending deliveries = %d want %d", got, eventCount)
+	}
+
+	claims := make(chan struct {
+		deliveries []app.Delivery
+		err        error
+	}, 2)
+	start = make(chan struct{})
+	owners := []string{"owner_a", "owner_b"}
+	for _, owner := range owners {
+		owner := owner
+		go func() {
+			<-start
+			deliveries, err := f.repo.Claim(context.Background(), time.Now(), owner, 5*time.Second, eventCount)
+			claims <- struct {
+				deliveries []app.Delivery
+				err        error
+			}{deliveries: deliveries, err: err}
+		}()
+	}
+	close(start)
+	seen := make(map[string]bool)
+	var claimed []app.Delivery
+	for range 2 {
+		result := <-claims
+		if result.err != nil {
+			t.Fatal(result.err)
+		}
+		for _, delivery := range result.deliveries {
+			if seen[delivery.ID] {
+				t.Fatalf("delivery claimed twice: %s", delivery.ID)
+			}
+			seen[delivery.ID] = true
+			claimed = append(claimed, delivery)
+		}
+	}
+	if len(claimed) != eventCount {
+		t.Fatalf("concurrent claims = %d want %d", len(claimed), eventCount)
+	}
+	for _, delivery := range claimed {
+		ok, err := f.repo.BeginAttempt(context.Background(), delivery.ID, delivery.LeaseToken, time.Now(), 3, time.Second)
+		must(t, err)
+		if !ok {
+			t.Fatalf("claimed delivery was not admitted: %s", delivery.ID)
+		}
+		must(t, f.repo.Finish(context.Background(), delivery.ID, delivery.LeaseToken, delivery.Attempts+1, time.Now(), app.Outcome{Status: "delivered", ErrorCode: app.CodeDeliveryDelivered}))
+	}
+}
+
+func TestWebhookReceiverAmbiguity(t *testing.T) {
+	f := openFixture(t)
+	eventID := f.seedEvent(f.id("webhook_ambiguous_room"))
+	var mu sync.Mutex
+	var records []struct {
+		deliveryID string
+		nonce      string
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		records = append(records, struct {
+			deliveryID string
+			nonce      string
+		}{deliveryID: r.Header.Get(protocol.WebhookHeaderDeliveryID), nonce: r.Header.Get(protocol.WebhookHeaderNonce)})
+		mu.Unlock()
+		w.WriteHeader(http.StatusNoContent)
+	}))
+	defer server.Close()
+	_, master := f.insertEndpoint(1, server.URL, []byte("0123456789abcdef0123456789abcdef"))
+	client, err := app.NewSecureClient(nil, app.Policy{AllowHTTP: true, AllowLoopback: true}, time.Second, 64*1024)
+	must(t, err)
+
+	failedStore := &finishFailStore{Store: f.repo, fail: true}
+	first := newFixtureWorker(t, f, failedStore, client, master, 3, 1000, 100, 10*time.Millisecond)
+	runWorkerUntil(t, first, 3*time.Second, func() bool {
+		return f.optionalString("SELECT status FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID) == "leased" &&
+			f.scalarInt64("SELECT attempts FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID) == 1
+	})
+	if got := f.scalarString("SELECT status FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID); got != "leased" {
+		t.Fatalf("delivery status after lost completion = %s", got)
+	}
+	if got := f.scalarInt64("SELECT attempts FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID); got != 1 {
+		t.Fatalf("attempts after lost completion = %d", got)
+	}
+	f.sql("UPDATE newim.im_webhook_deliveries SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE event_id=$1", eventID)
+
+	observer := &captureObserver{}
+	second := newFixtureWorker(t, f, f.repo, client, master, 3, 1000, 100, 10*time.Millisecond, observer)
+	runWorkerUntil(t, second, 3*time.Second, func() bool {
+		return f.optionalString("SELECT status FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID) == "delivered"
+	}, func() string {
+		mu.Lock()
+		attempts := len(records)
+		mu.Unlock()
+		return fmt.Sprintf("status=%q attempts=%d records=%d error=%q observed=%q", f.optionalString("SELECT status FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID), f.scalarInt64("SELECT COALESCE(max(attempts),0) FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID), attempts, f.optionalString("SELECT COALESCE(last_error_code,'') FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID), observer.text())
+	})
+	if got := f.scalarString("SELECT status FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID); got != "delivered" {
+		t.Fatalf("delivery status after retry = %s", got)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if len(records) != 2 {
+		t.Fatalf("HTTP attempts = %d want 2", len(records))
+	}
+	if records[0].deliveryID != records[1].deliveryID || records[0].deliveryID == "" {
+		t.Fatalf("delivery identity changed across ambiguity: %+v", records)
+	}
+	if records[0].nonce == records[1].nonce || records[0].nonce == "" {
+		t.Fatalf("nonce was not fresh across ambiguity: %+v", records)
+	}
+}
+
+func TestWebhookRetryAndBacklog(t *testing.T) {
+	t.Run("finite retry becomes dead letter", func(t *testing.T) {
+		f := openFixture(t)
+		eventID := f.seedEvent(f.id("webhook_dead_letter_room"))
+		_, master := f.insertEndpoint(1, "https://example.invalid/dead-letter", []byte("0123456789abcdef0123456789abcdef"))
+		doer := doerFunc(func(context.Context, string, map[string]string, []byte) (app.Response, error) {
+			return app.Response{StatusCode: http.StatusServiceUnavailable}, nil
+		})
+		worker := newFixtureWorker(t, f, f.repo, doer, master, 2, 1000, 100, 10*time.Millisecond)
+		runWorkerUntil(t, worker, 3*time.Second, func() bool {
+			return f.optionalString("SELECT status FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID) == "retry"
+		})
+		if got := f.scalarString("SELECT status FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID); got != "retry" {
+			t.Fatalf("first retry status = %s", got)
+		}
+		f.sql("UPDATE newim.im_webhook_deliveries SET next_attempt_at=clock_timestamp()-interval '1 second' WHERE event_id=$1", eventID)
+		runWorkerUntil(t, worker, 3*time.Second, func() bool {
+			return f.optionalString("SELECT status FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID) == "dead_letter"
+		})
+		if got := f.scalarString("SELECT status FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID); got != "dead_letter" {
+			t.Fatalf("dead-letter status = %s", got)
+		}
+		if got := f.scalarInt64("SELECT attempts FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID); got != 2 {
+			t.Fatalf("dead-letter attempts = %d", got)
+		}
+	})
+
+	t.Run("backlog pauses fanout and drains existing work", func(t *testing.T) {
+		f := openFixture(t)
+		firstEvent := f.seedEvent(f.id("webhook_backlog_first_room"))
+		secondEvent := f.seedEvent(f.id("webhook_backlog_second_room"))
+		_, master := f.insertEndpoint(1, "https://example.invalid/backlog", []byte("0123456789abcdef0123456789abcdef"))
+		if count, err := f.repo.Fanout(context.Background(), time.Now(), 1, 1000, 10000); err != nil || count != 1 {
+			t.Fatalf("backlog setup fanout = %d, %v", count, err)
+		}
+		firstMarked := f.scalarString("SELECT COALESCE(webhook_fanout_at::text,'') FROM newim.im_outbox_events WHERE event_id=$1", firstEvent) != ""
+		secondMarked := f.scalarString("SELECT COALESCE(webhook_fanout_at::text,'') FROM newim.im_outbox_events WHERE event_id=$1", secondEvent) != ""
+		if firstMarked == secondMarked {
+			t.Fatalf("backlog setup marked events unexpectedly: first=%v second=%v", firstMarked, secondMarked)
+		}
+		doer := doerFunc(func(context.Context, string, map[string]string, []byte) (app.Response, error) {
+			return app.Response{StatusCode: http.StatusNoContent}, nil
+		})
+		worker := newFixtureWorker(t, f, f.repo, doer, master, 3, 1, 0, 5*time.Second)
+		runWorkerUntil(t, worker, 3*time.Second, func() bool {
+			return f.scalarInt64("SELECT count(*) FROM newim.im_webhook_deliveries WHERE event_id IN ($1,$2) AND status='delivered'", firstEvent, secondEvent) == 1
+		}, func() string {
+			return fmt.Sprintf("delivery statuses=%q unfanned=%v/%v", f.scalarString("SELECT COALESCE(string_agg(event_id||':'||status||':'||attempts::text||':'||COALESCE(last_error_code,''),','),'') FROM newim.im_webhook_deliveries WHERE event_id IN ($1,$2)", firstEvent, secondEvent), f.scalarString("SELECT webhook_fanout_at::text FROM newim.im_outbox_events WHERE event_id=$1", firstEvent) != "", f.scalarString("SELECT webhook_fanout_at::text FROM newim.im_outbox_events WHERE event_id=$1", secondEvent) != "")
+		})
+		if got := f.scalarInt64("SELECT count(*) FROM newim.im_webhook_deliveries WHERE event_id IN ($1,$2) AND status='delivered'", firstEvent, secondEvent); got != 1 {
+			t.Fatalf("drained deliveries = %d want 1", got)
+		}
+		unfanned := firstEvent
+		if firstMarked {
+			unfanned = secondEvent
+		}
+		if f.scalarString("SELECT COALESCE(webhook_fanout_at::text,'') FROM newim.im_outbox_events WHERE event_id=$1", unfanned) != "" {
+			t.Fatalf("backlog-paused event was fanned out: %s", unfanned)
+		}
+		f.sql("UPDATE newim.im_outbox_events SET webhook_fanout_at=clock_timestamp() WHERE event_id=$1", unfanned)
+	})
+}
+
+type finishFailStore struct {
+	app.Store
+	fail bool
+}
+
+func (s *finishFailStore) Finish(ctx context.Context, deliveryID, leaseToken string, attempts int, now time.Time, outcome app.Outcome) error {
+	if s.fail {
+		return errors.New("injected completion loss")
+	}
+	return s.Store.Finish(ctx, deliveryID, leaseToken, attempts, now, outcome)
+}
+
+func newFixtureWorker(t *testing.T, f *fixture, store app.Store, doer app.Doer, master []byte, maxAttempts, highWater, lowWater int, idleDelay time.Duration, observers ...app.Observer) *app.Worker {
+	t.Helper()
+	cfg := app.Config{
+		Owner: "integration_recovery_owner", BatchSize: 8, MaxConcurrent: 4, MaxPerDestination: 2,
+		MaxAttempts: maxAttempts, MaxResponseBytes: 64 * 1024, LeaseTTL: 5 * time.Second, RequestTimeout: time.Second,
+		BaseBackoff: 10 * time.Millisecond, MaxBackoff: time.Second, HighWater: highWater, LowWater: lowWater,
+		MaxDestinationQueue: 1000, RatePerSecond: 100, RateBurst: 100,
+		IdleDelay: idleDelay, Clock: app.ClockFunc(func() time.Time { return f.now }),
+	}
+	if len(observers) != 0 {
+		cfg.Observer = observers[0]
+	}
+	worker, err := app.NewWorker(cfg, store, doer, f.resolver(master))
+	must(t, err)
+	return worker
+}
+
+func runWorkerUntil(t *testing.T, worker *app.Worker, timeout time.Duration, ready func() bool, detail ...func() string) {
+	t.Helper()
+	runCtx, cancel := context.WithCancel(context.Background())
+	done := make(chan error, 1)
+	go func() { done <- worker.Run(runCtx) }()
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		if ready() {
+			cancel()
+			must(t, <-done)
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	cancel()
+	must(t, <-done)
+	if len(detail) != 0 {
+		t.Fatalf("worker condition deadline exceeded: %s", detail[0]())
+	}
+	t.Fatal("worker condition deadline exceeded")
 }
 
 func TestWebhookSecurity(t *testing.T) {

@@ -8,6 +8,7 @@ import (
 	"crypto/cipher"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"sync/atomic"
@@ -27,7 +28,6 @@ type fixture struct {
 	db   *pgx.Conn
 	repo *store.Repository
 	now  time.Time
-	seq  atomic.Int64
 }
 
 func openFixture(t *testing.T) *fixture {
@@ -41,6 +41,15 @@ func openFixture(t *testing.T) *fixture {
 	repo, err := store.Open(ctx, store.Config{DSN: dsn, AllowLocalSocket: true, MaxConnections: 8, ApplicationName: "nim_webhook_test"})
 	must(t, err)
 	f := &fixture{t: t, db: conn, repo: repo, now: time.Now()}
+	f.sql(`UPDATE newim.im_webhook_deliveries
+SET status='cancelled',completed_at=clock_timestamp(),lease_owner=NULL,lease_token=NULL,lease_expires_at=NULL,updated_at=clock_timestamp()
+WHERE status IN ('pending','retry','leased');
+UPDATE newim.im_webhook_endpoints
+SET status='revoked',revoked_at=COALESCE(revoked_at,clock_timestamp()),updated_at=clock_timestamp()
+WHERE status='active' OR revoked_at IS NULL;
+UPDATE newim.im_outbox_events
+SET webhook_fanout_at=clock_timestamp()
+WHERE webhook_fanout_at IS NULL AND webhook_fanout_error IS NULL`)
 	t.Cleanup(func() {
 		repo.Close()
 		_ = conn.Close(context.Background())
@@ -49,7 +58,7 @@ func openFixture(t *testing.T) *fixture {
 }
 
 func (f *fixture) id(prefix string) string {
-	return fmt.Sprintf("%s_%06d", prefix, f.seq.Add(1))
+	return fmt.Sprintf("%s_%06d", prefix, fixtureSeq.Add(1))
 }
 
 func (f *fixture) seedEvent(conversation string) string {
@@ -130,6 +139,17 @@ func (f *fixture) scalarString(statement string, args ...any) string {
 	f.t.Helper()
 	var value string
 	must(f.t, f.db.QueryRow(ctx, statement, args...).Scan(&value))
+	return value
+}
+
+func (f *fixture) optionalString(statement string, args ...any) string {
+	f.t.Helper()
+	var value string
+	err := f.db.QueryRow(ctx, statement, args...).Scan(&value)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ""
+	}
+	must(f.t, err)
 	return value
 }
 
