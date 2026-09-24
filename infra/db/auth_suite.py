@@ -18,12 +18,15 @@ TESTS = {
     'recovery': 'TestAuthRecovery',
     'policy': 'TestAuthPolicy',
     'http': 'TestAuthHTTP',
+    'route': 'TestAuthRoute',
 }
 
 
-def run_test(db, name, phase='single'):
-    argv = ['docker', 'exec', '-e', 'NEWIM_AUTH_PHASE='+phase, db.name,
-            '/tmp/auth.test']
+def run_test(db, name, phase='single', env=None):
+    argv = ['docker', 'exec', '-e', 'NEWIM_AUTH_PHASE='+phase]
+    for key, value in (env or {}).items():
+        argv += ['-e', key+'='+value]
+    argv += [db.name, '/tmp/auth.test']
     listing = db.commands.run(argv+['-test.list', '^'+name+'$'], label='list-'+phase)
     if listing.stdout.decode().splitlines() != [name]:
         raise Failure('auth integration discovery must identify exactly one test')
@@ -75,10 +78,24 @@ def main():
         if result.returncode:
             print(result.stderr.decode(), end='')
             raise Failure('auth integration cross compilation failed')
+        server_binary = None
+        if args.suite == 'route':
+            server_binary = directory/'newim-server'
+            server_argv = ['go', 'build', '-o', str(server_binary), './server/cmd/newim-server']
+            started = time.monotonic()
+            result = subprocess.run(server_argv, cwd=ROOT, env=env, capture_output=True, timeout=180, check=False)
+            commands.record(server_argv, result.returncode, time.monotonic()-started, 'auth-route-server-build')
+            (directory/'server-build.log').write_bytes(result.stdout+result.stderr)
+            if result.returncode:
+                print(result.stderr.decode(), end='')
+                raise Failure('auth route server binary build failed')
         with Database(commands, image, platform) as db:
             db.sql(migration_sql())
             commands.run(['docker', 'cp', str(binary), db.name+':/tmp/auth.test'],
                          label='copy-owned-auth-test-binary')
+            if server_binary is not None:
+                commands.run(['docker', 'cp', str(server_binary), db.name+':/tmp/newim-server'],
+                             label='copy-owned-auth-route-server')
             if args.suite == 'recovery':
                 run_test(db, TESTS[args.suite], 'prepare')
                 commands.run(['docker', 'kill', '--signal=KILL', db.name], label='crash-auth-database')
@@ -94,6 +111,8 @@ def main():
                               '-d', 'auth_restore', '--exit-on-error', '--no-owner'],
                              data=dump.stdout, timeout=60, label='restore-populated-auth')
                 run_test(db, TESTS[args.suite], 'restore')
+            elif args.suite == 'route':
+                run_test(db, TESTS[args.suite], env={'NEWIM_SERVER_BINARY': '/tmp/newim-server'})
             else:
                 run_test(db, TESTS[args.suite])
         print('Auth suite passed; command records: '+str(directory))

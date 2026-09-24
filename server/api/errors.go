@@ -12,6 +12,7 @@ const (
 	CodeRuntimeFailed        ErrorCode = "SERVER_RUNTIME_FAILURE"
 	CodeShutdownFailed       ErrorCode = "SERVER_SHUTDOWN_FAILED"
 	CodeBuildInfoUnavailable ErrorCode = "SERVER_BUILD_METADATA_UNAVAILABLE"
+	CodeInvalidAuthConfig    ErrorCode = "SERVER_INVALID_AUTH_CONFIG"
 )
 
 const (

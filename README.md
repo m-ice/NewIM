@@ -96,9 +96,11 @@ auth, message, sync, WebSocket, push, TLS, or rate-limiting semantics yet; see
 [ADR 0013](docs/adr/0013-http-api-service-foundation.md) and the
 [service specification](specs/http/service-foundation.md). A separate
 policy-neutral `GET /api/v1/session` handler validates already-issued opaque
-tokens against persisted bindings, but it is intentionally not mounted into the
-process and does not complete login or authorization; see
-[ADR 0017](docs/adr/0017-bearer-session-http.md) and the
+tokens against persisted bindings. It is mounted only when `NEWIM_AUTH_DSN` is
+explicitly configured and the API listener is a loopback IP literal; without
+that setting the route stays absent. This still does not complete login or
+authorization; see [ADR 0017](docs/adr/0017-bearer-session-http.md),
+[ADR 0018](docs/adr/0018-bearer-session-route-mount.md) and the
 [bearer handler specification](specs/http/bearer-session.md).
 
 The same process can optionally run the internal Webhook worker when explicit

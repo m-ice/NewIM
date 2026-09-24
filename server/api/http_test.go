@@ -531,10 +531,13 @@ func TestImportBoundary(t *testing.T) {
 			"github.com/m-ice/NewIM/server/buildinfo": true,
 		},
 		"../cmd/newim-server": {
-			"github.com/m-ice/NewIM/server/api":             true,
-			"github.com/m-ice/NewIM/server/buildinfo":       true,
-			"github.com/m-ice/NewIM/server/storage/webhook": true,
-			"github.com/m-ice/NewIM/server/webhook":         true,
+			"github.com/m-ice/NewIM/server/api":                 true,
+			"github.com/m-ice/NewIM/server/auth/bearerhttp":     true,
+			"github.com/m-ice/NewIM/server/auth/session":        true,
+			"github.com/m-ice/NewIM/server/buildinfo":           true,
+			"github.com/m-ice/NewIM/server/storage/authsession": true,
+			"github.com/m-ice/NewIM/server/storage/webhook":     true,
+			"github.com/m-ice/NewIM/server/webhook":             true,
 		},
 	}
 	for dir, allowedModule := range allowedByDir {

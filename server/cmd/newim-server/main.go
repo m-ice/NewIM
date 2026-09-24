@@ -9,10 +9,12 @@ import (
 	"os"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
 	"github.com/m-ice/NewIM/server/api"
+	session "github.com/m-ice/NewIM/server/auth/session"
 	"github.com/m-ice/NewIM/server/buildinfo"
 	app "github.com/m-ice/NewIM/server/webhook"
 )
@@ -39,16 +41,39 @@ func run(args []string, stdout, stderr io.Writer, read func() (buildinfo.Info, e
 	cfg.ServerVersion = info.ServerVersion
 
 	logger := slog.New(slog.NewTextHandler(stderr, &slog.HandlerOptions{Level: slog.LevelInfo}))
-	server, err := api.New(cfg, logger)
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
+	defer stop()
+
+	authRuntime, routes, authErr := newAuthRuntimeFromEnv(ctx, cfg, logger)
+	if authErr != nil {
+		fmt.Fprintln(stderr, errorCode(authErr))
+		return 2
+	}
+	var authDone chan error
+	var closeAuthOnce sync.Once
+	closeAuth := func() {}
+	if authRuntime != nil {
+		authDone = make(chan error, 1)
+		closeAuth = func() {
+			closeAuthOnce.Do(func() {
+				go func() {
+					authRuntime.Close()
+					authDone <- nil
+				}()
+			})
+		}
+	}
+
+	server, err := api.NewWithRoutes(cfg, logger, routes)
 	if err != nil {
+		closeAuth()
 		fmt.Fprintln(stderr, errorCode(err))
 		return 2
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	runtime, runtimeErr := newWebhookRuntimeFromEnv(ctx, logger)
 	if runtimeErr != nil {
+		closeAuth()
 		fmt.Fprintln(stderr, errorCode(runtimeErr))
 		return 2
 	}
@@ -64,7 +89,7 @@ func run(args []string, stdout, stderr io.Writer, read func() (buildinfo.Info, e
 	}
 	serverDone := make(chan error, 1)
 	go func() { serverDone <- server.Run(serverCtx) }()
-	result := joinRuntimeAndServer(serverDone, runtimeDone, cancelServer, cancelWorker, 10*time.Second)
+	result := joinRuntimeServerAndAuth(serverDone, runtimeDone, authDone, cancelServer, cancelWorker, closeAuth, 10*time.Second)
 	cancelWorker()
 	if result.timedOut {
 		fmt.Fprintln(stderr, api.CodeShutdownFailed)
@@ -73,6 +98,9 @@ func run(args []string, stdout, stderr io.Writer, read func() (buildinfo.Info, e
 	serverErr := result.serverErr
 	if serverErr == nil && result.workerErr != nil {
 		serverErr = result.workerErr
+	}
+	if serverErr == nil && result.authErr != nil {
+		serverErr = result.authErr
 	}
 	if serverErr != nil {
 		fmt.Fprintln(stderr, errorCode(serverErr))
@@ -84,19 +112,32 @@ func run(args []string, stdout, stderr io.Writer, read func() (buildinfo.Info, e
 type shutdownResult struct {
 	serverErr error
 	workerErr error
+	authErr   error
 	timedOut  bool
 }
 
-// joinRuntimeAndServer waits for both components after either one exits.
-// joinRuntimeAndServer 在任一组件退出后等待其余组件，只有首次退出才启动有界 join 截止时间。
+// joinRuntimeAndServer waits for server and optional webhook worker components.
+// joinRuntimeAndServer 等待 server 与可选 Webhook worker；保留旧签名给既有调用方。
 func joinRuntimeAndServer(serverDone, workerDone <-chan error, cancelServer, cancelWorker func(), grace time.Duration) shutdownResult {
+	return joinRuntimeServerAndAuth(serverDone, workerDone, nil, cancelServer, cancelWorker, nil, grace)
+}
+
+// joinRuntimeServerAndAuth waits for server, worker, and auth-close components.
+// joinRuntimeServerAndAuth 等待 server、worker 与 auth-close；首次退出时只启动一次 auth close 和有界 join。
+func joinRuntimeServerAndAuth(serverDone, workerDone, authDone <-chan error, cancelServer, cancelWorker func(), closeAuth func(), grace time.Duration) shutdownResult {
 	var result shutdownResult
 	var timer *time.Timer
 	var deadline <-chan time.Time
+	var closeOnce sync.Once
 	armDeadline := func() {
 		if timer == nil {
 			timer = time.NewTimer(grace)
 			deadline = timer.C
+		}
+	}
+	stop := func() {
+		if closeAuth != nil {
+			closeOnce.Do(closeAuth)
 		}
 	}
 	defer func() {
@@ -105,18 +146,23 @@ func joinRuntimeAndServer(serverDone, workerDone <-chan error, cancelServer, can
 		}
 	}()
 
-	for serverDone != nil || workerDone != nil {
+	for serverDone != nil || workerDone != nil || authDone != nil {
 		select {
 		case err := <-serverDone:
 			serverDone = nil
 			result.serverErr = err
 			cancelWorker()
+			stop()
 			armDeadline()
 		case err := <-workerDone:
 			workerDone = nil
 			result.workerErr = err
 			cancelServer()
+			stop()
 			armDeadline()
+		case err := <-authDone:
+			authDone = nil
+			result.authErr = err
 		case <-deadline:
 			cancelServer()
 			cancelWorker()
@@ -131,6 +177,10 @@ func errorCode(err error) string {
 	var known *api.Error
 	if errors.As(err, &known) && known != nil {
 		return string(known.Code)
+	}
+	var sessionErr *session.Error
+	if errors.As(err, &sessionErr) && sessionErr != nil {
+		return string(sessionErr.Code)
 	}
 	var webhookErr *app.Error
 	if errors.As(err, &webhookErr) && webhookErr != nil {

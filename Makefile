@@ -203,7 +203,7 @@ sync-migrations:
 
 sync-check: sync-bootstrap sync-delta sync-cursor sync-query-plan sync-recovery sync-migrations
 
-.PHONY: auth-check auth-recovery auth-policy auth-http-check auth-http-security
+.PHONY: auth-check auth-recovery auth-policy auth-http-check auth-http-security auth-route-check
 auth-check: toolchain
 	python3 -B infra/db/auth_suite.py check
 
@@ -220,6 +220,10 @@ auth-http-check: toolchain
 auth-http-security: toolchain
 	python3 -B server/auth/bearerhttp/security_gate.py --self-test
 	python3 -B server/auth/bearerhttp/security_gate.py
+
+auth-route-check: toolchain
+	go test -race -shuffle=on -count=1 ./server/api ./server/cmd/newim-server
+	python3 -B infra/db/auth_suite.py route
 
 .PHONY: message-check message-recovery message-errors
 message-check: toolchain

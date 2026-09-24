@@ -19,7 +19,10 @@ semantics.
 Routes are exact raw paths: trailing slashes, percent-encoded aliases, and the
 special `OPTIONS *` target are not accepted as aliases. Health is liveness only;
 it does not probe a database. Readiness is true only after both listeners bind
-and serving starts, and becomes false before shutdown drain begins.
+and serving starts, and becomes false before shutdown drain begins. A trusted
+process composer may add bounded exact `/api/v1/` GET routes; NIM-SRV-006 adds
+`route="session"` only when an explicit loopback auth DSN is configured. The
+foundation itself still does not import auth or storage.
 
 ## Errors
 
@@ -55,7 +58,7 @@ newim_http_request_duration_seconds_count{listener,route,method}
 newim_http_requests_total{listener,route,method,status}
 ```
 
-`listener` is `api|ops`; `route` is `health|ready|metrics|unmatched`; `method`
+`listener` is `api|ops`; `route` is `health|ready|metrics|unmatched` plus explicitly registered bounded names (`session`); `method`
 is one of the bounded HTTP method classes; `status` is a three-digit handler
 status. Request paths, query strings, headers, client addresses, tokens,
 message data, and revisions are never labels.

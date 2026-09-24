@@ -12,9 +12,10 @@ liveness, readiness, and bounded process metrics. The following remain future
 work: a public network API or UI, a WebSocket gateway, push delivery, complete
 credential verification and multi-device login or kick policy,
 reconnect/lifecycle integration, retention/moderation/account erasure, and
-platform wrappers. This document does not claim those capabilities. A standalone bearer-session HTTP
-handler now validates already-issued tokens, but it is not mounted into the
-process listener and does not provide login or complete authentication.
+platform wrappers. This document does not claim those capabilities. A
+bearer-session HTTP handler validates already-issued tokens when an explicit
+loopback auth DSN is configured; it is absent without that setting and does not
+provide login or complete authentication.
 
 ## Module boundaries
 
@@ -24,7 +25,7 @@ process listener and does not provide login or complete authentication.
 | `core/protocol` | Versioned language-neutral wire schemas/fixtures and separate Go/Rust codecs; no UI or database authority. Media v1 is closed metadata-only. |
 | `server/api` | Policy-neutral API/Ops HTTP listeners, exact health/readiness/metrics contracts, bounded lifecycle and redaction-only request logging; no identity or message semantics. |
 | `server/auth/session` | Policy-neutral token issuance, authentication, and revocation application logic over a store port, including persisted-binding-only bearer resolution. |
-| `server/auth/bearerhttp` | Unmounted, policy-neutral `GET /api/v1/session` handler with strict Authorization/header/body/route rules and stable HTTP errors. |
+| `server/auth/bearerhttp` | Policy-neutral `GET /api/v1/session` handler with strict Authorization/header/body/route rules and stable HTTP errors; mounted only by explicit loopback auth composition. |
 | `server/message` | Send validation, media preconditions, idempotent persistence orchestration, and persisted ACK construction. |
 | `server/sync/*` | Internal bounded conversation bootstrap/delta and message delta read services; trusted principals are supplied by their callers. |
 | `server/media` | Protocol-neutral media application rules and ports for grants, metadata, validation, and private download authorization. |
@@ -62,8 +63,9 @@ See [ADR 0009](adr/0009-message-send-transaction.md) and
 `server/auth/session` implements opaque token issue/authenticate/revoke operations
 with persisted session/token bindings and revocation checks. `AuthenticateBearer`
 resolves an already-issued raw token without trusting caller-provided identity;
-`server/auth/bearerhttp` exposes that result as an unmounted strict HTTP handler.
-`server/sync/*`
+`server/auth/bearerhttp` exposes that result as a strict HTTP handler; the
+`newim-server` process mounts it only for an explicitly configured loopback auth
+DSN, while readiness remains process-only. `server/sync/*`
 implements bounded, resumable internal bootstrap, conversation delta, and message
 delta reads using server-assigned sequence and pagination contracts; this is not a
 public sync endpoint. PostgreSQL media persistence stores metadata, complete

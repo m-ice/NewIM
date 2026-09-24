@@ -59,6 +59,9 @@ jobs:
       - name: Exercise bearer session HTTP security boundaries
         timeout-minutes: 10
         run: make auth-http-security
+      - name: Exercise loopback bearer session route mounting
+        timeout-minutes: 12
+        run: make auth-route-check
       - name: Exercise media protocol, grants, storage and authorization
         timeout-minutes: 20
         run: make media-check

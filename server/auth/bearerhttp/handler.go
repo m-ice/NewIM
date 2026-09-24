@@ -60,8 +60,8 @@ type Authenticator interface {
 	AuthenticateBearer(context.Context, string) (app.BearerSession, error)
 }
 
-// SessionHandler handles exactly GET /api/v1/session when mounted by a future owner.
-// SessionHandler 在被后续装配后处理精确的 GET /api/v1/session。
+// SessionHandler handles exactly GET /api/v1/session when mounted by a trusted composer.
+// SessionHandler 在被受信组合器装配后处理精确的 GET /api/v1/session。
 type SessionHandler struct {
 	authenticator Authenticator
 }

@@ -27,6 +27,10 @@ var (
 	// ErrAlreadyStarted indicates a Server was run more than once.
 	// ErrAlreadyStarted 表示 Server 被重复运行。
 	ErrAlreadyStarted = fail(CodeAlreadyStarted)
+
+	// ErrInvalidAuthConfig rejects an unsafe auth-route composition before bind.
+	// ErrInvalidAuthConfig 在 bind 前拒绝不安全的 auth 路由配置。
+	ErrInvalidAuthConfig = fail(CodeInvalidAuthConfig)
 )
 
 type serverResult struct {
@@ -54,21 +58,33 @@ type Server struct {
 	opsServer   *http.Server
 	apiHandler  http.Handler
 	opsHandler  http.Handler
+	apiRoutes   map[string]APIRoute
 }
 
 // New constructs a single-use HTTP server from a validated configuration.
 // New 根据已校验配置创建一个只运行一次的 HTTP 服务。
 func New(cfg Config, logger *slog.Logger) (*Server, error) {
+	return NewWithRoutes(cfg, logger, nil)
+}
+
+// NewWithRoutes constructs a server with bounded exact API routes.
+// NewWithRoutes 使用有界精确 API 路由构造服务；路由处理器由调用方装配。
+func NewWithRoutes(cfg Config, logger *slog.Logger, routes []APIRoute) (*Server, error) {
 	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
+	routeMap, err := validateAPIRoutes(routes)
+	if err != nil {
 		return nil, err
 	}
 	if logger == nil {
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	s := &Server{
-		cfg:     cfg,
-		logger:  logger,
-		metrics: newMetrics(cfg.ServerVersion),
+		cfg:       cfg,
+		logger:    logger,
+		metrics:   newMetrics(cfg.ServerVersion),
+		apiRoutes: routeMap,
 	}
 	s.apiHandler = s.makeHandler("api")
 	s.opsHandler = s.makeHandler("ops")
@@ -294,7 +310,7 @@ func (s *Server) OpsAddr() string {
 
 func (s *Server) makeHandler(listener string) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		route, ok := resolveRoute(listener, r.URL.EscapedPath())
+		route, ok, routeHandler := s.resolveRoute(listener, r.URL.EscapedPath())
 		method := normalizeMethod(r.Method)
 		started := time.Now()
 		recorder := &responseRecorder{ResponseWriter: w}
@@ -325,6 +341,10 @@ func (s *Server) makeHandler(listener string) http.Handler {
 		defer func() { s.finish(recorder, listener, route, method, started) }()
 		defer s.recoverRequest(listener, route, method, recorder)
 
+		if routeHandler != nil {
+			routeHandler.ServeHTTP(recorder, r)
+			return
+		}
 		switch route {
 		case "health":
 			writeJSON(recorder, http.StatusOK, `{"status":"ok"}`+"\n")
@@ -366,21 +386,26 @@ func (s *Server) logRequest(listener, route, method string, status int) {
 	)
 }
 
-func resolveRoute(listener, path string) (string, bool) {
+func (s *Server) resolveRoute(listener, path string) (string, bool, http.Handler) {
 	switch listener {
 	case "api":
 		if path == "/api/v1/health" {
-			return "health", true
+			return "health", true, nil
+		}
+		if s != nil {
+			if route, ok := s.apiRoutes[path]; ok {
+				return route.Name, true, route.Handler
+			}
 		}
 	case "ops":
 		switch path {
 		case "/ready":
-			return "ready", true
+			return "ready", true, nil
 		case "/metrics":
-			return "metrics", true
+			return "metrics", true, nil
 		}
 	}
-	return "", false
+	return "", false, nil
 }
 
 func normalizeMethod(method string) string {
