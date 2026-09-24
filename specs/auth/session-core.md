@@ -36,6 +36,24 @@ tokens or driver errors. Pool limits, TLS verification, local-socket opt-in and
 timeouts follow `server/storage/conversationsync`; each request is limited to five
 seconds and issue collision retries are bounded to three attempts.
 
+## Bearer authentication extension
+
+`AuthenticateBearer(ctx, rawToken)` is the transport-facing read operation added by
+NIM-SRV-005. It parses the raw token, locks the token/session snapshot, verifies
+the digest and revocation/expiry state, and returns:
+
+```go
+type BearerSession struct {
+    // unexported persisted binding, token ID and expiry
+}
+```
+
+Its getters expose `UserID`, `DeviceID`, `SessionID`, `TokenID` and `ExpiresAt`.
+The caller cannot supply or override those values. This operation does not create
+a `ConnectionIdentity`, does not issue or refresh a token, and does not select a
+device or kick policy. Failure semantics and observation redaction are the same
+as `Authenticate`; the observation operation is `authenticate_bearer`.
+
 ## Token contract
 
 Raw form:

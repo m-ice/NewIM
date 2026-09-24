@@ -17,6 +17,7 @@ TESTS = {
     'check': 'TestAuthCheck',
     'recovery': 'TestAuthRecovery',
     'policy': 'TestAuthPolicy',
+    'http': 'TestAuthHTTP',
 }
 
 

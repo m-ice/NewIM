@@ -55,7 +55,7 @@ For PostgreSQL suites, additionally install Docker with a running daemon:
 make db-prepare
 make db-schema db-migrations db-sequence db-repair
 make sync-check
-make auth-check auth-recovery auth-policy
+make auth-check auth-recovery auth-policy auth-http-check auth-http-security
 make media-protocol media-db media-security media-authz media-check
 make message-check message-recovery message-errors
 make webhook-protocol webhook-recovery webhook-security webhook-redaction
@@ -94,7 +94,12 @@ The `newim-server` process exposes two loopback-only listeners by default:
 true, and SIGINT/SIGTERM performs a bounded drain. The service has no public
 auth, message, sync, WebSocket, push, TLS, or rate-limiting semantics yet; see
 [ADR 0013](docs/adr/0013-http-api-service-foundation.md) and the
-[service specification](specs/http/service-foundation.md).
+[service specification](specs/http/service-foundation.md). A separate
+policy-neutral `GET /api/v1/session` handler validates already-issued opaque
+tokens against persisted bindings, but it is intentionally not mounted into the
+process and does not complete login or authorization; see
+[ADR 0017](docs/adr/0017-bearer-session-http.md) and the
+[bearer handler specification](specs/http/bearer-session.md).
 
 The same process can optionally run the internal Webhook worker when explicit
 DSN/master-key configuration is present. It consumes the message outbox with

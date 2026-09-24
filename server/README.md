@@ -18,6 +18,14 @@ For example, `server/message` validates persistence intent and
 transaction; auth, sync, and media services follow the same application/storage
 split. These are internal packages and require a trusted caller/identity.
 
+`server/auth/bearerhttp` adds a standalone, unmounted `GET /api/v1/session`
+handler for already-issued bearer tokens. It resolves the persisted
+user/device/session/token binding without trusting request-supplied identity,
+uses strict route/method/body/header checks, returns stable redacted errors and
+does not provide login, device/kick policy, a public listener, or rate limiting.
+See [ADR 0017](../docs/adr/0017-bearer-session-http.md) and the
+[bearer handler specification](../specs/http/bearer-session.md).
+
 `server/webhook` and `server/storage/webhook` add an internal at-least-once
 webhook delivery core over the existing message outbox. The worker is optional
 inside `cmd/newim-server`, is enabled only by explicit DSN/master-key
@@ -30,8 +38,9 @@ There is no public network server or UI, WebSocket gateway, push delivery, or
 complete multi-device login/reconnect policy. The API/Ops foundation defaults
 to loopback and does not expose message persistence through a public route. Run
 the root `make build`, `make check`, `make docs-check`, `make api-check`,
-`make api-recovery`, `make api-security`, `make webhook-protocol`,
-`make webhook-recovery`, `make webhook-security`, and `make webhook-redaction`
+`make api-recovery`, `make api-security`, `make auth-http-check`,
+`make auth-http-security`, `make webhook-protocol`, `make webhook-recovery`,
+`make webhook-security`, and `make webhook-redaction`
 commands. See
 [architecture](../docs/architecture.md) and
 [third-party notices](../THIRD_PARTY_NOTICES.md).

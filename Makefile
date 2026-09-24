@@ -203,7 +203,7 @@ sync-migrations:
 
 sync-check: sync-bootstrap sync-delta sync-cursor sync-query-plan sync-recovery sync-migrations
 
-.PHONY: auth-check auth-recovery auth-policy
+.PHONY: auth-check auth-recovery auth-policy auth-http-check auth-http-security
 auth-check: toolchain
 	python3 -B infra/db/auth_suite.py check
 
@@ -212,6 +212,16 @@ auth-recovery: toolchain
 
 auth-policy: toolchain
 	python3 -B infra/db/auth_suite.py policy
+
+auth-http-check: toolchain
+	go test -race -shuffle=on -count=1 ./server/auth/bearerhttp
+	python3 -B infra/db/auth_suite.py http
+
+auth-http-security: toolchain
+	@names=$$(go test -list '^TestSessionHandler' ./server/auth/bearerhttp); \
+	printf '%s\n' "$$names" | grep -qx TestSessionHandlerContract; \
+	printf '%s\n' "$$names" | grep -qx TestSessionHandlerSecurity
+	go test -race -shuffle=on -count=1 -run '^(TestSessionHandlerContract|TestSessionHandlerSecurity)$$' ./server/auth/bearerhttp
 
 .PHONY: message-check message-recovery message-errors
 message-check: toolchain

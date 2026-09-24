@@ -12,7 +12,9 @@ liveness, readiness, and bounded process metrics. The following remain future
 work: a public network API or UI, a WebSocket gateway, push delivery, complete
 credential verification and multi-device login or kick policy,
 reconnect/lifecycle integration, retention/moderation/account erasure, and
-platform wrappers. This document does not claim those capabilities.
+platform wrappers. This document does not claim those capabilities. A standalone bearer-session HTTP
+handler now validates already-issued tokens, but it is not mounted into the
+process listener and does not provide login or complete authentication.
 
 ## Module boundaries
 
@@ -21,7 +23,8 @@ platform wrappers. This document does not claim those capabilities.
 | `core/domain` (planned) | Go server domain rules, independent of HTTP, wire DTOs and SQL. |
 | `core/protocol` | Versioned language-neutral wire schemas/fixtures and separate Go/Rust codecs; no UI or database authority. Media v1 is closed metadata-only. |
 | `server/api` | Policy-neutral API/Ops HTTP listeners, exact health/readiness/metrics contracts, bounded lifecycle and redaction-only request logging; no identity or message semantics. |
-| `server/auth/session` | Policy-neutral token issuance, authentication, and revocation application logic over a store port. |
+| `server/auth/session` | Policy-neutral token issuance, authentication, and revocation application logic over a store port, including persisted-binding-only bearer resolution. |
+| `server/auth/bearerhttp` | Unmounted, policy-neutral `GET /api/v1/session` handler with strict Authorization/header/body/route rules and stable HTTP errors. |
 | `server/message` | Send validation, media preconditions, idempotent persistence orchestration, and persisted ACK construction. |
 | `server/sync/*` | Internal bounded conversation bootstrap/delta and message delta read services; trusted principals are supplied by their callers. |
 | `server/media` | Protocol-neutral media application rules and ports for grants, metadata, validation, and private download authorization. |
@@ -57,7 +60,10 @@ See [ADR 0009](adr/0009-message-send-transaction.md) and
 [ADR 0015](adr/0015-webhook-delivery.md).
 
 `server/auth/session` implements opaque token issue/authenticate/revoke operations
-with persisted session/token bindings and revocation checks. `server/sync/*`
+with persisted session/token bindings and revocation checks. `AuthenticateBearer`
+resolves an already-issued raw token without trusting caller-provided identity;
+`server/auth/bearerhttp` exposes that result as an unmounted strict HTTP handler.
+`server/sync/*`
 implements bounded, resumable internal bootstrap, conversation delta, and message
 delta reads using server-assigned sequence and pagination contracts; this is not a
 public sync endpoint. PostgreSQL media persistence stores metadata, complete
