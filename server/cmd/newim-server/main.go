@@ -158,7 +158,8 @@ func joinRuntimeServerAndAuth(serverDone, workerDone, authDone <-chan error, shu
 		select {
 		case <-shutdown:
 			shutdown = nil
-			stop()
+			cancelServer()
+			cancelWorker()
 			armDeadline()
 		case err := <-serverDone:
 			serverDone = nil
@@ -172,7 +173,6 @@ func joinRuntimeServerAndAuth(serverDone, workerDone, authDone <-chan error, shu
 			shutdown = nil
 			result.workerErr = err
 			cancelServer()
-			stop()
 			armDeadline()
 		case err := <-authDone:
 			authDone = nil

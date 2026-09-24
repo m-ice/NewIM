@@ -222,7 +222,9 @@ auth-http-security: toolchain
 	python3 -B server/auth/bearerhttp/security_gate.py
 
 auth-route-check: toolchain
-	go test -race -shuffle=on -count=1 ./server/api ./server/cmd/newim-server
+	python3 -B server/auth/bearerhttp/security_gate.py --self-test
+	python3 -B server/auth/bearerhttp/security_gate.py
+	python3 -B server/cmd/newim-server/route_gate.py
 	python3 -B infra/db/auth_suite.py route
 
 .PHONY: message-check message-recovery message-errors

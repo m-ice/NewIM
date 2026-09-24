@@ -59,13 +59,12 @@ func TestAuthRuntimeRejectsMalformedAndLocalSocketDSN(t *testing.T) {
 	}
 }
 
-func TestJoinRuntimeServerAndAuthSharedDeadline(t *testing.T) {
+func TestJoinRuntimeServerAndAuthDeadlineDoesNotCloseBeforeDrain(t *testing.T) {
 	serverDone := make(chan error)
-	authDone := make(chan error)
+	authDone := make(chan error, 1)
 	shutdown := make(chan struct{})
 	var closeCalls atomic.Int32
 	closeAuth := func() { closeCalls.Add(1) }
-	started := time.Now()
 	go func() {
 		time.Sleep(10 * time.Millisecond)
 		close(shutdown)
@@ -74,8 +73,28 @@ func TestJoinRuntimeServerAndAuthSharedDeadline(t *testing.T) {
 	if !result.timedOut {
 		t.Fatalf("expected shared deadline timeout, got %+v", result)
 	}
-	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
-		t.Fatalf("shared deadline took %s", elapsed)
+	if got := closeCalls.Load(); got != 0 {
+		t.Fatalf("closeAuth calls before server drain=%d want 0", got)
+	}
+}
+
+func TestJoinRuntimeServerAndAuthClosesAfterServerDrain(t *testing.T) {
+	serverDone := make(chan error)
+	authDone := make(chan error, 1)
+	shutdown := make(chan struct{})
+	var closeCalls atomic.Int32
+	closeAuth := func() {
+		closeCalls.Add(1)
+		authDone <- nil
+	}
+	go func() { close(shutdown) }()
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		serverDone <- nil
+	}()
+	result := joinRuntimeServerAndAuth(serverDone, nil, authDone, shutdown, func() {}, func() {}, closeAuth, time.Second)
+	if result.timedOut || result.serverErr != nil || result.authErr != nil {
+		t.Fatalf("join result=%+v", result)
 	}
 	if got := closeCalls.Load(); got != 1 {
 		t.Fatalf("closeAuth calls=%d want 1", got)
