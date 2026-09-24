@@ -62,8 +62,16 @@ func (s *runningServer) stop(t *testing.T) {
 	if err := s.cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.cmd.Wait(); err != nil {
-		t.Fatalf("SIGTERM exit: %v stderr=%q", err, s.stderr.String())
+	done := make(chan error, 1)
+	go func() { done <- s.cmd.Wait() }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("SIGTERM exit: %v stderr=%q", err, s.stderr.String())
+		}
+	case <-time.After(10 * time.Second):
+		_ = s.cmd.Process.Kill()
+		t.Fatalf("SIGTERM exceeded 10s total shutdown bound; stderr=%q", s.stderr.String())
 	}
 }
 

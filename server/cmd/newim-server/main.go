@@ -89,7 +89,15 @@ func run(args []string, stdout, stderr io.Writer, read func() (buildinfo.Info, e
 	}
 	serverDone := make(chan error, 1)
 	go func() { serverDone <- server.Run(serverCtx) }()
-	result := joinRuntimeServerAndAuth(serverDone, runtimeDone, authDone, cancelServer, cancelWorker, closeAuth, 10*time.Second)
+	var shutdown chan struct{}
+	if authRuntime != nil {
+		shutdown = make(chan struct{})
+		go func() {
+			<-ctx.Done()
+			close(shutdown)
+		}()
+	}
+	result := joinRuntimeServerAndAuth(serverDone, runtimeDone, authDone, shutdown, cancelServer, cancelWorker, closeAuth, 10*time.Second)
 	cancelWorker()
 	if result.timedOut {
 		fmt.Fprintln(stderr, api.CodeShutdownFailed)
@@ -119,12 +127,12 @@ type shutdownResult struct {
 // joinRuntimeAndServer waits for server and optional webhook worker components.
 // joinRuntimeAndServer 等待 server 与可选 Webhook worker；保留旧签名给既有调用方。
 func joinRuntimeAndServer(serverDone, workerDone <-chan error, cancelServer, cancelWorker func(), grace time.Duration) shutdownResult {
-	return joinRuntimeServerAndAuth(serverDone, workerDone, nil, cancelServer, cancelWorker, nil, grace)
+	return joinRuntimeServerAndAuth(serverDone, workerDone, nil, nil, cancelServer, cancelWorker, nil, grace)
 }
 
-// joinRuntimeServerAndAuth waits for server, worker, and auth-close components.
-// joinRuntimeServerAndAuth 等待 server、worker 与 auth-close；首次退出时只启动一次 auth close 和有界 join。
-func joinRuntimeServerAndAuth(serverDone, workerDone, authDone <-chan error, cancelServer, cancelWorker func(), closeAuth func(), grace time.Duration) shutdownResult {
+// joinRuntimeServerAndAuth waits for server, worker, auth-close and shutdown trigger components.
+// joinRuntimeServerAndAuth 等待 server、worker、auth-close 与 shutdown trigger；首个事件启动一次 auth close 和共享 deadline。
+func joinRuntimeServerAndAuth(serverDone, workerDone, authDone <-chan error, shutdown <-chan struct{}, cancelServer, cancelWorker func(), closeAuth func(), grace time.Duration) shutdownResult {
 	var result shutdownResult
 	var timer *time.Timer
 	var deadline <-chan time.Time
@@ -146,16 +154,22 @@ func joinRuntimeServerAndAuth(serverDone, workerDone, authDone <-chan error, can
 		}
 	}()
 
-	for serverDone != nil || workerDone != nil || authDone != nil {
+	for serverDone != nil || workerDone != nil || authDone != nil || shutdown != nil {
 		select {
+		case <-shutdown:
+			shutdown = nil
+			stop()
+			armDeadline()
 		case err := <-serverDone:
 			serverDone = nil
+			shutdown = nil
 			result.serverErr = err
 			cancelWorker()
 			stop()
 			armDeadline()
 		case err := <-workerDone:
 			workerDone = nil
+			shutdown = nil
 			result.workerErr = err
 			cancelServer()
 			stop()

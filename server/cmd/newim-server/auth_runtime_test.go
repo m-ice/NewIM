@@ -4,7 +4,9 @@ import (
 	"context"
 	"log/slog"
 	"strings"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/m-ice/NewIM/server/api"
 )
@@ -54,5 +56,28 @@ func TestAuthRuntimeRejectsMalformedAndLocalSocketDSN(t *testing.T) {
 	runtime, routes, err = newAuthRuntimeFromEnv(context.Background(), api.Config{APIAddr: "127.0.0.1:8080"}, slog.Default())
 	if err == nil || runtime != nil || len(routes) != 0 || strings.Contains(err.Error(), "definitely") {
 		t.Fatalf("local-socket DSN runtime=%v routes=%v err=%v", runtime, routes, err)
+	}
+}
+
+func TestJoinRuntimeServerAndAuthSharedDeadline(t *testing.T) {
+	serverDone := make(chan error)
+	authDone := make(chan error)
+	shutdown := make(chan struct{})
+	var closeCalls atomic.Int32
+	closeAuth := func() { closeCalls.Add(1) }
+	started := time.Now()
+	go func() {
+		time.Sleep(10 * time.Millisecond)
+		close(shutdown)
+	}()
+	result := joinRuntimeServerAndAuth(serverDone, nil, authDone, shutdown, func() {}, func() {}, closeAuth, 80*time.Millisecond)
+	if !result.timedOut {
+		t.Fatalf("expected shared deadline timeout, got %+v", result)
+	}
+	if elapsed := time.Since(started); elapsed > 500*time.Millisecond {
+		t.Fatalf("shared deadline took %s", elapsed)
+	}
+	if got := closeCalls.Load(); got != 1 {
+		t.Fatalf("closeAuth calls=%d want 1", got)
 	}
 }
