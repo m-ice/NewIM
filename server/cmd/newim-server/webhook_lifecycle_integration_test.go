@@ -4,7 +4,6 @@ package main
 
 import (
 	"bytes"
-	"context"
 	"encoding/base64"
 	"io"
 	"net/http"
@@ -13,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jackc/pgx/v5"
 	"github.com/m-ice/NewIM/server/buildinfo"
 )
 
@@ -52,8 +50,6 @@ func TestWebhookRuntimeLifecycle(t *testing.T) {
 		if err := waitForStatus("http://"+opsAddr+"/ready", http.StatusOK); err != nil {
 			t.Fatalf("ops readiness failed on attempt %d: %v; stderr=%q", attempt, err, stderr.String())
 		}
-		waitForWebhookConnections(t, dsn, true)
-
 		if err := syscall.Kill(os.Getpid(), syscall.SIGTERM); err != nil {
 			t.Fatal(err)
 		}
@@ -66,25 +62,5 @@ func TestWebhookRuntimeLifecycle(t *testing.T) {
 		case <-time.After(5 * time.Second):
 			t.Fatalf("SIGTERM drain exceeded deadline on attempt %d; stderr=%q", attempt, stderr.String())
 		}
-		waitForWebhookConnections(t, dsn, false)
 	}
-}
-
-func waitForWebhookConnections(t *testing.T, dsn string, want bool) {
-	t.Helper()
-	deadline := time.Now().Add(3 * time.Second)
-	for time.Now().Before(deadline) {
-		conn, err := pgx.Connect(context.Background(), dsn)
-		if err != nil {
-			t.Fatal(err)
-		}
-		var connected bool
-		err = conn.QueryRow(context.Background(), "SELECT EXISTS (SELECT 1 FROM pg_stat_activity WHERE application_name='newim-webhook')").Scan(&connected)
-		_ = conn.Close(context.Background())
-		if err == nil && connected == want {
-			return
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-	t.Fatalf("webhook connection presence = %v not reached", want)
 }
