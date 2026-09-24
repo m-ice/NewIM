@@ -180,6 +180,19 @@ func TestAuthRoute(t *testing.T) {
 			t.Fatalf("valid response=%+v", envelope)
 		}
 
+		body, status, headers = doRawRequest(t, http.MethodGet, "http://"+server.api+"/api/v1/not-session", nil, "")
+		if status != http.StatusNotFound || !strings.Contains(string(body), "HTTP_ROUTE_NOT_FOUND") {
+			t.Fatalf("route precedence status=%d body=%q", status, body)
+		}
+		body, status, headers = doRawRequest(t, http.MethodPost, "http://"+server.api+bearerRoute, nil, "")
+		if status != http.StatusMethodNotAllowed || headers.Get("Allow") != http.MethodGet || !strings.Contains(string(body), "HTTP_METHOD_NOT_ALLOWED") {
+			t.Fatalf("method precedence status=%d headers=%v body=%q", status, headers, body)
+		}
+		body, status, headers = doRawRequest(t, http.MethodGet, "http://"+server.api+bearerRoute, strings.NewReader("body"), "")
+		if status != http.StatusBadRequest || !strings.Contains(string(body), "HTTP_BODY_NOT_ALLOWED") {
+			t.Fatalf("body precedence status=%d headers=%v body=%q", status, headers, body)
+		}
+
 		body, status, headers = doSessionRequest(t, "http://"+server.api, "Bearer "+expired.RawToken())
 		if status != http.StatusUnauthorized || headers.Get("WWW-Authenticate") != `Bearer realm="newim-session"` {
 			t.Fatalf("expired status=%d headers=%v body=%q", status, headers, body)
@@ -210,6 +223,11 @@ func TestAuthRoute(t *testing.T) {
 		must(t, err)
 		if !strings.Contains(string(metricsBody), `route="session"`) || strings.Contains(string(metricsBody), token.RawToken()) {
 			t.Fatalf("metrics route/redaction missing: %s", metricsBody)
+		}
+		for _, forbidden := range []string{token.RawToken(), localDSN, "SELECT ", "im_auth_tokens", "im_sessions"} {
+			if strings.Contains(server.stdout.String(), forbidden) || strings.Contains(server.stderr.String(), forbidden) {
+				t.Fatalf("server log leaked %q; stdout=%q stderr=%q", forbidden, server.stdout.String(), server.stderr.String())
+			}
 		}
 	})
 
@@ -308,6 +326,21 @@ func TestAuthRoute(t *testing.T) {
 			time.Sleep(50 * time.Millisecond)
 		}
 	})
+}
+
+func doRawRequest(t *testing.T, method, url string, body io.Reader, authorization string) ([]byte, int, http.Header) {
+	t.Helper()
+	req, err := http.NewRequest(method, url, body)
+	must(t, err)
+	if authorization != "" {
+		req.Header.Set("Authorization", authorization)
+	}
+	response, err := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+	must(t, err)
+	defer response.Body.Close()
+	data, err := io.ReadAll(response.Body)
+	must(t, err)
+	return data, response.StatusCode, response.Header
 }
 
 func activeAuthConnections(t *testing.T, f *fixture) int {

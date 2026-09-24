@@ -224,6 +224,7 @@ auth-http-security: toolchain
 auth-route-check: toolchain
 	python3 -B server/auth/bearerhttp/security_gate.py --self-test
 	python3 -B server/auth/bearerhttp/security_gate.py
+	python3 -B server/cmd/newim-server/route_gate.py --self-test
 	python3 -B server/cmd/newim-server/route_gate.py
 	python3 -B infra/db/auth_suite.py route
 
