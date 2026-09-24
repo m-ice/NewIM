@@ -183,6 +183,69 @@ func TestAuthLogout(t *testing.T) {
 		}
 	})
 
+	t.Run("backend-failure-recovers", func(t *testing.T) {
+		f := openFixture(t)
+		service := f.service(&captureObserver{}, nil, nil)
+		binding := f.seedBinding("logout_backend_failure")
+		token := f.issue(service, binding, time.Hour)
+		handler, err := bearer.NewTokenRevocationHandler(service)
+		must(t, err)
+		server := httptest.NewServer(handler)
+		defer server.Close()
+
+		blocker, tx := lockSessionRow(t, f, binding)
+		defer func() { _ = tx.Rollback(context.Background()); blocker.Close(context.Background()) }()
+		type revokeResult struct {
+			body   []byte
+			status int
+			header http.Header
+			err    error
+		}
+		resultCh := make(chan revokeResult, 1)
+		go func() {
+			req, reqErr := http.NewRequest(http.MethodDelete, server.URL+bearer.TokenRoute, nil)
+			if reqErr != nil {
+				resultCh <- revokeResult{err: reqErr}
+				return
+			}
+			req.Header.Set("Authorization", "Bearer "+token.RawToken())
+			response, doErr := (&http.Client{Timeout: 5 * time.Second}).Do(req)
+			if doErr != nil {
+				resultCh <- revokeResult{err: doErr}
+				return
+			}
+			defer response.Body.Close()
+			body, readErr := io.ReadAll(response.Body)
+			resultCh <- revokeResult{body: body, status: response.StatusCode, header: response.Header, err: readErr}
+		}()
+		backendPID := waitForAuthBackend(t, f)
+		_, err = f.db.Exec(ctx, "SELECT pg_terminate_backend($1)", backendPID)
+		must(t, err)
+		_ = tx.Rollback(ctx)
+		blocker.Close(context.Background())
+		result := <-resultCh
+		if result.err != nil || result.status != http.StatusServiceUnavailable {
+			t.Fatalf("backend failure status=%d err=%v body=%q", result.status, result.err, result.body)
+		}
+		if f.tokenRevoked(binding, token.TokenID()) {
+			t.Fatal("terminated backend committed a revocation")
+		}
+		deadline := time.Now().Add(5 * time.Second)
+		for {
+			body, status, _ := doTokenRevokeRequest(t, server.URL, "Bearer "+token.RawToken())
+			if status == http.StatusNoContent {
+				break
+			}
+			if status != http.StatusServiceUnavailable || time.Now().After(deadline) {
+				t.Fatalf("recovery retry status=%d body=%q", status, body)
+			}
+			time.Sleep(20 * time.Millisecond)
+		}
+		if !f.tokenRevoked(binding, token.TokenID()) || f.sessionRevoked(binding) {
+			t.Fatalf("recovery state target=%t session=%t", f.tokenRevoked(binding, token.TokenID()), f.sessionRevoked(binding))
+		}
+	})
+
 	t.Run("observable-concurrent-lock-order", func(t *testing.T) {
 		f := openFixture(t)
 		service := f.service(&captureObserver{}, nil, nil)
@@ -319,6 +382,29 @@ func lockSessionRow(t *testing.T, f *fixture, binding app.SessionBinding) (*pgx.
 		t.Fatal(err)
 	}
 	return conn, tx
+}
+
+func waitForAuthBackend(t *testing.T, f *fixture) int {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		var pid int
+		err := f.db.QueryRow(ctx, `SELECT pid FROM pg_stat_activity
+			WHERE datname=current_database() AND usename=current_user
+			AND pid<>pg_backend_pid() AND application_name='nim_auth_test'
+			AND wait_event_type IS NOT NULL AND query ILIKE '%im_sessions%'
+			ORDER BY query_start ASC LIMIT 1`).Scan(&pid)
+		if err == nil {
+			return pid
+		}
+		if !errors.Is(err, pgx.ErrNoRows) {
+			t.Fatalf("inspect blocked revoke backend: %v", err)
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("revoke backend did not block in PostgreSQL")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
 }
 
 func waitForAuthWaiters(t *testing.T, f *fixture, want int) {
