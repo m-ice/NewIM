@@ -64,48 +64,67 @@ func run(args []string, stdout, stderr io.Writer, read func() (buildinfo.Info, e
 	}
 	serverDone := make(chan error, 1)
 	go func() { serverDone <- server.Run(serverCtx) }()
-	var serverErr error
-	var workerErr error
-	serverFinished, workerFinished := false, runtimeDone == nil
-	var shutdownTimer *time.Timer
-	var shutdownDeadline <-chan time.Time
-	armShutdownDeadline := func() {
-		if shutdownTimer == nil {
-			shutdownTimer = time.NewTimer(10 * time.Second)
-			shutdownDeadline = shutdownTimer.C
-		}
-	}
-	defer func() {
-		if shutdownTimer != nil {
-			shutdownTimer.Stop()
-		}
-	}()
-	for !serverFinished || !workerFinished {
-		select {
-		case serverErr = <-serverDone:
-			serverFinished = true
-			cancelWorker()
-			armShutdownDeadline()
-		case workerErr = <-runtimeDone:
-			workerFinished = true
-			if serverErr == nil && workerErr != nil {
-				serverErr = workerErr
-			}
-			cancelServer()
-			armShutdownDeadline()
-		case <-shutdownDeadline:
-			cancelServer()
-			cancelWorker()
-			fmt.Fprintln(stderr, api.CodeShutdownFailed)
-			return 1
-		}
-	}
+	result := joinRuntimeAndServer(serverDone, runtimeDone, cancelServer, cancelWorker, 10*time.Second)
 	cancelWorker()
+	if result.timedOut {
+		fmt.Fprintln(stderr, api.CodeShutdownFailed)
+		return 1
+	}
+	serverErr := result.serverErr
+	if serverErr == nil && result.workerErr != nil {
+		serverErr = result.workerErr
+	}
 	if serverErr != nil {
 		fmt.Fprintln(stderr, errorCode(serverErr))
 		return 1
 	}
 	return 0
+}
+
+type shutdownResult struct {
+	serverErr error
+	workerErr error
+	timedOut  bool
+}
+
+// joinRuntimeAndServer waits for both components after either one exits.
+// joinRuntimeAndServer 在任一组件退出后等待其余组件，只有首次退出才启动有界 join 截止时间。
+func joinRuntimeAndServer(serverDone, workerDone <-chan error, cancelServer, cancelWorker func(), grace time.Duration) shutdownResult {
+	var result shutdownResult
+	var timer *time.Timer
+	var deadline <-chan time.Time
+	armDeadline := func() {
+		if timer == nil {
+			timer = time.NewTimer(grace)
+			deadline = timer.C
+		}
+	}
+	defer func() {
+		if timer != nil {
+			timer.Stop()
+		}
+	}()
+
+	for serverDone != nil || workerDone != nil {
+		select {
+		case err := <-serverDone:
+			serverDone = nil
+			result.serverErr = err
+			cancelWorker()
+			armDeadline()
+		case err := <-workerDone:
+			workerDone = nil
+			result.workerErr = err
+			cancelServer()
+			armDeadline()
+		case <-deadline:
+			cancelServer()
+			cancelWorker()
+			result.timedOut = true
+			return result
+		}
+	}
+	return result
 }
 
 func errorCode(err error) string {

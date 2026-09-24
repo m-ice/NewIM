@@ -12,6 +12,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -66,6 +67,99 @@ func TestBuildInfoFailureDoesNotStart(t *testing.T) {
 	if code != 2 || strings.Contains(stderr.String(), "private-build-error") || !strings.Contains(stderr.String(), string(api.CodeBuildInfoUnavailable)) {
 		t.Fatalf("build metadata failure contract changed: code=%d stderr=%q", code, stderr.String())
 	}
+}
+
+func TestJoinRuntimeAndServerShutdownOrder(t *testing.T) {
+	const grace = 100 * time.Millisecond
+
+	t.Run("server first", func(t *testing.T) {
+		serverDone := make(chan error, 1)
+		workerDone := make(chan error, 1)
+		workerCanceled := make(chan struct{})
+		var workerCancelOnce sync.Once
+		cancelServer := func() {}
+		cancelWorker := func() { workerCancelOnce.Do(func() { close(workerCanceled) }) }
+		resultDone := make(chan shutdownResult, 1)
+		go func() {
+			resultDone <- joinRuntimeAndServer(serverDone, workerDone, cancelServer, cancelWorker, grace)
+		}()
+
+		// A healthy pair must be allowed to run longer than the shutdown grace.
+		select {
+		case result := <-resultDone:
+			t.Fatalf("join ended before either component exited: %+v", result)
+		case <-time.After(20 * time.Millisecond):
+		}
+		serverDone <- nil
+		select {
+		case <-workerCanceled:
+		case <-time.After(time.Second):
+			t.Fatal("server exit did not cancel worker")
+		}
+		workerDone <- nil
+
+		select {
+		case result := <-resultDone:
+			if result.timedOut || result.serverErr != nil || result.workerErr != nil {
+				t.Fatalf("server-first join result = %+v", result)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("server-first join did not finish")
+		}
+	})
+
+	t.Run("worker first", func(t *testing.T) {
+		serverDone := make(chan error, 1)
+		workerDone := make(chan error, 1)
+		serverCanceled := make(chan struct{})
+		var serverCancelOnce sync.Once
+		cancelServer := func() { serverCancelOnce.Do(func() { close(serverCanceled) }) }
+		cancelWorker := func() {}
+		resultDone := make(chan shutdownResult, 1)
+		go func() {
+			resultDone <- joinRuntimeAndServer(serverDone, workerDone, cancelServer, cancelWorker, grace)
+		}()
+
+		workerDone <- errors.New("worker stopped")
+		select {
+		case <-serverCanceled:
+		case <-time.After(time.Second):
+			t.Fatal("worker exit did not cancel server")
+		}
+		serverDone <- nil
+
+		select {
+		case result := <-resultDone:
+			if result.timedOut || result.serverErr != nil || result.workerErr == nil {
+				t.Fatalf("worker-first join result = %+v", result)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("worker-first join did not finish")
+		}
+	})
+
+	t.Run("deadline cancels both", func(t *testing.T) {
+		serverDone := make(chan error, 1)
+		workerDone := make(chan error)
+		serverCanceled := make(chan struct{})
+		workerCanceled := make(chan struct{})
+		var serverCancelOnce, workerCancelOnce sync.Once
+		cancelServer := func() { serverCancelOnce.Do(func() { close(serverCanceled) }) }
+		cancelWorker := func() { workerCancelOnce.Do(func() { close(workerCanceled) }) }
+		serverDone <- nil
+
+		result := joinRuntimeAndServer(serverDone, workerDone, cancelServer, cancelWorker, 20*time.Millisecond)
+		if !result.timedOut {
+			t.Fatalf("join did not time out: %+v", result)
+		}
+		for name, canceled := range map[string]<-chan struct{}{"server": serverCanceled, "worker": workerCanceled} {
+			select {
+			case <-canceled:
+			default:
+				t.Fatalf("shutdown deadline did not cancel %s", name)
+			}
+		}
+	})
 }
 
 func TestNewIMServerProcess(t *testing.T) {
