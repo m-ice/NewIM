@@ -13,6 +13,7 @@ import (
 	"os"
 	"os/exec"
 	"strings"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -24,10 +25,27 @@ import (
 
 const localDSN = "host=/var/run/postgresql user=newim_test dbname=newim_test sslmode=disable"
 
+type synchronizedBuffer struct {
+	mu     sync.Mutex
+	buffer bytes.Buffer
+}
+
+func (b *synchronizedBuffer) Write(data []byte) (int, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.Write(data)
+}
+
+func (b *synchronizedBuffer) String() string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.buffer.String()
+}
+
 type runningServer struct {
 	cmd    *exec.Cmd
-	stdout bytes.Buffer
-	stderr bytes.Buffer
+	stdout synchronizedBuffer
+	stderr synchronizedBuffer
 	api    string
 	ops    string
 }
