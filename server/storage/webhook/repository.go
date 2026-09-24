@@ -467,6 +467,9 @@ func (r *Repository) Finish(ctx context.Context, deliveryID, leaseToken string, 
 	if outcome.CompletedAt.IsZero() {
 		outcome.CompletedAt = now
 	}
+	if outcome.HTTPStatus < 100 || outcome.HTTPStatus > 599 {
+		outcome.HTTPStatus = 0
+	}
 	tx, err := r.begin(ctx)
 	if err != nil {
 		return err

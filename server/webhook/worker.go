@@ -192,7 +192,7 @@ func (w *Worker) deliver(ctx context.Context, delivery Delivery) {
 		return
 	}
 	if response.StatusCode >= 200 && response.StatusCode < 300 {
-		w.finish(ctx, delivery, now, Outcome{Status: "delivered", HTTPStatus: response.StatusCode, ErrorCode: CodeDeliveryDelivered, CompletedAt: now})
+		w.finish(ctx, delivery, now, Outcome{Status: "delivered", HTTPStatus: persistedHTTPStatus(response.StatusCode), ErrorCode: CodeDeliveryDelivered, CompletedAt: now})
 		w.observe("delivery", CodeDeliveryDelivered, time.Since(started))
 		return
 	}
@@ -201,8 +201,15 @@ func (w *Worker) deliver(ctx context.Context, delivery Delivery) {
 		w.observe("delivery", CodeHTTPTemporary, time.Since(started))
 		return
 	}
-	w.finish(ctx, delivery, now, Outcome{Status: "dead_letter", HTTPStatus: response.StatusCode, ErrorCode: CodeHTTPPermanent, CompletedAt: now})
+	w.finish(ctx, delivery, now, Outcome{Status: "dead_letter", HTTPStatus: persistedHTTPStatus(response.StatusCode), ErrorCode: CodeHTTPPermanent, CompletedAt: now})
 	w.observe("delivery", CodeHTTPPermanent, time.Since(started))
+}
+
+func persistedHTTPStatus(status int) int {
+	if status < 100 || status > 599 {
+		return 0
+	}
+	return status
 }
 
 func (w *Worker) finish(ctx context.Context, delivery Delivery, now time.Time, outcome Outcome) {

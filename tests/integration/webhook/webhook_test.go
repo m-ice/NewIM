@@ -385,6 +385,25 @@ func TestWebhookRetryAndBacklog(t *testing.T) {
 		}
 		f.sql("UPDATE newim.im_outbox_events SET webhook_fanout_at=clock_timestamp() WHERE event_id=$1", unfanned)
 	})
+
+	t.Run("nonstandard status dead letters without invalid status write", func(t *testing.T) {
+		f := openFixture(t)
+		eventID := f.seedEvent(f.id("webhook_nonstandard_status_room"))
+		_, master := f.insertEndpoint(1, "https://example.invalid/nonstandard", []byte("0123456789abcdef0123456789abcdef"))
+		doer := doerFunc(func(context.Context, string, map[string]string, []byte) (app.Response, error) {
+			return app.Response{StatusCode: 700}, nil
+		})
+		worker := newFixtureWorker(t, f, f.repo, doer, master, 3, 1000, 100, 10*time.Millisecond)
+		runWorkerUntil(t, worker, 3*time.Second, func() bool {
+			return f.optionalString("SELECT status FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID) == "dead_letter"
+		})
+		if got := f.optionalString("SELECT COALESCE(last_http_status::text,'') FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID); got != "" {
+			t.Fatalf("nonstandard HTTP status persisted = %q", got)
+		}
+		if got := f.scalarString("SELECT last_error_code FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID); got != string(app.CodeHTTPPermanent) {
+			t.Fatalf("nonstandard HTTP status error = %s", got)
+		}
+	})
 }
 
 type lostResponseDoer struct {

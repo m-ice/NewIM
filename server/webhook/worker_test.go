@@ -267,6 +267,17 @@ func TestRetryOutcomeDeadLettersAtMax(t *testing.T) {
 	}
 }
 
+func TestPersistedHTTPStatusRejectsNonStandardCodes(t *testing.T) {
+	for _, test := range []struct {
+		status int
+		want   int
+	}{{99, 0}, {100, 100}, {599, 599}, {600, 0}, {700, 0}} {
+		if got := persistedHTTPStatus(test.status); got != test.want {
+			t.Fatalf("persistedHTTPStatus(%d) = %d want %d", test.status, got, test.want)
+		}
+	}
+}
+
 func TestWorkerStorageFailureIsReturned(t *testing.T) {
 	cfg := testConfig(time.UnixMilli(1790189001000))
 	if _, err := NewWorker(cfg, nil, testDoer{}, testResolver{}); ErrorCode(err) != CodeInvalidConfig {
