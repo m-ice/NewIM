@@ -7,11 +7,16 @@ import (
 
 // APIRoute is a bounded exact route supplied by a trusted process composer.
 // AllowedMethods is omitted or nil for the backward-compatible GET default.
-// APIRoute 是由受信进程装配的有界精确路由；AllowedMethods 省略或为 nil 时兼容为仅 GET。
+// MaxBodyBytes zero preserves bodyless routes; a positive limit is valid only
+// for a POST-only route. RejectQuery is valid only for a POST-only route.
+// APIRoute 是由受信进程装配的有界精确路由；AllowedMethods 省略或为 nil 时兼容为仅
+// GET，MaxBodyBytes 为零时保持禁止 body，正值和 RejectQuery 都只允许 POST-only 路由。
 type APIRoute struct {
 	Name           string
 	Path           string
 	AllowedMethods []string
+	MaxBodyBytes   int64
+	RejectQuery    bool
 	Handler        http.Handler
 }
 
@@ -26,6 +31,9 @@ func validateAPIRoutes(routes []APIRoute) (map[string]APIRoute, error) {
 		}
 		methods, ok := normalizeAllowedMethods(route.AllowedMethods)
 		if !ok {
+			return nil, fail(CodeInvalidConfig)
+		}
+		if route.MaxBodyBytes < 0 || (route.MaxBodyBytes > 0 && !isPostOnly(methods)) || (route.RejectQuery && !isPostOnly(methods)) {
 			return nil, fail(CodeInvalidConfig)
 		}
 		route.AllowedMethods = methods
@@ -44,8 +52,8 @@ func normalizeAllowedMethods(methods []string) ([]string, bool) {
 	if len(methods) == 0 {
 		return nil, false
 	}
-	order := []string{http.MethodGet, http.MethodDelete}
-	rank := map[string]int{http.MethodGet: 0, http.MethodDelete: 1}
+	order := []string{http.MethodGet, http.MethodPost, http.MethodDelete}
+	rank := map[string]int{http.MethodGet: 0, http.MethodPost: 1, http.MethodDelete: 2}
 	normalized := make([]string, 0, len(methods))
 	lastRank := -1
 	for _, method := range methods {
@@ -57,6 +65,10 @@ func normalizeAllowedMethods(methods []string) ([]string, bool) {
 		lastRank = current
 	}
 	return normalized, true
+}
+
+func isPostOnly(methods []string) bool {
+	return len(methods) == 1 && methods[0] == http.MethodPost
 }
 
 func allowsMethod(methods []string, method string) bool {

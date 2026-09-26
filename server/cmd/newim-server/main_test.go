@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log/slog"
 	"net"
 	"net/http"
@@ -176,6 +177,17 @@ func TestNewIMServerProcess(t *testing.T) {
 		_ = cmd.Process.Kill()
 		t.Fatalf("readiness did not become ready: %v; stdout=%q stderr=%q", err, stdout.String(), stderr.String())
 	}
+	response, err := http.Post("http://"+apiAddr+"/api/v1/messages", "application/json", nil)
+	if err != nil {
+		_ = cmd.Process.Kill()
+		t.Fatalf("message route probe failed: %v", err)
+	}
+	body, readErr := io.ReadAll(response.Body)
+	_ = response.Body.Close()
+	if readErr != nil || response.StatusCode != http.StatusNotFound || !bytes.Contains(body, []byte(api.HTTPRouteNotFound)) {
+		_ = cmd.Process.Kill()
+		t.Fatalf("disabled message route status=%d body=%q readErr=%v", response.StatusCode, body, readErr)
+	}
 	if err := cmd.Process.Signal(syscall.SIGTERM); err != nil {
 		t.Fatal(err)
 	}
@@ -184,6 +196,41 @@ func TestNewIMServerProcess(t *testing.T) {
 	}
 	if !strings.Contains(stderr.String(), "http_request") {
 		t.Fatalf("normalized request logging missing: %q", stderr.String())
+	}
+}
+
+func TestMessageRuntimeInvalidConfigFailsBeforeBind(t *testing.T) {
+	cases := []struct {
+		name string
+		env  []string
+	}{
+		{name: "missing dsn", env: []string{"NEWIM_MESSAGE_HTTP=1", "NEWIM_AUTH_DSN=", "NEWIM_AUTH_ALLOW_LOCAL_SOCKET=1"}},
+		{name: "tcp dsn", env: []string{"NEWIM_MESSAGE_HTTP=1", "NEWIM_AUTH_DSN=postgres://test@127.0.0.1/newim?sslmode=disable", "NEWIM_AUTH_ALLOW_LOCAL_SOCKET=1"}},
+		{name: "missing local opt in", env: []string{"NEWIM_MESSAGE_HTTP=1", "NEWIM_AUTH_DSN=host=/tmp user=test dbname=test sslmode=disable", "NEWIM_AUTH_ALLOW_LOCAL_SOCKET=0"}},
+	}
+	for _, test := range cases {
+		t.Run(test.name, func(t *testing.T) {
+			apiAddr, opsAddr := twoFreeAddrs(t)
+			cmd, stdout, stderr := helperCommandEnv(t, test.env, "--api-addr", apiAddr, "--ops-addr", opsAddr)
+			err := cmd.Run()
+			if err == nil {
+				t.Fatalf("invalid message runtime unexpectedly started: stdout=%q stderr=%q", stdout.String(), stderr.String())
+			}
+			var exitErr *exec.ExitError
+			if !errors.As(err, &exitErr) || exitErr.ExitCode() != 2 {
+				t.Fatalf("exit=%v stdout=%q stderr=%q", err, stdout.String(), stderr.String())
+			}
+			if !strings.Contains(stderr.String(), string(api.CodeInvalidMessageConfig)) {
+				t.Fatalf("invalid message config code missing: stdout=%q stderr=%q", stdout.String(), stderr.String())
+			}
+			for name, address := range map[string]string{"api": apiAddr, "ops": opsAddr} {
+				listener, listenErr := net.Listen("tcp", address)
+				if listenErr != nil {
+					t.Fatalf("failed startup retained %s listener %q: %v", name, address, listenErr)
+				}
+				_ = listener.Close()
+			}
+		})
 	}
 }
 
@@ -202,21 +249,55 @@ func TestNewIMServerSecondBindFailure(t *testing.T) {
 	if !strings.Contains(stderr.String(), string(api.CodeBindFailed)) {
 		t.Fatalf("bind failure code missing: stdout=%q stderr=%q", stdout.String(), stderr.String())
 	}
+	rebound, err := net.Listen("tcp", apiAddr)
+	if err != nil {
+		t.Fatalf("first listener remained open after second-bind failure: %v", err)
+	}
+	_ = rebound.Close()
 }
 
 func helperCommand(t *testing.T, args ...string) (*exec.Cmd, *bytes.Buffer, *bytes.Buffer) {
+	t.Helper()
+	return helperCommandEnv(t, nil, args...)
+}
+
+func helperCommandEnv(t *testing.T, env []string, args ...string) (*exec.Cmd, *bytes.Buffer, *bytes.Buffer) {
 	t.Helper()
 	cmd := exec.Command(os.Args[0], "-test.run=^TestHelperProcess$")
 	encoded, err := json.Marshal(args)
 	if err != nil {
 		t.Fatal(err)
 	}
-	cmd.Env = append(os.Environ(), "NIM_SERVER_HELPER=1", "NIM_SERVER_ARGS="+string(encoded))
+	cmd.Env = filteredEnv(os.Environ(),
+		"NIM_SERVER_HELPER", "NIM_SERVER_ARGS",
+		"NEWIM_MESSAGE_HTTP", "NEWIM_AUTH_DSN", "NEWIM_AUTH_ALLOW_LOCAL_SOCKET",
+	)
+	cmd.Env = append(cmd.Env, "NIM_SERVER_HELPER=1", "NIM_SERVER_ARGS="+string(encoded))
+	cmd.Env = append(cmd.Env, env...)
 	cmd.Stdout = &bytes.Buffer{}
 	cmd.Stderr = &bytes.Buffer{}
 	stdout := cmd.Stdout.(*bytes.Buffer)
 	stderr := cmd.Stderr.(*bytes.Buffer)
 	return cmd, stdout, stderr
+}
+
+func filteredEnv(env []string, keys ...string) []string {
+	blocked := make(map[string]struct{}, len(keys))
+	for _, key := range keys {
+		blocked[key] = struct{}{}
+	}
+	filtered := make([]string, 0, len(env)+len(keys))
+	for _, entry := range env {
+		key, _, ok := strings.Cut(entry, "=")
+		if !ok {
+			continue
+		}
+		if _, skip := blocked[key]; skip {
+			continue
+		}
+		filtered = append(filtered, entry)
+	}
+	return filtered
 }
 
 // TestHelperProcess runs only in the subprocess started by helperCommand.

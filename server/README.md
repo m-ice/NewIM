@@ -33,6 +33,19 @@ token revocation: it revokes only the presented token idempotently and never
 performs session-wide logout. See [ADR 0019](../docs/adr/0019-bearer-token-revocation.md) and the
 [token revocation specification](../specs/http/session-logout.md).
 
+The NIM-SRV-008 slice defines `server/messagehttp` as the exact loopback
+`POST /api/v1/messages` adapter for already-issued bearer tokens and protocol
+text v1 requests. It is enabled only by `NEWIM_MESSAGE_HTTP=1` with the same
+single local-socket `NEWIM_AUTH_DSN`, explicit local-socket opt-in, and a
+loopback API listener. It derives the token-scoped logical
+`session.ConnectionIdentity`, delegates current membership authorization and
+persistence to `server/message`/`server/storage/message`, and returns the framed
+`SERVER_PERSISTED` ACK only after commit. Invalid message configuration fails
+before bind with `SERVER_INVALID_MESSAGE_CONFIG`; no message pool is opened when
+the gate is disabled. See [ADR 0020](../docs/adr/0020-message-send-http.md) and
+the [message-send specification](../specs/http/message-send.md). Independent
+NIM-SRV-008 product acceptance remains separate.
+
 `server/webhook` and `server/storage/webhook` add an internal at-least-once
 webhook delivery core over the existing message outbox. The worker is optional
 inside `cmd/newim-server`, is enabled only by explicit DSN/master-key
@@ -43,7 +56,9 @@ delivery state. See [ADR 0015](../docs/adr/0015-webhook-delivery.md) and the
 
 There is no public network server or UI, WebSocket gateway, push delivery, or
 complete multi-device login/reconnect policy. The API/Ops foundation defaults
-to loopback and does not expose message persistence through a public route. Run
+to loopback and does not expose message persistence through a public route. The
+NIM-SRV-008 send route does not implement login, device/kick, rate limiting,
+media HTTP, Push, sync/read, Webhook management or delivery. Run
 the root `make build`, `make check`, `make docs-check`, `make api-check`,
 `make api-recovery`, `make api-security`, `make auth-http-check`,
 `make auth-http-security`, `make auth-route-check`, `make auth-logout-check`,

@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 	app "github.com/m-ice/NewIM/server/auth/session"
+	"github.com/m-ice/NewIM/server/storage/postgresidentity"
 )
 
 const requestTimeout = 5 * time.Second
@@ -23,6 +24,9 @@ type Config struct {
 	AllowLocalSocket bool
 	MaxConnections   int
 	ApplicationName  string
+	// Guard enables shared backend identity validation when non-nil.
+	// Guard 非 nil 时启用共享后端身份校验。
+	Guard *postgresidentity.Guard
 }
 
 // Repository owns a bounded pgx pool; DSNs and driver errors stay private.
@@ -76,6 +80,7 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 	} else {
 		poolConfig.ConnConfig.RuntimeParams["application_name"] = "newim-authsession"
 	}
+	installGuard(poolConfig, config.Guard)
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
@@ -87,6 +92,24 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 		return nil, app.Fail(app.AuthStorageUnavailable)
 	}
 	return &Repository{pool: pool}, nil
+}
+
+func installGuard(poolConfig *pgxpool.Config, guard *postgresidentity.Guard) {
+	if guard == nil {
+		return
+	}
+	poolConfig.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		if err := guard.AfterConnect(ctx, conn); err != nil {
+			return app.Fail(app.AuthStorageUnavailable)
+		}
+		return nil
+	}
+	poolConfig.PrepareConn = func(ctx context.Context, conn *pgx.Conn) (bool, error) {
+		if err := guard.Verify(ctx, conn); err != nil {
+			return false, app.Fail(app.AuthStorageUnavailable)
+		}
+		return true, nil
+	}
 }
 
 // Close releases all pool resources after callers finish their transactions.

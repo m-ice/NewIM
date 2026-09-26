@@ -1,4 +1,4 @@
-.PHONY: build check docs-check api-check api-recovery api-security toolchain protocol-golden protocol-unknown-fields protocol-unknown-type protocol-limits webhook-envelope webhook-envelope-security webhook-protocol webhook-recovery webhook-security webhook-redaction media-protocol media-db media-security media-authz media-check
+.PHONY: build check docs-check api-check api-recovery api-security toolchain protocol-golden protocol-unknown-fields protocol-unknown-type protocol-limits webhook-envelope webhook-envelope-security webhook-protocol webhook-recovery webhook-security webhook-redaction media-protocol media-db media-security media-authz media-check message-http-check message-http-security message-http-gate-self-test
 
 export GOTOOLCHAIN := local
 
@@ -245,6 +245,17 @@ message-recovery: toolchain
 
 message-errors: toolchain
 	python3 -B infra/db/message_suite.py errors
+
+message-http-check: toolchain
+	python3 -B infra/db/message_http_suite.py check
+
+message-http-security: toolchain
+	python3 -B server/messagehttp/security_gate.py --self-test
+	python3 -B server/messagehttp/security_gate.py
+
+message-http-gate-self-test: toolchain
+	python3 -B infra/db/message_http_suite.py --self-test
+	python3 -B server/messagehttp/security_gate.py --self-test
 
 .PHONY: message-delta-authz message-delta message-delta-query-plan message-delta-recovery message-delta-redaction message-delta-check
 message-delta-authz:

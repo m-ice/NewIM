@@ -17,7 +17,10 @@ bearer-session HTTP handler validates already-issued tokens when an explicit
 loopback auth DSN is configured; a separate exact DELETE route idempotently
 revokes only the presented token and does not perform session-wide logout. They
 are absent without that setting and do not provide login, refresh or complete
-authentication.
+authentication. NIM-SRV-008 defines an opt-in exact `POST /api/v1/messages`
+adapter for pre-issued bearer tokens and text v1 sends; it returns a
+`SERVER_PERSISTED` ACK only after the existing send transaction commits. Its
+implementation and independent product acceptance remain separate.
 
 ## Module boundaries
 
@@ -25,15 +28,16 @@ authentication.
 |---|---|
 | `core/domain` (planned) | Go server domain rules, independent of HTTP, wire DTOs and SQL. |
 | `core/protocol` | Versioned language-neutral wire schemas/fixtures and separate Go/Rust codecs; no UI or database authority. Media v1 is closed metadata-only. |
-| `server/api` | Policy-neutral API/Ops HTTP listeners, exact health/readiness/metrics contracts, bounded lifecycle and redaction-only request logging; no identity or message semantics. |
+| `server/api` | Policy-neutral API/Ops HTTP listeners, exact health/readiness/metrics contracts, bounded GET/POST/DELETE route composition, body/query limits, lifecycle and redaction-only request logging; no identity, auth or message semantics. |
 | `server/auth/session` | Policy-neutral token issuance, authentication, bearer resolution and token/session revocation over a store port, including atomic token-only `RevokeBearer`. |
 | `server/auth/bearerhttp` | Policy-neutral `GET /api/v1/session` and exact `DELETE /api/v1/session/tokens/current` handlers with strict Authorization/body/route/method rules and stable HTTP errors; mounted only by explicit loopback auth composition. |
+| `server/messagehttp` | Exact loopback `POST /api/v1/messages` adapter: strict bearer/body/type checks, token-scoped logical identity, stable HTTP error mapping and ACK-after-commit; it owns no transaction or delivery semantics. |
 | `server/message` | Send validation, media preconditions, idempotent persistence orchestration, and persisted ACK construction. |
 | `server/sync/*` | Internal bounded conversation bootstrap/delta and message delta read services; trusted principals are supplied by their callers. |
 | `server/media` | Protocol-neutral media application rules and ports for grants, metadata, validation, and private download authorization. |
 | `server/webhook` | Policy-neutral outbox fan-out, at-least-once delivery, HMAC-v1 signing, fenced retry/dead-letter state and secure outbound HTTP; no message transaction, endpoint management or Push authority. |
-| `server/storage/*` | PostgreSQL adapters for message, auth/session, sync, media metadata and Webhook endpoint/delivery state; no wire or UI authority. |
-| `server` | Application services depend on domain rules and ports; transport/storage adapters implement those ports. `cmd/newim-server` runs the loopback API/Ops foundation and optional in-process Webhook worker; `cmd/newim-buildinfo` remains the local artifact diagnostic. |
+| `server/storage/*` | PostgreSQL adapters for message, auth/session, sync, media metadata and Webhook endpoint/delivery state; the NIM-SRV-008 auth/message pools share a `postgresidentity.Guard`; no wire or UI authority. |
+| `server` | Application services depend on domain rules and ports; transport/storage adapters implement those ports. `cmd/newim-server` runs the loopback API/Ops foundation, optional bearer/message composition and optional in-process Webhook worker; `cmd/newim-buildinfo` remains the local artifact diagnostic. |
 | `sdk/core` | Rust platform-neutral contracts and the host-driven outbox state machine; no Go runtime, SQLite, browser API, or UI dependency. |
 | `sdk/storage/sqlite` | Native SQLite LocalStore adapter with migrations, recovery, pending-outbox CAS, and bounded receipts. |
 | Platform wrappers (planned) | Translate host networking, lifecycle, storage and FFI concerns into SDK contracts; message semantics stay in core. |
@@ -92,6 +96,24 @@ infrastructure, not the message truth source. See
 [ADR 0011](adr/0011-media-credential-metadata.md),
 [ADR 0005](adr/0005-local-store.md), and
 [ADR 0010](adr/0010-sdk-outbox-send-state.md).
+
+NIM-SRV-008 exposes the durable send transaction through the exact loopback
+`POST /api/v1/messages` adapter only when `NEWIM_MESSAGE_HTTP=1` selects a
+single local-socket `NEWIM_AUTH_DSN` with explicit local-socket opt-in and a
+loopback API listener. It derives user/device/session/token identity from the
+persisted bearer session, uses the token ID as a logical connection identity,
+and reuses current membership authorization plus the existing
+`(senderId, clientMsgId)` transaction. The ACK is returned only after commit and
+never claims delivery or read state. The auth and message repositories use
+independent pools but one shared identity guard that validates canonical
+database/cluster/postmaster/current-WAL-timeline identity; standby/recovery or
+identity mismatch is terminal until an explicit process restart. Invalid
+configuration fails before bind, and SIGTERM/SIGINT closes both pools within the
+10-second bound. See [ADR 0020](adr/0020-message-send-http.md) and the
+[message-send specification](../specs/http/message-send.md). This is a
+loopback-only persistence boundary, not login, gateway, media, Push, sync,
+rate-limit or Webhook management; independent NIM-SRV-008 acceptance remains
+separate.
 
 ## Build and CI
 

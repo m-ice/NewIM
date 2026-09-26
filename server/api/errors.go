@@ -13,14 +13,18 @@ const (
 	CodeShutdownFailed       ErrorCode = "SERVER_SHUTDOWN_FAILED"
 	CodeBuildInfoUnavailable ErrorCode = "SERVER_BUILD_METADATA_UNAVAILABLE"
 	CodeInvalidAuthConfig    ErrorCode = "SERVER_INVALID_AUTH_CONFIG"
+	CodeInvalidMessageConfig ErrorCode = "SERVER_INVALID_MESSAGE_CONFIG"
 )
 
 const (
-	HTTPBodyNotAllowed   = "HTTP_BODY_NOT_ALLOWED"
-	HTTPRouteNotFound    = "HTTP_ROUTE_NOT_FOUND"
-	HTTPMethodNotAllowed = "HTTP_METHOD_NOT_ALLOWED"
-	HTTPInternalError    = "HTTP_INTERNAL_ERROR"
-	ServerNotReady       = "SERVER_NOT_READY"
+	HTTPBodyNotAllowed       = "HTTP_BODY_NOT_ALLOWED"
+	HTTPBodyTooLarge         = "HTTP_BODY_TOO_LARGE"
+	HTTPInvalidQuery         = "HTTP_INVALID_QUERY"
+	HTTPRouteNotFound        = "HTTP_ROUTE_NOT_FOUND"
+	HTTPMethodNotAllowed     = "HTTP_METHOD_NOT_ALLOWED"
+	HTTPUnsupportedMediaType = "HTTP_UNSUPPORTED_MEDIA_TYPE"
+	HTTPInternalError        = "HTTP_INTERNAL_ERROR"
+	ServerNotReady           = "SERVER_NOT_READY"
 )
 
 // Error exposes only a stable code, never a wrapped transport or storage error.

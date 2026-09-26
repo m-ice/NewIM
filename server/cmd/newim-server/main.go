@@ -16,6 +16,7 @@ import (
 	"github.com/m-ice/NewIM/server/api"
 	session "github.com/m-ice/NewIM/server/auth/session"
 	"github.com/m-ice/NewIM/server/buildinfo"
+	messageservice "github.com/m-ice/NewIM/server/message"
 	app "github.com/m-ice/NewIM/server/webhook"
 )
 
@@ -49,31 +50,21 @@ func run(args []string, stdout, stderr io.Writer, read func() (buildinfo.Info, e
 		fmt.Fprintln(stderr, errorCode(authErr))
 		return 2
 	}
-	var authDone chan error
-	var closeAuthOnce sync.Once
-	closeAuth := func() {}
+	closeRuntime := func() {}
 	if authRuntime != nil {
-		authDone = make(chan error, 1)
-		closeAuth = func() {
-			closeAuthOnce.Do(func() {
-				go func() {
-					authRuntime.Close()
-					authDone <- nil
-				}()
-			})
-		}
+		closeRuntime = authRuntime.Close
 	}
 
 	server, err := api.NewWithRoutes(cfg, logger, routes)
 	if err != nil {
-		closeAuth()
+		closeRuntime()
 		fmt.Fprintln(stderr, errorCode(err))
 		return 2
 	}
 
 	runtime, runtimeErr := newWebhookRuntimeFromEnv(ctx, logger)
 	if runtimeErr != nil {
-		closeAuth()
+		closeRuntime()
 		fmt.Fprintln(stderr, errorCode(runtimeErr))
 		return 2
 	}
@@ -89,26 +80,24 @@ func run(args []string, stdout, stderr io.Writer, read func() (buildinfo.Info, e
 	}
 	serverDone := make(chan error, 1)
 	go func() { serverDone <- server.Run(serverCtx) }()
-	var shutdown chan struct{}
-	if authRuntime != nil {
-		shutdown = make(chan struct{})
-		go func() {
-			<-ctx.Done()
-			close(shutdown)
-		}()
-	}
-	result := joinRuntimeServerAndAuth(serverDone, runtimeDone, authDone, shutdown, cancelServer, cancelWorker, closeAuth, 10*time.Second)
+	shutdown := make(chan struct{})
+	go func() {
+		<-ctx.Done()
+		close(shutdown)
+	}()
+	result := joinRuntimeServerAndFatal(serverDone, runtimeDone, shutdown, authRuntime.Fatal(), cancelServer, cancelWorker, closeRuntime, 10*time.Second)
 	cancelWorker()
 	if result.timedOut {
 		fmt.Fprintln(stderr, api.CodeShutdownFailed)
 		return 1
 	}
+	if result.terminalErr != nil {
+		fmt.Fprintln(stderr, errorCode(result.terminalErr))
+		return 1
+	}
 	serverErr := result.serverErr
 	if serverErr == nil && result.workerErr != nil {
 		serverErr = result.workerErr
-	}
-	if serverErr == nil && result.authErr != nil {
-		serverErr = result.authErr
 	}
 	if serverErr != nil {
 		fmt.Fprintln(stderr, errorCode(serverErr))
@@ -118,10 +107,11 @@ func run(args []string, stdout, stderr io.Writer, read func() (buildinfo.Info, e
 }
 
 type shutdownResult struct {
-	serverErr error
-	workerErr error
-	authErr   error
-	timedOut  bool
+	serverErr   error
+	workerErr   error
+	authErr     error
+	terminalErr error
+	timedOut    bool
 }
 
 // joinRuntimeAndServer waits for server and optional webhook worker components.
@@ -188,6 +178,10 @@ func joinRuntimeServerAndAuth(serverDone, workerDone, authDone <-chan error, shu
 }
 
 func errorCode(err error) string {
+	var messageConfigErr *messageConfigError
+	if errors.As(err, &messageConfigErr) && messageConfigErr != nil {
+		return string(api.CodeInvalidMessageConfig)
+	}
 	var known *api.Error
 	if errors.As(err, &known) && known != nil {
 		return string(known.Code)
@@ -195,6 +189,10 @@ func errorCode(err error) string {
 	var sessionErr *session.Error
 	if errors.As(err, &sessionErr) && sessionErr != nil {
 		return string(sessionErr.Code)
+	}
+	var messageErr *messageservice.Error
+	if errors.As(err, &messageErr) && messageErr != nil {
+		return string(messageErr.Code)
 	}
 	var webhookErr *app.Error
 	if errors.As(err, &webhookErr) && webhookErr != nil {

@@ -8,8 +8,10 @@ conversation-sync projection, policy-neutral opaque auth-session/token
 primitives, an internal provider-neutral media credential/metadata flow, plus a
 portable SDK local-store contract with a native SQLite adapter and a wire-neutral
 SDK Core outbox/send state machine, an internal durable Webhook delivery core, and
-a loopback-only HTTP API/Ops service
-foundation. Storage has real migration, idempotency, pagination, query-plan, concurrency, rollback and recovery tests. User credential
+a loopback-only HTTP API/Ops service foundation. The NIM-SRV-008 slice defines
+an opt-in loopback text-send boundary over the existing durable send transaction;
+its implementation and independent product acceptance remain separate. Storage
+has real migration, idempotency, pagination, query-plan, concurrency, rollback and recovery tests. User credential
 verification, HTTP/WS/gateway login, refresh tokens, multi-device login/kick policy,
 public media endpoints, rate limiting/moderation/retention/account erasure, network
 delivery, transport/reconnect integration, a complete multi-device sync service,
@@ -114,6 +116,19 @@ at-least-once delivery and the PRT-003 signed envelope, but exposes no public
 endpoint-management API or Push/login semantics. See
 [ADR 0015](docs/adr/0015-webhook-delivery.md) and the
 [delivery specification](specs/webhook/delivery.md).
+
+The NIM-SRV-008 contract adds the exact loopback route
+`POST /api/v1/messages` for already-issued bearer tokens and protocol text v1
+sends. It is available only with `NEWIM_MESSAGE_HTTP=1`, a single local-socket
+`NEWIM_AUTH_DSN`, explicit local-socket opt-in, and a loopback API listener. It
+uses a token-scoped logical connection identity, current membership
+authorization and the existing durable send transaction; it returns the framed
+`send_ack` with status `SERVER_PERSISTED` only after commit. It does not provide
+login, refresh, device/kick policy, gateway, rate limiting, media HTTP, Push,
+sync/read, Webhook management, public ingress or delivery. See
+[ADR 0020](docs/adr/0020-message-send-http.md) and the
+[message-send specification](specs/http/message-send.md). Independent NIM-SRV-008
+acceptance is not claimed here.
 
 ```sh
 make api-check api-recovery api-security

@@ -12,16 +12,104 @@ import (
 )
 
 func TestAuthRuntimeDisabledWithoutDSN(t *testing.T) {
-	t.Setenv("NEWIM_AUTH_DSN", "")
+	t.Setenv(messageHTTPEnv, "0")
+	t.Setenv(authDSNEnv, "")
 	runtime, routes, err := newAuthRuntimeFromEnv(context.Background(), api.Config{APIAddr: "127.0.0.1:0"}, slog.Default())
 	if err != nil || runtime != nil || len(routes) != 0 {
 		t.Fatalf("disabled runtime=%v routes=%v err=%v", runtime, routes, err)
 	}
 }
 
+func TestMessageRuntimeMissingDSNFailsClosed(t *testing.T) {
+	t.Setenv(messageHTTPEnv, "1")
+	t.Setenv(authDSNEnv, "")
+	t.Setenv(authAllowLocalSocketEnv, "1")
+	runtime, routes, err := newAuthRuntimeFromEnv(context.Background(), api.Config{APIAddr: "127.0.0.1:0"}, slog.Default())
+	if err == nil || runtime != nil || len(routes) != 0 || errorCode(err) != string(api.CodeInvalidMessageConfig) {
+		t.Fatalf("runtime=%v routes=%v err=%v code=%q", runtime, routes, err, errorCode(err))
+	}
+}
+
+func TestMessageRuntimeConfigValidation(t *testing.T) {
+	for name, test := range map[string]struct {
+		cfg        api.Config
+		dsn        string
+		allowLocal bool
+		wantOK     bool
+	}{
+		"local socket loopback": {
+			cfg:        api.Config{APIAddr: "127.0.0.1:8080"},
+			dsn:        "host=/tmp user=test dbname=test sslmode=disable",
+			allowLocal: true,
+			wantOK:     true,
+		},
+		"ipv6 loopback": {
+			cfg:        api.Config{APIAddr: "[::1]:8080"},
+			dsn:        "postgres:///test?host=/tmp&sslmode=disable",
+			allowLocal: true,
+			wantOK:     true,
+		},
+		"missing dsn": {
+			cfg:        api.Config{APIAddr: "127.0.0.1:8080"},
+			allowLocal: true,
+		},
+		"tcp": {
+			cfg:        api.Config{APIAddr: "127.0.0.1:8080"},
+			dsn:        "postgres://test@127.0.0.1/test?sslmode=disable",
+			allowLocal: true,
+		},
+		"dns": {
+			cfg:        api.Config{APIAddr: "127.0.0.1:8080"},
+			dsn:        "postgres://test@db.example.invalid/test",
+			allowLocal: true,
+		},
+		"multi host": {
+			cfg:        api.Config{APIAddr: "127.0.0.1:8080"},
+			dsn:        "postgres://test@/test?host=/tmp,/var/run/postgresql&sslmode=disable",
+			allowLocal: true,
+		},
+		"missing opt in": {
+			cfg:        api.Config{APIAddr: "127.0.0.1:8080"},
+			dsn:        "host=/tmp user=test dbname=test sslmode=disable",
+			allowLocal: false,
+		},
+		"non loopback": {
+			cfg:        api.Config{APIAddr: "0.0.0.0:8080"},
+			dsn:        "host=/tmp user=test dbname=test sslmode=disable",
+			allowLocal: true,
+		},
+		"dns listener": {
+			cfg:        api.Config{APIAddr: "localhost:8080"},
+			dsn:        "host=/tmp user=test dbname=test sslmode=disable",
+			allowLocal: true,
+		},
+		"malformed dsn": {
+			cfg:        api.Config{APIAddr: "127.0.0.1:8080"},
+			dsn:        "postgres://user:%zz@127.0.0.1/newim",
+			allowLocal: true,
+		},
+		"unix sql dsn with tcp fallback": {
+			cfg:        api.Config{APIAddr: "127.0.0.1:8080"},
+			dsn:        "host=/tmp,localhost user=test dbname=test sslmode=disable",
+			allowLocal: true,
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			err := validateMessageRuntimeConfig(test.cfg, test.dsn, test.allowLocal)
+			if test.wantOK && err != nil {
+				t.Fatalf("valid config rejected: %v", err)
+			}
+			if !test.wantOK && (err == nil || errorCode(err) != string(api.CodeInvalidMessageConfig)) {
+				t.Fatalf("invalid config error=%v code=%q", err, errorCode(err))
+			}
+		})
+	}
+}
+
 func TestAuthRuntimeRejectsUnsafeStartupBeforeOpen(t *testing.T) {
-	t.Setenv("NEWIM_AUTH_DSN", "postgres://example.invalid/newim")
-	t.Setenv("NEWIM_AUTH_ALLOW_LOCAL_SOCKET", "0")
+	t.Setenv(messageHTTPEnv, "0")
+	t.Setenv(authDSNEnv, "postgres://example.invalid/newim")
+	t.Setenv(authAllowLocalSocketEnv, "0")
 	for _, address := range []string{"0.0.0.0:8080", "localhost:8080", "[::]:8080"} {
 		runtime, routes, err := newAuthRuntimeFromEnv(context.Background(), api.Config{APIAddr: address}, slog.Default())
 		if err == nil || runtime != nil || len(routes) != 0 || errorCode(err) != string(api.CodeInvalidAuthConfig) {
@@ -46,13 +134,14 @@ func TestLoopbackAPIAddress(t *testing.T) {
 }
 
 func TestAuthRuntimeRejectsMalformedAndLocalSocketDSN(t *testing.T) {
-	t.Setenv("NEWIM_AUTH_ALLOW_LOCAL_SOCKET", "0")
-	t.Setenv("NEWIM_AUTH_DSN", "postgres://user:%zz@127.0.0.1/newim")
+	t.Setenv(messageHTTPEnv, "0")
+	t.Setenv(authAllowLocalSocketEnv, "0")
+	t.Setenv(authDSNEnv, "postgres://user:%zz@127.0.0.1/newim")
 	runtime, routes, err := newAuthRuntimeFromEnv(context.Background(), api.Config{APIAddr: "127.0.0.1:8080"}, slog.Default())
 	if err == nil || runtime != nil || len(routes) != 0 {
 		t.Fatalf("malformed DSN runtime=%v routes=%v err=%v", runtime, routes, err)
 	}
-	t.Setenv("NEWIM_AUTH_DSN", "host=/definitely/missing user=test dbname=test sslmode=disable")
+	t.Setenv(authDSNEnv, "host=/definitely/missing user=test dbname=test sslmode=disable")
 	runtime, routes, err = newAuthRuntimeFromEnv(context.Background(), api.Config{APIAddr: "127.0.0.1:8080"}, slog.Default())
 	if err == nil || runtime != nil || len(routes) != 0 || strings.Contains(err.Error(), "definitely") {
 		t.Fatalf("local-socket DSN runtime=%v routes=%v err=%v", runtime, routes, err)

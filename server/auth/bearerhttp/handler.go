@@ -141,6 +141,18 @@ func mapAuthenticationError(err error) (int, Code) {
 	}
 }
 
+// ParseBearerHeader applies the frozen single-value Authorization grammar.
+// ParseBearerHeader 应用冻结的单值 Authorization 语法，供其他 HTTP 边界复用。
+func ParseBearerHeader(values []string) (string, bool) {
+	return parseBearerHeader(values)
+}
+
+// MapAuthenticationError maps session errors to the frozen bearer HTTP boundary.
+// MapAuthenticationError 将会话错误映射为冻结的 Bearer HTTP 边界。
+func MapAuthenticationError(err error) (int, Code) {
+	return mapAuthenticationError(err)
+}
+
 func parseBearerHeader(values []string) (string, bool) {
 	if len(values) != 1 {
 		return "", false

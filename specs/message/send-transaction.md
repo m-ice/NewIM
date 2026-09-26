@@ -1,6 +1,6 @@
 # Internal durable send transaction
 
-Status: implementation contract for NIM-SRV-002.
+Status: implementation contract for NIM-SRV-002; NIM-SRV-008 does not amend the transaction.
 Protocol impact: none beyond the existing `core/protocol/go` send/ACK types.
 
 ## Application API
@@ -62,6 +62,21 @@ adapter errors without wrapping driver diagnostics. Unknown errors map to
 the protocol temporary code only when a `send_error` frame is needed. No error
 string contains message payloads, SQL parameters, tokens, DSNs or database
 credentials.
+
+## Loopback HTTP adapter boundary
+
+NIM-SRV-008 adds an exact loopback `POST /api/v1/messages` adapter. It derives a
+trusted token-scoped `session.ConnectionIdentity` from the persisted bearer
+session and calls this same `Service.Send`; it does not introduce a second send
+transaction or trust request identity/server metadata.
+
+The adapter validates the protocol text v1 request and maps the resulting
+internal stable error to the HTTP contract in
+`specs/http/message-send.md`. Current membership authorization still runs before
+the existing `(senderId, clientMsgId)` lookup on every request, including
+retries. The HTTP handler writes a `SERVER_PERSISTED` ACK only after this
+transaction commits. Equal/unequal retry, commit ambiguity, sequence exhaustion
+and outbox atomicity are unchanged.
 
 ## Testing boundary
 

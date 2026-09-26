@@ -274,3 +274,41 @@ func TestNewHandlerRequiresAuthenticator(t *testing.T) {
 		t.Fatalf("missing authenticator got %v", err)
 	}
 }
+
+func TestExportedBearerBoundaryContract(t *testing.T) {
+	rawToken := app.TokenPrefix + strings.Repeat("a", app.TokenIDHexLen) + "_" + strings.Repeat("A", app.TokenSecretLen)
+	for _, value := range []string{"Bearer " + rawToken, "bearer " + rawToken} {
+		got, ok := ParseBearerHeader([]string{value})
+		if !ok || got != rawToken {
+			t.Fatalf("ParseBearerHeader(%q) = %q, %v", value, got, ok)
+		}
+	}
+	for name, values := range map[string][]string{
+		"missing":      nil,
+		"duplicate":    {"Bearer " + rawToken, "Bearer " + rawToken},
+		"wrong-scheme": {"Token " + rawToken},
+		"whitespace":   {"Bearer  " + rawToken},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, ok := ParseBearerHeader(values); ok {
+				t.Fatalf("accepted invalid values %q", values)
+			}
+		})
+	}
+
+	for name, test := range map[string]struct {
+		err    error
+		status int
+		code   Code
+	}{
+		"invalid-token": {app.Fail(app.AuthTokenExpired), http.StatusUnauthorized, CodeInvalidToken},
+		"unavailable":   {app.Fail(app.AuthStorageUnavailable), http.StatusServiceUnavailable, CodeUnavailable},
+	} {
+		t.Run(name, func(t *testing.T) {
+			status, code := MapAuthenticationError(test.err)
+			if status != test.status || code != test.code {
+				t.Fatalf("got status=%d code=%s", status, code)
+			}
+		})
+	}
+}

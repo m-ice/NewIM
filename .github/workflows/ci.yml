@@ -80,6 +80,15 @@ jobs:
       - name: Exercise message permanent and retryable errors
         timeout-minutes: 10
         run: make message-errors
+      - name: Exercise loopback bearer text message send
+        timeout-minutes: 20
+        run: make message-http-check
+      - name: Exercise message HTTP security gates
+        timeout-minutes: 20
+        run: make message-http-security
+      - name: Verify message HTTP negative gate self-tests
+        timeout-minutes: 5
+        run: make message-http-gate-self-test
       - name: Exercise durable webhook fan-out, signing, security and redaction
         timeout-minutes: 20
         run: make webhook-protocol webhook-recovery webhook-security webhook-redaction

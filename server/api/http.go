@@ -331,16 +331,37 @@ func (s *Server) makeHandler(listener string) http.Handler {
 			writeError(recorder, http.StatusMethodNotAllowed, HTTPMethodNotAllowed)
 			return
 		}
-		if requestHasBody(r) {
+		if route.RejectQuery && (r.URL.RawQuery != "" || r.URL.ForceQuery) {
 			s.metrics.begin(listener, route.Name, method)
 			defer func() { s.finish(recorder, listener, route.Name, method, started) }()
-			writeError(recorder, http.StatusBadRequest, HTTPBodyNotAllowed)
+			writeError(recorder, http.StatusBadRequest, HTTPInvalidQuery)
+			return
+		}
+		if route.MaxBodyBytes == 0 {
+			if requestHasBody(r) {
+				s.metrics.begin(listener, route.Name, method)
+				defer func() { s.finish(recorder, listener, route.Name, method, started) }()
+				writeError(recorder, http.StatusBadRequest, HTTPBodyNotAllowed)
+				return
+			}
+		} else if r.ContentLength >= 0 && len(r.TransferEncoding) == 0 && r.ContentLength > route.MaxBodyBytes {
+			s.metrics.begin(listener, route.Name, method)
+			defer func() { s.finish(recorder, listener, route.Name, method, started) }()
+			writeError(recorder, http.StatusRequestEntityTooLarge, HTTPBodyTooLarge)
 			return
 		}
 
 		s.metrics.begin(listener, route.Name, method)
 		defer func() { s.finish(recorder, listener, route.Name, method, started) }()
 		defer s.recoverRequest(listener, route.Name, method, recorder)
+
+		if route.MaxBodyBytes > 0 {
+			body := r.Body
+			if body == nil {
+				body = http.NoBody
+			}
+			r.Body = http.MaxBytesReader(w, body, route.MaxBodyBytes)
+		}
 
 		if route.Handler != nil {
 			route.Handler.ServeHTTP(recorder, r)

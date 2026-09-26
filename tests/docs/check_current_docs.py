@@ -11,7 +11,9 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2]
 DOCUMENTS = (
+    ROOT / "docs" / "adr" / "0020-message-send-http.md",
     ROOT / "docs" / "architecture.md",
+    ROOT / "specs" / "http" / "message-send.md",
     ROOT / "server" / "README.md",
 )
 
@@ -92,6 +94,9 @@ REQUIRED_TEXT = {
         ("public network boundary", re.compile(r"public\s+network", re.IGNORECASE)),
         ("HTTP service foundation", re.compile(r"HTTP\s+service\s+foundation", re.IGNORECASE)),
         ("loopback listener", re.compile(r"loopback", re.IGNORECASE)),
+        ("message send route", re.compile(r"POST\s+/api/v1/messages", re.IGNORECASE)),
+        ("message send after commit", re.compile(r"only\s+after\s+commit", re.IGNORECASE)),
+        ("message identity guard", re.compile(r"current-WAL-timeline", re.IGNORECASE)),
         ("push boundary", re.compile(r"\bpush\b", re.IGNORECASE)),
         ("current token revocation", re.compile(r"current[- ]token\s+revocation", re.IGNORECASE)),
         ("DELETE token route", re.compile(r"DELETE\s+/api/v1/session/tokens/current", re.IGNORECASE)),
@@ -108,6 +113,10 @@ REQUIRED_TEXT = {
         ("UI boundary", re.compile(r"\bUI\b", re.IGNORECASE)),
         ("current token revocation", re.compile(r"current[- ]token\s+revocation", re.IGNORECASE)),
         ("DELETE token route", re.compile(r"DELETE\s+/api/v1/session/tokens/current", re.IGNORECASE)),
+        ("message send route", re.compile(r"POST\s+/api/v1/messages", re.IGNORECASE)),
+        ("message gate", re.compile(r"NEWIM_MESSAGE_HTTP=1", re.IGNORECASE)),
+        ("message persisted ACK", re.compile(r"SERVER_PERSISTED", re.IGNORECASE)),
+        ("message local socket", re.compile(r"local-socket", re.IGNORECASE)),
     ),
 }
 
@@ -120,7 +129,9 @@ REQUIRED_LINKS = {
         "adr/0011-media-credential-metadata.md",
         "adr/0013-http-api-service-foundation.md",
         "adr/0019-bearer-token-revocation.md",
+        "adr/0020-message-send-http.md",
         "../specs/http/service-foundation.md",
+        "../specs/http/message-send.md",
         "../specs/http/session-logout.md",
         "dependencies/protocol-v1.md",
         "dependencies/conversation-sync.md",
@@ -131,13 +142,31 @@ REQUIRED_LINKS = {
         "../docs/architecture.md",
         "../docs/adr/0013-http-api-service-foundation.md",
         "../docs/adr/0019-bearer-token-revocation.md",
+        "../docs/adr/0020-message-send-http.md",
         "../specs/http/service-foundation.md",
+        "../specs/http/message-send.md",
         "../specs/http/session-logout.md",
         "../THIRD_PARTY_NOTICES.md",
     ),
 }
 
 CONTRACTS = (
+    (
+        "docs/adr/0020-message-send-http.md",
+        (
+            "post /api/v1/messages",
+            "newim_message_http=1",
+            "newim_auth_allow_local_socket=1",
+            "token-scoped logical identity",
+            "server_persisted",
+            "current wal insertion timeline",
+            "pg_is_in_recovery()=false",
+            "42501",
+            "42883",
+            "server_invalid_message_config",
+            "10-second",
+        ),
+    ),
     (
         "docs/adr/0019-bearer-token-revocation.md",
         (
@@ -148,12 +177,38 @@ CONTRACTS = (
         ),
     ),
     (
+        "specs/http/message-send.md",
+        (
+            "post /api/v1/messages",
+            "http_invalid_query",
+            "send_invalid_input",
+            "http_body_too_large",
+            "http_unsupported_media_type",
+            "maxbodybytes=0",
+            "bounded reader",
+            "current wal insertion timeline",
+            "standby",
+            "transient",
+            "42501",
+            "42883",
+            "login",
+            "push",
+            "acceptance status",
+        ),
+    ),
+    (
         "specs/http/service-foundation.md",
         (
+            "adr 0020",
             "adr 0019",
             "allowedmethods",
             "get",
+            "post",
             "delete",
+            "maxbodybytes",
+            "rejectquery",
+            "http_body_too_large",
+            "http_unsupported_media_type",
         ),
     ),
     (
