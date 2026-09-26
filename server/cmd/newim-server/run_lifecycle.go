@@ -9,7 +9,7 @@ import (
 // and turns a guard terminal signal into a bounded nonzero process result.
 // joinRuntimeServerAndFatal 协调 HTTP 排空后按序关闭 pool，并将 guard terminal 信号
 // 转换为有界非零进程结果。
-func joinRuntimeServerAndFatal(serverDone, workerDone <-chan error, shutdown, fatal <-chan struct{}, cancelServer, cancelWorker func(), closeRuntime func(), grace time.Duration) shutdownResult {
+func joinRuntimeServerAndFatal(serverDone, workerDone <-chan error, shutdown <-chan struct{}, terminal *terminalState, cancelServer, cancelWorker func(), closeRuntime func(), grace time.Duration) shutdownResult {
 	var result shutdownResult
 	var timer *time.Timer
 	var deadline <-chan time.Time
@@ -38,20 +38,30 @@ func joinRuntimeServerAndFatal(serverDone, workerDone <-chan error, shutdown, fa
 		})
 	}
 
-	for serverDone != nil || workerDone != nil || shutdown != nil || fatal != nil || closeDone != nil {
-		select {
-		case <-fatal:
-			fatal = nil
+	syncTerminal := func() {
+		if result.terminalErr != nil {
+			return
+		}
+		if err := terminal.Err(); err != nil {
+			result.terminalErr = err
 			shutdown = nil
-			result.terminalErr = errInvalidMessageConfig
 			cancelServer()
 			cancelWorker()
 			armDeadline()
-			if serverDone == nil {
-				beginClose()
-			}
+		}
+	}
+
+	for serverDone != nil || workerDone != nil || shutdown != nil || closeDone != nil {
+		syncTerminal()
+		if result.terminalErr != nil && serverDone == nil {
+			beginClose()
+		}
+		select {
+		case <-terminal.Done():
+			syncTerminal()
 		case <-shutdown:
 			shutdown = nil
+			syncTerminal()
 			cancelServer()
 			cancelWorker()
 			armDeadline()
@@ -60,17 +70,17 @@ func joinRuntimeServerAndFatal(serverDone, workerDone <-chan error, shutdown, fa
 			}
 		case err := <-serverDone:
 			serverDone = nil
-			fatal = nil
 			shutdown = nil
 			result.serverErr = err
+			syncTerminal()
 			cancelWorker()
 			beginClose()
 			armDeadline()
 		case err := <-workerDone:
 			workerDone = nil
-			fatal = nil
 			shutdown = nil
 			result.workerErr = err
+			syncTerminal()
 			cancelServer()
 			armDeadline()
 			if serverDone == nil {
@@ -79,12 +89,16 @@ func joinRuntimeServerAndFatal(serverDone, workerDone <-chan error, shutdown, fa
 		case <-closeDone:
 			closeDone = nil
 		case <-deadline:
+			syncTerminal()
 			cancelServer()
 			cancelWorker()
-			result.timedOut = true
+			if result.terminalErr == nil {
+				result.timedOut = true
+			}
 			beginClose()
 			return result
 		}
 	}
+	syncTerminal()
 	return result
 }

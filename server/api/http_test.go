@@ -178,6 +178,44 @@ func TestServerRecovery(t *testing.T) {
 		}
 	})
 
+	t.Run("readiness drain is observable before listener close", func(t *testing.T) {
+		server, err := New(Config{APIAddr: "127.0.0.1:0", OpsAddr: "127.0.0.1:0", ServerVersion: "0.1.0-test"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(context.Background())
+		runDone := make(chan error, 1)
+		go func() { runDone <- server.Run(ctx) }()
+		waitForReady(t, server)
+		cancel()
+
+		deadline := time.Now().Add(time.Second)
+		observed := false
+		for time.Now().Before(deadline) {
+			response, requestErr := http.Get("http://" + server.OpsAddr() + "/ready")
+			if requestErr == nil {
+				body, readErr := io.ReadAll(response.Body)
+				_ = response.Body.Close()
+				if readErr == nil && response.StatusCode == http.StatusServiceUnavailable && bytes.Contains(body, []byte(ServerNotReady)) {
+					observed = true
+					break
+				}
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+		if !observed {
+			t.Fatal("readiness 503 was not observable before listener close")
+		}
+		select {
+		case err := <-runDone:
+			if err != nil {
+				t.Fatalf("graceful shutdown failed: %v", err)
+			}
+		case <-time.After(5 * time.Second):
+			t.Fatal("server did not stop after readiness observation")
+		}
+	})
+
 	t.Run("Run drains an active request", func(t *testing.T) {
 		server, err := New(Config{APIAddr: "127.0.0.1:0", OpsAddr: "127.0.0.1:0", ServerVersion: "0.1.0-test"}, nil)
 		if err != nil {

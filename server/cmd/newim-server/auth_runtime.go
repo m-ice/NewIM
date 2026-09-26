@@ -47,7 +47,7 @@ type authRuntime struct {
 	tokenRevoker *bearerhttp.TokenRevocationHandler
 	messageRepo  *messagestore.Repository
 	guard        *postgresidentity.Guard
-	fatal        <-chan struct{}
+	terminal     *terminalState
 	closer       *orderedCloser
 }
 
@@ -71,19 +71,14 @@ func newAuthRuntimeFromEnv(ctx context.Context, cfg api.Config, logger *slog.Log
 		return nil, nil, err
 	}
 
-	fatal := make(chan struct{}, 1)
-	guard := postgresidentity.NewGuard(func(error) {
-		select {
-		case fatal <- struct{}{}:
-		default:
-		}
-	})
+	terminal := newTerminalState()
+	guard := postgresidentity.NewGuard(func(error) { terminal.Trip(errInvalidMessageConfig) })
 	runtime, routes, err := newAuthRuntimeWithGuard(ctx, cfg, dsn, allowLocalSocket, guard, logger)
 	if err != nil {
 		return nil, nil, messageStartupError(guard, err)
 	}
 	runtime.guard = guard
-	runtime.fatal = fatal
+	runtime.terminal = terminal
 
 	messageRepo, err := messagestore.Open(ctx, messagestore.Config{
 		DSN:              dsn,
@@ -206,7 +201,14 @@ func (r *authRuntime) Fatal() <-chan struct{} {
 	if r == nil {
 		return nil
 	}
-	return r.fatal
+	return r.terminal.Done()
+}
+
+func (r *authRuntime) TerminalErr() error {
+	if r == nil {
+		return nil
+	}
+	return r.terminal.Err()
 }
 
 // Close releases the message pool before the auth pool and is idempotent.

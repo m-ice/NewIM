@@ -22,6 +22,10 @@ const (
 	defaultMaxHeaderBytes  = 16 * 1024
 	defaultShutdownTimeout = 10 * time.Second
 	defaultStartupTimeout  = 5 * time.Second
+	// defaultReadinessDrainTimeout bounds the externally observable not-ready
+	// window before listeners stop accepting requests.
+	// defaultReadinessDrainTimeout 限定 listener 停止接收请求前的 not-ready 可观测窗口。
+	defaultReadinessDrainTimeout = 500 * time.Millisecond
 )
 
 var (
@@ -50,6 +54,9 @@ type Server struct {
 
 	shutdownOnce sync.Once
 	shutdownErr  error
+
+	readinessObservedOnce sync.Once
+	readinessObserved     chan struct{}
 
 	listenerMu sync.RWMutex
 
@@ -82,10 +89,11 @@ func NewWithRoutes(cfg Config, logger *slog.Logger, routes []APIRoute) (*Server,
 		logger = slog.New(slog.NewTextHandler(io.Discard, nil))
 	}
 	s := &Server{
-		cfg:       cfg,
-		logger:    logger,
-		metrics:   newMetrics(cfg.ServerVersion),
-		apiRoutes: routeMap,
+		cfg:               cfg,
+		logger:            logger,
+		metrics:           newMetrics(cfg.ServerVersion),
+		apiRoutes:         routeMap,
+		readinessObserved: make(chan struct{}),
 	}
 	s.apiHandler = s.makeHandler("api")
 	s.opsHandler = s.makeHandler("ops")
@@ -236,6 +244,7 @@ func (s *Server) shutdown(ctx context.Context) error {
 
 func (s *Server) doShutdown(ctx context.Context) error {
 	s.ready.Store(false)
+	s.waitForReadinessObservation(ctx)
 	var wg sync.WaitGroup
 	errs := make(chan error, 2)
 	for _, server := range []*http.Server{s.apiServer, s.opsServer} {
@@ -272,6 +281,26 @@ func (s *Server) doShutdown(ctx context.Context) error {
 		return fail(CodeShutdownFailed)
 	}
 	return nil
+}
+
+func (s *Server) waitForReadinessObservation(ctx context.Context) {
+	if s == nil {
+		return
+	}
+	timer := time.NewTimer(defaultReadinessDrainTimeout)
+	defer timer.Stop()
+	select {
+	case <-s.readinessObserved:
+	case <-timer.C:
+	case <-ctx.Done():
+	}
+}
+
+func (s *Server) observeReadinessDrain() {
+	if s == nil || s.readinessObserved == nil {
+		return
+	}
+	s.readinessObservedOnce.Do(func() { close(s.readinessObserved) })
 }
 
 func (s *Server) closeServers() {
@@ -372,6 +401,7 @@ func (s *Server) makeHandler(listener string) http.Handler {
 			writeJSON(recorder, http.StatusOK, `{"status":"ok"}`+"\n")
 		case "ready":
 			if !s.ready.Load() {
+				s.observeReadinessDrain()
 				writeError(recorder, http.StatusServiceUnavailable, ServerNotReady)
 				return
 			}

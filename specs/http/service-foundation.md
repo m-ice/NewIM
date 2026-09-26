@@ -94,8 +94,11 @@ message data, and revisions are never labels.
 - The message route reads only after method/query/media/size checks and uses a
   bounded body reader; its configured limit is positive.
 - Panic recovery returns only `HTTP_INTERNAL_ERROR`.
-- SIGINT/SIGTERM causes not-ready then a concurrent 10-second drain. A timeout
-  closes both servers and preserves a nonzero process failure.
+- SIGINT/SIGTERM clears readiness, keeps both listeners accept-capable for a
+  bounded 500 ms readiness-observation window so `/ready` can return `503`, then
+  starts a concurrent drain inside the same 10-second budget. A readiness
+  request during the window ends the observation wait early. A timeout closes
+  both servers and preserves a nonzero process failure.
 - The default bind is loopback. Ops must not be exposed through public ingress.
 - No TLS, CORS, authentication, public rate limiting, WAF, or DDoS protection is
   provided by this foundation.

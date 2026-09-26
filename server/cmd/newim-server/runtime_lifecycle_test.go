@@ -34,7 +34,7 @@ func TestOrderedCloserOrderAndIdempotency(t *testing.T) {
 
 func TestJoinRuntimeServerAndFatalDrainsBeforeClose(t *testing.T) {
 	serverDone := make(chan error, 1)
-	fatal := make(chan struct{})
+	terminal := newTerminalState()
 	shutdown := make(chan struct{})
 	serverCanceled := make(chan struct{})
 	workerCanceled := make(chan struct{})
@@ -47,7 +47,7 @@ func TestJoinRuntimeServerAndFatalDrainsBeforeClose(t *testing.T) {
 			serverDone,
 			nil,
 			shutdown,
-			fatal,
+			terminal,
 			func() { serverOnce.Do(func() { close(serverCanceled) }) },
 			func() { workerOnce.Do(func() { close(workerCanceled) }) },
 			func() { close(closeStarted) },
@@ -55,7 +55,7 @@ func TestJoinRuntimeServerAndFatalDrainsBeforeClose(t *testing.T) {
 		)
 	}()
 
-	close(fatal)
+	terminal.Trip(errInvalidMessageConfig)
 	for name, canceled := range map[string]<-chan struct{}{"server": serverCanceled, "worker": workerCanceled} {
 		select {
 		case <-canceled:
@@ -99,7 +99,7 @@ func TestJoinRuntimeServerShutdownWaitsForDrain(t *testing.T) {
 			serverDone,
 			nil,
 			shutdown,
-			nil,
+			newTerminalState(),
 			func() { close(serverCanceled) },
 			func() {},
 			func() { close(closeStarted) },
@@ -136,14 +136,15 @@ func TestJoinRuntimeServerShutdownWaitsForDrain(t *testing.T) {
 
 func TestJoinRuntimeServerAndFatalTimeoutClosesRuntime(t *testing.T) {
 	serverDone := make(chan error)
-	fatal := make(chan struct{})
-	close(fatal)
+	terminal := newTerminalState()
+	shutdown := make(chan struct{})
+	close(shutdown)
 	closeStarted := make(chan struct{})
 	result := joinRuntimeServerAndFatal(
 		serverDone,
 		nil,
-		nil,
-		fatal,
+		shutdown,
+		terminal,
 		func() {},
 		func() {},
 		func() { close(closeStarted) },
@@ -161,14 +162,14 @@ func TestJoinRuntimeServerAndFatalTimeoutClosesRuntime(t *testing.T) {
 
 func TestJoinRuntimeServerAndFatalExitsAfterServerDone(t *testing.T) {
 	serverDone := make(chan error, 1)
-	fatal := make(chan struct{})
+	terminal := newTerminalState()
 	resultDone := make(chan shutdownResult, 1)
 	go func() {
 		resultDone <- joinRuntimeServerAndFatal(
 			serverDone,
 			nil,
 			nil,
-			fatal,
+			terminal,
 			func() {},
 			func() {},
 			func() {},
@@ -183,5 +184,42 @@ func TestJoinRuntimeServerAndFatalExitsAfterServerDone(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("join remained blocked on an open fatal channel after server completion")
+	}
+}
+
+func TestJoinRuntimeServerAndFatalFatalWinsShutdown(t *testing.T) {
+	serverDone := make(chan error, 1)
+	serverDone <- nil
+	shutdown := make(chan struct{})
+	close(shutdown)
+	terminal := newTerminalState()
+	terminal.Trip(errInvalidMessageConfig)
+
+	result := joinRuntimeServerAndFatal(serverDone, nil, shutdown, terminal, func() {}, func() {}, func() {}, time.Second)
+	if result.timedOut || result.terminalErr == nil || errorCode(result.terminalErr) != string(api.CodeInvalidMessageConfig) {
+		t.Fatalf("join result=%+v", result)
+	}
+}
+
+func TestJoinRuntimeServerAndFatalFatalWinsServerDone(t *testing.T) {
+	serverDone := make(chan error, 1)
+	serverDone <- nil
+	terminal := newTerminalState()
+	terminal.Trip(errInvalidMessageConfig)
+
+	result := joinRuntimeServerAndFatal(serverDone, nil, nil, terminal, func() {}, func() {}, func() {}, time.Second)
+	if result.timedOut || result.terminalErr == nil || errorCode(result.terminalErr) != string(api.CodeInvalidMessageConfig) {
+		t.Fatalf("join result=%+v", result)
+	}
+}
+
+func TestJoinRuntimeServerAndFatalFatalWinsTimeout(t *testing.T) {
+	serverDone := make(chan error)
+	terminal := newTerminalState()
+	terminal.Trip(errInvalidMessageConfig)
+
+	result := joinRuntimeServerAndFatal(serverDone, nil, nil, terminal, func() {}, func() {}, func() {}, 20*time.Millisecond)
+	if result.timedOut || result.terminalErr == nil || errorCode(result.terminalErr) != string(api.CodeInvalidMessageConfig) {
+		t.Fatalf("join result=%+v", result)
 	}
 }

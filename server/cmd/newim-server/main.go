@@ -85,14 +85,18 @@ func run(args []string, stdout, stderr io.Writer, read func() (buildinfo.Info, e
 		<-ctx.Done()
 		close(shutdown)
 	}()
-	result := joinRuntimeServerAndFatal(serverDone, runtimeDone, shutdown, authRuntime.Fatal(), cancelServer, cancelWorker, closeRuntime, 10*time.Second)
-	cancelWorker()
-	if result.timedOut {
-		fmt.Fprintln(stderr, api.CodeShutdownFailed)
-		return 1
+	var terminal *terminalState
+	if authRuntime != nil {
+		terminal = authRuntime.terminal
 	}
+	result := joinRuntimeServerAndFatal(serverDone, runtimeDone, shutdown, terminal, cancelServer, cancelWorker, closeRuntime, 10*time.Second)
+	cancelWorker()
 	if result.terminalErr != nil {
 		fmt.Fprintln(stderr, errorCode(result.terminalErr))
+		return 1
+	}
+	if result.timedOut {
+		fmt.Fprintln(stderr, api.CodeShutdownFailed)
 		return 1
 	}
 	serverErr := result.serverErr
