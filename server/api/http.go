@@ -49,8 +49,9 @@ type Server struct {
 	logger  *slog.Logger
 	metrics *metrics
 
-	started atomic.Bool
-	ready   atomic.Bool
+	started  atomic.Bool
+	ready    atomic.Bool
+	draining atomic.Bool
 
 	shutdownOnce sync.Once
 	shutdownErr  error
@@ -243,6 +244,7 @@ func (s *Server) shutdown(ctx context.Context) error {
 }
 
 func (s *Server) doShutdown(ctx context.Context) error {
+	s.draining.Store(true)
 	s.ready.Store(false)
 	s.waitForReadinessObservation(ctx)
 	var wg sync.WaitGroup
@@ -297,7 +299,7 @@ func (s *Server) waitForReadinessObservation(ctx context.Context) {
 }
 
 func (s *Server) observeReadinessDrain() {
-	if s == nil || s.readinessObserved == nil {
+	if s == nil || s.readinessObserved == nil || !s.draining.Load() {
 		return
 	}
 	s.readinessObservedOnce.Do(func() { close(s.readinessObserved) })
@@ -401,7 +403,9 @@ func (s *Server) makeHandler(listener string) http.Handler {
 			writeJSON(recorder, http.StatusOK, `{"status":"ok"}`+"\n")
 		case "ready":
 			if !s.ready.Load() {
-				s.observeReadinessDrain()
+				if s.draining.Load() {
+					s.observeReadinessDrain()
+				}
 				writeError(recorder, http.StatusServiceUnavailable, ServerNotReady)
 				return
 			}

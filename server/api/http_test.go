@@ -216,6 +216,53 @@ func TestServerRecovery(t *testing.T) {
 		}
 	})
 
+	t.Run("startup readiness 503 does not satisfy drain barrier", func(t *testing.T) {
+		server, err := New(Config{APIAddr: "127.0.0.1:0", OpsAddr: "127.0.0.1:0", ServerVersion: "0.1.0-test"}, nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		serveReady := func() int {
+			recorder := httptest.NewRecorder()
+			server.makeHandler("ops").ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/ready", nil))
+			return recorder.Code
+		}
+		if status := serveReady(); status != http.StatusServiceUnavailable {
+			t.Fatalf("startup readiness status=%d", status)
+		}
+		select {
+		case <-server.readinessObserved:
+			t.Fatal("startup readiness 503 satisfied shutdown drain barrier")
+		default:
+		}
+
+		shutdownDone := make(chan error, 1)
+		go func() { shutdownDone <- server.doShutdown(context.Background()) }()
+		deadline := time.Now().Add(time.Second)
+		for !server.draining.Load() && time.Now().Before(deadline) {
+			time.Sleep(time.Millisecond)
+		}
+		if !server.draining.Load() {
+			t.Fatal("shutdown did not enter draining state")
+		}
+		select {
+		case err := <-shutdownDone:
+			t.Fatalf("shutdown skipped readiness barrier: %v", err)
+		case <-time.After(50 * time.Millisecond):
+		}
+
+		if status := serveReady(); status != http.StatusServiceUnavailable {
+			t.Fatalf("draining readiness status=%d", status)
+		}
+		select {
+		case err := <-shutdownDone:
+			if err != nil {
+				t.Fatalf("shutdown after readiness observation: %v", err)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("shutdown did not proceed after draining readiness observation")
+		}
+	})
+
 	t.Run("Run drains an active request", func(t *testing.T) {
 		server, err := New(Config{APIAddr: "127.0.0.1:0", OpsAddr: "127.0.0.1:0", ServerVersion: "0.1.0-test"}, nil)
 		if err != nil {

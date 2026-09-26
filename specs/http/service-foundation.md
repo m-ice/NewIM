@@ -97,8 +97,10 @@ message data, and revisions are never labels.
 - SIGINT/SIGTERM clears readiness, keeps both listeners accept-capable for a
   bounded 500 ms readiness-observation window so `/ready` can return `503`, then
   starts a concurrent drain inside the same 10-second budget. A readiness
-  request during the window ends the observation wait early. A timeout closes
-  both servers and preserves a nonzero process failure.
+  request after the draining state is entered and before listener close ends
+  the observation wait early; startup-time `503` responses do not satisfy this
+  barrier. A timeout closes both servers and preserves a nonzero process
+  failure.
 - The default bind is loopback. Ops must not be exposed through public ingress.
 - No TLS, CORS, authentication, public rate limiting, WAF, or DDoS protection is
   provided by this foundation.
