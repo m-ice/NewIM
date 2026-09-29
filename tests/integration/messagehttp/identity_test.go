@@ -3,6 +3,7 @@
 package messagehttp_test
 
 import (
+	"context"
 	"fmt"
 	"net"
 	"net/http"
@@ -43,6 +44,8 @@ func TestMessageHTTPIdentity(t *testing.T) {
 	if migration == "" {
 		t.Fatal("migration SQL is empty")
 	}
+
+	identitySupplements(t, migration)
 
 	t.Run("standby-startup-rejected", func(t *testing.T) {
 		primary := newIdentityCluster(t, "standby-primary", migration)
@@ -283,7 +286,12 @@ func (c *identityCluster) scalar(query string) string {
 func (c *identityCluster) run(name string, args ...string) []byte {
 	c.t.Helper()
 	command := c.command(name, args...)
-	output, err := command.CombinedOutput()
+	runCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	bounded := exec.CommandContext(runCtx, command.Path, command.Args[1:]...)
+	bounded.Env = command.Env
+	bounded.WaitDelay = time.Second
+	output, err := bounded.CombinedOutput()
 	if err != nil {
 		c.t.Fatalf("%s %s failed: %v output=%q", c.name, name, err, output)
 	}

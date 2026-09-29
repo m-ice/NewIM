@@ -261,6 +261,26 @@ abuse/replay controls, media HTTP, Push, sync/read/unread, Webhook endpoint
 management, retention, moderation, premium or license behavior. It does not
 change protocol wire versions, database schema or dependencies.
 
+## Identity fault test boundaries
+
+The real PostgreSQL identity gate includes a standby promoted without restarting
+its postmaster. It keeps the owned checkpointer paused only for a bounded test
+window and asserts that the current WAL timeline differs from the checkpoint
+timeline. A fresh guard and real server baseline during that interval and remain
+valid after checkpoint catch-up; an already-terminal standby guard stays terminal.
+A primary cannot reenter recovery in the same postmaster, so this test does not
+claim such a transition or manufacture a primary baseline on a standby.
+
+Restricted-role tests revoke each required identity function's real EXECUTE
+privilege and require startup rejection, reusable ports and pool cleanup. Separate
+adapter tests share one guard across two real databases in the same postmaster,
+confirm an old pooled backend is still alive when the other repository trips the
+guard, and then require the old repository to reject work without mutation.
+This is an adapter fault fixture, not a claim that the single-DSN production
+configuration normally routes its pools to different databases. A separate
+same-name database recreation test isolates OID change; it does not count the
+necessarily terminated old connections as live-pool evidence.
+
 ## Acceptance status
 
 This document is a review contract, not product acceptance. NIM-SRV-008 may be
