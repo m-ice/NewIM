@@ -254,43 +254,32 @@ func TestGuardDeterministicErrorsTrip(t *testing.T) {
 	}
 }
 
-func TestGuardCallsTripCallbackOnceOutsideHook(t *testing.T) {
+func TestGuardPublishesTripSynchronouslyOnce(t *testing.T) {
 	var calls atomic.Int32
-	entered := make(chan struct{}, 2)
-	release := make(chan struct{})
+	published := make(chan struct{})
 	guard := NewGuard(func(error) {
 		calls.Add(1)
-		entered <- struct{}{}
-		<-release
+		close(published)
 	})
-	ctx := context.Background()
-	if err := guard.verify(ctx, identityQueryer(baselineIdentity())); err != nil {
-		t.Fatal(err)
-	}
-	changed := baselineIdentity()
-	changed.database = "other"
-	if err := guard.verify(ctx, identityQueryer(changed)); !errors.Is(err, errIdentityMismatch) {
-		t.Fatalf("mismatch got %v", err)
-	}
-	select {
-	case <-entered:
-	case <-time.After(time.Second):
-		t.Fatal("trip callback not called")
-	}
+	var wait sync.WaitGroup
 	for attempt := 0; attempt < 32; attempt++ {
-		if err := guard.verify(ctx, identityQueryer(changed)); !errors.Is(err, errIdentityMismatch) {
-			t.Fatalf("post-trip attempt %d got %v", attempt, err)
-		}
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			if err := guard.Verify(context.Background(), nil); err == nil {
+				t.Error("malformed connection accepted")
+			}
+			select {
+			case <-published:
+			default:
+				t.Error("Verify returned before terminal publication")
+			}
+		}()
 	}
-	if got := calls.Load(); got != 1 {
-		t.Fatalf("callback calls got %d want 1", got)
+	wait.Wait()
+	if calls.Load() != 1 {
+		t.Fatalf("callback calls=%d", calls.Load())
 	}
-	select {
-	case <-entered:
-		t.Fatal("trip callback called more than once")
-	default:
-	}
-	close(release)
 }
 
 func TestGuardConcurrentFirstBaselineIsAtomic(t *testing.T) {

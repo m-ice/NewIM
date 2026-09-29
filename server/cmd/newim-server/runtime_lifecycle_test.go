@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"sync"
 	"testing"
 	"time"
 
 	"github.com/m-ice/NewIM/server/api"
+	"github.com/m-ice/NewIM/server/storage/postgresidentity"
 )
 
 func TestOrderedCloserOrderAndIdempotency(t *testing.T) {
@@ -221,5 +223,42 @@ func TestJoinRuntimeServerAndFatalFatalWinsTimeout(t *testing.T) {
 	result := joinRuntimeServerAndFatal(serverDone, nil, nil, terminal, func() {}, func() {}, func() {}, 20*time.Millisecond)
 	if result.timedOut || result.terminalErr == nil || errorCode(result.terminalErr) != string(api.CodeInvalidMessageConfig) {
 		t.Fatalf("join result=%+v", result)
+	}
+}
+
+// Hold publication to model a callback that has not yet been scheduled; guard
+// completion must not become visible before the terminal error is published.
+func TestGuardPublicationPrecedesCoordinatorCompletion(t *testing.T) {
+	terminal := newTerminalState()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	unblock := func() { once.Do(func() { close(release) }) }
+	defer unblock()
+	guard := postgresidentity.NewGuard(func(error) {
+		close(entered)
+		<-release
+		terminal.Trip(errInvalidMessageConfig)
+	})
+	verified := make(chan error, 1)
+	go func() { verified <- guard.Verify(context.Background(), nil) }()
+	<-entered
+	select {
+	case <-verified:
+		t.Fatal("Verify completed before terminal publication")
+	case <-time.After(25 * time.Millisecond):
+	}
+	unblock()
+	if err := <-verified; err == nil {
+		t.Fatal("guard did not fail closed")
+	}
+	if guard.Tripped() == nil {
+		t.Fatal("guard lost terminal state")
+	}
+	serverDone := make(chan error, 1)
+	serverDone <- nil
+	result := joinRuntimeServerAndFatal(serverDone, nil, nil, terminal, func() {}, func() {}, func() {}, time.Second)
+	if result.terminalErr != errInvalidMessageConfig {
+		t.Fatalf("terminal result=%+v", result)
 	}
 }

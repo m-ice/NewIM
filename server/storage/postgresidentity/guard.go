@@ -54,11 +54,12 @@ type Guard struct {
 	onTrip      func(error)
 }
 
-// NewGuard creates a guard. onTrip is invoked asynchronously at most once and
-// must return promptly; callers use it to start server-owned terminal shutdown
-// outside a pgx hook. All other fields in the zero value are ready for use.
-// NewGuard 创建 Guard；onTrip 至多异步调用一次且须快速返回，用于在 pgx hook 外启动
-// server 负责的 terminal shutdown。零值的其余字段可直接使用。
+// NewGuard creates a guard. onTrip publishes terminal state synchronously at
+// most once under the guard mutex, before Verify/Tripped return. It must only
+// perform bounded in-memory publication: no I/O, pool closure, waiting, or
+// guard reentry. Shutdown remains in the server coordinator outside pgx hooks.
+// NewGuard 创建 Guard；onTrip 在锁内至多同步发布一次终态，并先于 Verify/Tripped 返回。
+// 回调只能执行有界内存发布，禁止 I/O、关闭池、等待或重入 Guard；关闭由 hook 外协调器负责。
 func NewGuard(onTrip func(error)) *Guard {
 	return &Guard{onTrip: onTrip}
 }
@@ -178,8 +179,7 @@ func (g *Guard) tripLocked(err error) error {
 	}
 	g.tripped = err
 	if g.onTrip != nil {
-		onTrip := g.onTrip
-		go onTrip(err)
+		g.onTrip(err)
 	}
 	return err
 }

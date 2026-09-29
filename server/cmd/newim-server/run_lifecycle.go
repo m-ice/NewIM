@@ -38,12 +38,14 @@ func joinRuntimeServerAndFatal(serverDone, workerDone <-chan error, shutdown <-c
 		})
 	}
 
+	terminalDone := terminal.Done()
 	syncTerminal := func() {
 		if result.terminalErr != nil {
 			return
 		}
 		if err := terminal.Err(); err != nil {
 			result.terminalErr = err
+			terminalDone = nil
 			shutdown = nil
 			cancelServer()
 			cancelWorker()
@@ -57,7 +59,7 @@ func joinRuntimeServerAndFatal(serverDone, workerDone <-chan error, shutdown <-c
 			beginClose()
 		}
 		select {
-		case <-terminal.Done():
+		case <-terminalDone:
 			syncTerminal()
 		case <-shutdown:
 			shutdown = nil

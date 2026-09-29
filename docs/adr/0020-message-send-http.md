@@ -137,7 +137,16 @@ functions) are terminal. The guard rejects subsequent acquisition and
 transaction attempts, disables readiness, cancels the request/run context, and
 a server-owned coordinator outside the pgx hook closes the message pool then
 the auth pool and exits nonzero with `SERVER_INVALID_MESSAGE_CONFIG` within the
-10-second shutdown bound. It never rebaselines in the same process. PostgreSQL
+10-second shutdown bound. Guard terminal publication is synchronous: `NewGuard`
+invokes its callback at most once while holding the guard mutex, before a failed
+`Verify` or a concurrent `Tripped` call can return. The callback must only
+publish bounded in-memory terminal state; it must not perform I/O, close pools,
+wait for shutdown, or reenter the guard. The composition callback stores the
+stable error and closes a notification channel. Cancellation and pool closure
+remain exclusively in the coordinator outside the pgx hook. Once observed,
+the coordinator disables that notification channel while continuing to wait
+for drain completion, so a closed channel cannot cause a busy loop.
+It never rebaselines in the same process. PostgreSQL
 restart, clone, restore, replacement or timeline change therefore requires an
 explicit `newim-server` restart.
 
