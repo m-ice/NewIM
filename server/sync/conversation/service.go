@@ -450,7 +450,10 @@ func validateDeltaCandidates(result ReadResult, afterSeq, fence uint64, limit in
 		if err := validateItem(*candidate.State); err != nil {
 			return err
 		}
-		if candidate.State.ConversationID != candidate.Key || candidate.State.Revision <= previous || candidate.State.Revision > fence {
+		if candidate.State.ConversationID != candidate.Key || candidate.State.Revision > fence {
+			return Fail(StorageUnavailable)
+		}
+		if previous == MaxSequence || candidate.State.Revision != previous+1 {
 			return Fail(StorageUnavailable)
 		}
 		previous = candidate.State.Revision
@@ -462,6 +465,9 @@ func validateDeltaCandidates(result ReadResult, afterSeq, fence uint64, limit in
 				return Fail(StorageUnavailable)
 			}
 		}
+	}
+	if len(result.Candidates) <= limit && previous != fence {
+		return Fail(StorageUnavailable)
 	}
 	return nil
 }

@@ -198,4 +198,18 @@ func TestDeltaTombstones(t *testing.T) {
 			t.Fatalf("duplicate remove changed head to %d", head)
 		}
 	})
+	t.Run("missing-revision-fails-closed", func(t *testing.T) {
+		user := "delta_missing_revision"
+		f.account(user)
+		_, checkpoint := bootstrapAll(t, f.service(nil, ""), user, 100)
+		conversation := f.conversations("delta_missing_revision", 1)[0]
+		f.write(user, []string{conversation}, "add")
+		f.sql("DELETE FROM newim.im_conversation_sync_changes WHERE user_id=$1 AND change_seq=1", user)
+		if head := f.scalarInt64("SELECT last_change_seq FROM newim.im_conversation_sync_accounts WHERE user_id=$1", user); head != 1 {
+			t.Fatalf("missing-revision fixture head=%d want 1", head)
+		}
+		page, err := f.service(nil, "").BeginDelta(ctx, principal(user), checkpoint, 100)
+		wantCode(t, page, err, app.StorageUnavailable)
+	})
+
 }
