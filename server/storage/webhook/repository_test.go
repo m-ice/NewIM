@@ -63,3 +63,77 @@ func TestWorkerLockReleaseIsBounded(t *testing.T) {
 	default:
 	}
 }
+
+type blockingCheckConnection struct {
+	checkStarted  chan struct{}
+	releaseCheck  chan struct{}
+	execStarted   chan struct{}
+	releaseCalled chan struct{}
+}
+
+func (c *blockingCheckConnection) Exec(context.Context, string, ...any) (pgconn.CommandTag, error) {
+	close(c.execStarted)
+	return pgconn.CommandTag{}, nil
+}
+
+func (c *blockingCheckConnection) QueryRow(context.Context, string, ...any) pgx.Row {
+	close(c.checkStarted)
+	return blockingCheckRow{release: c.releaseCheck}
+}
+
+func (*blockingCheckConnection) Hijack() *pgx.Conn { return nil }
+
+func (c *blockingCheckConnection) Release() { close(c.releaseCalled) }
+
+type blockingCheckRow struct{ release <-chan struct{} }
+
+func (r blockingCheckRow) Scan(...any) error {
+	<-r.release
+	return nil
+}
+
+func TestWorkerLockReleaseWaitsForInFlightCheck(t *testing.T) {
+	connection := &blockingCheckConnection{
+		checkStarted:  make(chan struct{}),
+		releaseCheck:  make(chan struct{}),
+		execStarted:   make(chan struct{}),
+		releaseCalled: make(chan struct{}),
+	}
+	lock := &WorkerLock{conn: connection, releaseTimeout: time.Second}
+
+	checkDone := make(chan error, 1)
+	go func() { checkDone <- lock.Check(context.Background()) }()
+	<-connection.checkStarted
+
+	releaseDone := make(chan struct{})
+	go func() {
+		lock.Release()
+		close(releaseDone)
+	}()
+
+	select {
+	case <-connection.execStarted:
+		t.Fatal("Release used the lock connection while Check was still in flight")
+	case <-time.After(50 * time.Millisecond):
+	}
+
+	close(connection.releaseCheck)
+	if err := <-checkDone; err == nil {
+		t.Fatal("Check returned success without an observed advisory lock")
+	}
+	select {
+	case <-releaseDone:
+	case <-time.After(time.Second):
+		t.Fatal("Release did not complete after Check finished")
+	}
+	select {
+	case <-connection.execStarted:
+	default:
+		t.Fatal("Release did not attempt advisory unlock")
+	}
+	select {
+	case <-connection.releaseCalled:
+	default:
+		t.Fatal("Release did not return the connection")
+	}
+}

@@ -8,6 +8,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"net"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -38,6 +39,7 @@ type Repository struct{ pool *pgxpool.Pool }
 // AcquireWorkerLock enforces one webhook worker process per database.
 // AcquireWorkerLock 强制每个数据库只有一个 Webhook worker 进程。
 type WorkerLock struct {
+	mu             sync.Mutex
 	conn           lockConnection
 	released       bool
 	releaseTimeout time.Duration
@@ -72,7 +74,12 @@ func (r *Repository) AcquireWorkerLock(ctx context.Context) (*WorkerLock, error)
 // Check verifies the lock is still held by the same live backend connection.
 // Check 校验同一存活 backend 连接仍持有锁；连接丢失或锁消失返回错误。
 func (l *WorkerLock) Check(ctx context.Context) error {
-	if l == nil || l.conn == nil || l.released || ctx == nil {
+	if l == nil || ctx == nil {
+		return app.Fail(app.CodeBacklogPaused)
+	}
+	l.mu.Lock()
+	defer l.mu.Unlock()
+	if l.conn == nil || l.released {
 		return app.Fail(app.CodeBacklogPaused)
 	}
 	var held bool
@@ -85,24 +92,31 @@ func (l *WorkerLock) Check(ctx context.Context) error {
 // Release unlocks the advisory lock and returns its dedicated connection.
 // Release 释放 advisory lock 并归还其专用连接。
 func (l *WorkerLock) Release() {
-	if l == nil || l.conn == nil || l.released {
+	if l == nil {
+		return
+	}
+	l.mu.Lock()
+	if l.conn == nil || l.released {
+		l.mu.Unlock()
 		return
 	}
 	l.released = true
+	conn := l.conn
 	timeout := l.releaseTimeout
+	l.mu.Unlock()
 	if timeout <= 0 {
 		timeout = workerLockReleaseTimeout
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	_, err := l.conn.Exec(ctx, `SELECT pg_advisory_unlock(hashtext('newim.webhook.worker'))`)
+	_, err := conn.Exec(ctx, `SELECT pg_advisory_unlock(hashtext('newim.webhook.worker'))`)
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		if owned := l.conn.Hijack(); owned != nil && owned.PgConn() != nil && owned.PgConn().Conn() != nil {
+		if owned := conn.Hijack(); owned != nil && owned.PgConn() != nil && owned.PgConn().Conn() != nil {
 			_ = owned.PgConn().Conn().Close()
 		}
 		return
 	}
-	l.conn.Release()
+	conn.Release()
 }
 
 // Open requires verified TLS for TCP or explicitly enabled local sockets.
