@@ -1,3 +1,4 @@
+<img src="https://github.com/m-ice/NewIM/raw/main/Resources/TartSocial.png"/>
 # SDK foundation
 
 `core` is a std-only Rust library reporting SDK build identity. It compiles for
