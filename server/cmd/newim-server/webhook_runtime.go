@@ -6,6 +6,7 @@ import (
 	"log/slog"
 	"os"
 	"strings"
+	"sync"
 	"time"
 
 	store "github.com/m-ice/NewIM/server/storage/webhook"
@@ -15,10 +16,13 @@ import (
 // webhookRuntime owns the optional in-process webhook worker and its database pool.
 // webhookRuntime 持有可选的进程内 Webhook worker 及其数据库池。
 type webhookRuntime struct {
-	repo   *store.Repository
-	lock   *store.WorkerLock
-	worker *app.Worker
+	repo      *store.Repository
+	lock      *store.WorkerLock
+	worker    *app.Worker
+	closeOnce sync.Once
 }
+
+const webhookRuntimeCloseTimeout = time.Second
 
 // newWebhookRuntimeFromEnv creates no runtime when the DSN is absent.
 // newWebhookRuntimeFromEnv 在 DSN 缺失时返回 nil runtime；配置不完整必须 fail-closed。
@@ -117,10 +121,23 @@ func (r *webhookRuntime) Run(ctx context.Context) error {
 // Close releases the webhook database pool.
 // Close 释放 Webhook 数据库池。
 func (r *webhookRuntime) Close() {
-	if r != nil && r.repo != nil {
-		if r.lock != nil {
-			r.lock.Release()
-		}
-		r.repo.Close()
+	if r == nil || r.repo == nil {
+		return
 	}
+	r.closeOnce.Do(func() {
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			if r.lock != nil {
+				r.lock.Release()
+			}
+			r.repo.Close()
+		}()
+		timer := time.NewTimer(webhookRuntimeCloseTimeout)
+		defer timer.Stop()
+		select {
+		case <-done:
+		case <-timer.C:
+		}
+	})
 }

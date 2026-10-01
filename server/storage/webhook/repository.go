@@ -18,6 +18,10 @@ import (
 
 const requestTimeout = 5 * time.Second
 
+// workerLockReleaseTimeout bounds shutdown when PostgreSQL is unavailable.
+// workerLockReleaseTimeout 限制 PostgreSQL 不可用时的关停等待，避免进程关停被 advisory unlock 永久阻塞。
+const workerLockReleaseTimeout = time.Second
+
 // Config is trusted database configuration, never request input.
 // Config 是可信数据库配置，不接受请求输入。
 type Config struct {
@@ -34,8 +38,16 @@ type Repository struct{ pool *pgxpool.Pool }
 // AcquireWorkerLock enforces one webhook worker process per database.
 // AcquireWorkerLock 强制每个数据库只有一个 Webhook worker 进程。
 type WorkerLock struct {
-	conn     *pgxpool.Conn
-	released bool
+	conn           lockConnection
+	released       bool
+	releaseTimeout time.Duration
+}
+
+type lockConnection interface {
+	Exec(context.Context, string, ...any) (pgconn.CommandTag, error)
+	QueryRow(context.Context, string, ...any) pgx.Row
+	Hijack() *pgx.Conn
+	Release()
 }
 
 func (r *Repository) AcquireWorkerLock(ctx context.Context) (*WorkerLock, error) {
@@ -77,7 +89,19 @@ func (l *WorkerLock) Release() {
 		return
 	}
 	l.released = true
-	_, _ = l.conn.Exec(context.Background(), `SELECT pg_advisory_unlock(hashtext('newim.webhook.worker'))`)
+	timeout := l.releaseTimeout
+	if timeout <= 0 {
+		timeout = workerLockReleaseTimeout
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	defer cancel()
+	_, err := l.conn.Exec(ctx, `SELECT pg_advisory_unlock(hashtext('newim.webhook.worker'))`)
+	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
+		if owned := l.conn.Hijack(); owned != nil && owned.PgConn() != nil && owned.PgConn().Conn() != nil {
+			_ = owned.PgConn().Conn().Close()
+		}
+		return
+	}
 	l.conn.Release()
 }
 
