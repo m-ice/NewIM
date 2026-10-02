@@ -28,7 +28,17 @@ pub fn no_symlinks(path: &Path) -> Result<(), StoreError> {
     }
     Ok(())
 }
-pub fn lock_root(root: &Path) -> Result<File, StoreError> {
+pub(crate) struct RootLock(File);
+
+impl Drop for RootLock {
+    fn drop(&mut self) {
+        // Explicit unlock releases the shared open-file description even if a
+        // forked child still owns a duplicated descriptor.
+        let _ = self.0.unlock();
+    }
+}
+
+pub fn lock_root(root: &Path) -> Result<RootLock, StoreError> {
     no_symlinks(root)?;
     if !root.exists() {
         fs::create_dir_all(root).map_err(|_| StoreError::Io)?;
@@ -57,7 +67,7 @@ pub fn lock_root(root: &Path) -> Result<File, StoreError> {
         std::fs::TryLockError::WouldBlock => StoreError::Busy,
         _ => StoreError::Io,
     })?;
-    Ok(lock)
+    Ok(RootLock(lock))
 }
 pub fn safe_active(root: &Path) -> Result<PathBuf, StoreError> {
     for name in [
@@ -120,4 +130,31 @@ pub(crate) fn replace_marker(path: &Path, temporary: &Path, data: &[u8]) -> Resu
     fs::rename(temporary, path).map_err(|_| StoreError::Io)?;
     sync_dir(temporary.parent().ok_or(StoreError::InvalidInput)?)?;
     sync_dir(path.parent().ok_or(StoreError::InvalidInput)?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicU64, Ordering};
+
+    static TEST_ID: AtomicU64 = AtomicU64::new(0);
+
+    #[test]
+    fn dropping_root_lock_releases_cloned_open_description() {
+        let base = std::env::temp_dir().canonicalize().unwrap();
+        let root = base.join(format!(
+            "newim-owner-lock-{}-{}",
+            std::process::id(),
+            TEST_ID.fetch_add(1, Ordering::SeqCst)
+        ));
+        let _ = fs::remove_dir_all(&root);
+        let lock = lock_root(&root).unwrap();
+        let cloned = lock.0.try_clone().unwrap();
+        drop(lock);
+
+        let reacquired = lock_root(&root).expect("explicit unlock must release cloned descriptor");
+        drop(reacquired);
+        drop(cloned);
+        fs::remove_dir_all(root).unwrap();
+    }
 }

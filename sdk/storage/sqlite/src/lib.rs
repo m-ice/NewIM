@@ -11,7 +11,6 @@ pub use recovery::{RecoveryReport, quarantine, rebuild, salvage_pending};
 use newim_sdk_core::store::*;
 use rusqlite::{Connection, ErrorCode, OpenFlags};
 use std::{
-    fs::File,
     path::{Path, PathBuf},
     time::Duration,
 };
@@ -40,7 +39,7 @@ pub struct SqliteStore {
     limits: Limits,
     completion: Option<Completion>,
     requires_reopen: bool,
-    _lock: File,
+    _lock: files::RootLock,
 }
 
 pub(crate) fn db(error: rusqlite::Error) -> StoreError {
@@ -94,7 +93,7 @@ impl SqliteStore {
         root: &Path,
         account: &str,
         limits: Limits,
-        lock: File,
+        lock: files::RootLock,
         recovery: bool,
     ) -> Result<Self, StoreError> {
         if !(1..=10_000).contains(&limits.records) || !(32..=32_768).contains(&limits.pages) {
