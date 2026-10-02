@@ -15,10 +15,19 @@ import (
 
 // webhookRuntime owns the optional in-process webhook worker and its database pool.
 // webhookRuntime 持有可选的进程内 Webhook worker 及其数据库池。
+type webhookLock interface {
+	Check(context.Context) error
+	Release()
+}
+
+type webhookWorker interface {
+	Run(context.Context) error
+}
+
 type webhookRuntime struct {
 	repo      *store.Repository
-	lock      *store.WorkerLock
-	worker    *app.Worker
+	lock      webhookLock
+	worker    webhookWorker
 	closeOnce sync.Once
 }
 
@@ -112,6 +121,9 @@ func (r *webhookRuntime) Run(ctx context.Context) error {
 			if err := r.lock.Check(ctx); err != nil {
 				cancel()
 				<-done
+				if ctx.Err() != nil {
+					return nil
+				}
 				return err
 			}
 		}
