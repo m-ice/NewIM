@@ -9,6 +9,7 @@ import (
 	"errors"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/jackc/pgx/v5"
@@ -41,7 +42,7 @@ type Repository struct{ pool *pgxpool.Pool }
 type WorkerLock struct {
 	mu             sync.Mutex
 	conn           lockConnection
-	released       bool
+	released       atomic.Bool
 	releaseTimeout time.Duration
 }
 
@@ -74,12 +75,12 @@ func (r *Repository) AcquireWorkerLock(ctx context.Context) (*WorkerLock, error)
 // Check verifies the lock is still held by the same live backend connection.
 // Check 校验同一存活 backend 连接仍持有锁；连接丢失或锁消失返回错误。
 func (l *WorkerLock) Check(ctx context.Context) error {
-	if l == nil || ctx == nil {
+	if l == nil || ctx == nil || l.released.Load() {
 		return app.Fail(app.CodeBacklogPaused)
 	}
 	l.mu.Lock()
 	defer l.mu.Unlock()
-	if l.conn == nil || l.released {
+	if l.conn == nil || l.released.Load() {
 		return app.Fail(app.CodeBacklogPaused)
 	}
 	var held bool
@@ -92,31 +93,50 @@ func (l *WorkerLock) Check(ctx context.Context) error {
 // Release unlocks the advisory lock and returns its dedicated connection.
 // Release 释放 advisory lock 并归还其专用连接。
 func (l *WorkerLock) Release() {
-	if l == nil {
+	if l == nil || !l.released.CompareAndSwap(false, true) {
 		return
 	}
-	l.mu.Lock()
-	if l.conn == nil || l.released {
-		l.mu.Unlock()
-		return
-	}
-	l.released = true
-	conn := l.conn
 	timeout := l.releaseTimeout
-	l.mu.Unlock()
 	if timeout <= 0 {
 		timeout = workerLockReleaseTimeout
 	}
+	if !lockWithin(&l.mu, timeout) {
+		return
+	}
+	defer l.mu.Unlock()
+	if l.conn == nil {
+		return
+	}
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
-	_, err := conn.Exec(ctx, `SELECT pg_advisory_unlock(hashtext('newim.webhook.worker'))`)
+	_, err := l.conn.Exec(ctx, `SELECT pg_advisory_unlock(hashtext('newim.webhook.worker'))`)
 	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, context.Canceled) {
-		if owned := conn.Hijack(); owned != nil && owned.PgConn() != nil && owned.PgConn().Conn() != nil {
+		if owned := l.conn.Hijack(); owned != nil && owned.PgConn() != nil && owned.PgConn().Conn() != nil {
 			_ = owned.PgConn().Conn().Close()
 		}
 		return
 	}
-	conn.Release()
+	l.conn.Release()
+}
+
+// lockWithin bounds how long shutdown waits for an in-flight lock check.
+// lockWithin 限制关停等待进行中的锁检查的时间；超时后由进程退出收尾。
+func lockWithin(mu *sync.Mutex, timeout time.Duration) bool {
+	deadline := time.Now().Add(timeout)
+	for {
+		if mu.TryLock() {
+			return true
+		}
+		remaining := time.Until(deadline)
+		if remaining <= 0 {
+			return false
+		}
+		wait := 5 * time.Millisecond
+		if remaining < wait {
+			wait = remaining
+		}
+		time.Sleep(wait)
+	}
 }
 
 // Open requires verified TLS for TCP or explicitly enabled local sockets.

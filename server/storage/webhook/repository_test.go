@@ -137,3 +137,47 @@ func TestWorkerLockReleaseWaitsForInFlightCheck(t *testing.T) {
 		t.Fatal("Release did not return the connection")
 	}
 }
+
+func TestWorkerLockReleaseIsBoundedWhenCheckRemainsInFlight(t *testing.T) {
+	connection := &blockingCheckConnection{
+		checkStarted:  make(chan struct{}),
+		releaseCheck:  make(chan struct{}),
+		execStarted:   make(chan struct{}),
+		releaseCalled: make(chan struct{}),
+	}
+	lock := &WorkerLock{conn: connection, releaseTimeout: 20 * time.Millisecond}
+
+	checkDone := make(chan error, 1)
+	go func() { checkDone <- lock.Check(context.Background()) }()
+	<-connection.checkStarted
+
+	releaseDone := make(chan struct{})
+	go func() {
+		lock.Release()
+		close(releaseDone)
+	}()
+
+	select {
+	case <-releaseDone:
+	case <-time.After(250 * time.Millisecond):
+		close(connection.releaseCheck)
+		<-releaseDone
+		<-checkDone
+		t.Fatal("Release exceeded its configured timeout while Check remained in flight")
+	}
+
+	close(connection.releaseCheck)
+	if err := <-checkDone; err == nil {
+		t.Fatal("Check returned success without an observed advisory lock")
+	}
+	select {
+	case <-connection.execStarted:
+		t.Fatal("Release used the lock connection after its bounded wait expired")
+	default:
+	}
+	select {
+	case <-connection.releaseCalled:
+		t.Fatal("Release returned a connection it did not own")
+	default:
+	}
+}
