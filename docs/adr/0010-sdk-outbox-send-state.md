@@ -79,8 +79,12 @@ authoritative reload before another decision.
 It exposes the adapter's exact current store fence so core can reject a stale caller context
 before dispatch, failure application, rebind, resume or terminal removal. The SQLite adapter
 performs exact three-field, revision-CAS updates/removals without a schema migration or
-request-byte change. It also observes the existing `requires_reopen` freeze: after corruption or
-an ambiguous commit, pending mutations return `RecoveryRequired` until reopen.
+request-byte change. On an identical `Enqueue` retry, it compares the requested pending row
+with the authoritative row: changed state returns `ExistingPending`, while an explicitly
+removed row returns `OperationExpired` and cannot recreate the intent. Other LocalStore
+operation replays retain their original receipt semantics. It also observes the existing
+`requires_reopen` freeze: after corruption or an ambiguous commit, pending mutations return
+`RecoveryRequired` until reopen.
 
 ## Consequences
 

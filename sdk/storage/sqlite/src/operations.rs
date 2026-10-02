@@ -273,15 +273,31 @@ impl SqliteStore {
             return Err(StoreError::OperationExpired);
         }
         if r.operation_id == last {
-            return if bytes == previous {
-                Ok(Response::Committed(Receipt {
-                    revision: last_rev,
-                    affected: last_affected,
-                    replayed: true,
-                }))
-            } else {
-                Err(StoreError::OperationConflict)
-            };
+            if bytes != previous {
+                return Err(StoreError::OperationConflict);
+            }
+            if let Action::Enqueue(requested) = &r.action {
+                let current = tx
+                    .query_row(
+                        "SELECT sender_id,client_id,conversation_id,payload FROM pending_outbox WHERE sender_id=? AND client_id=?",
+                        params![requested.sender_id, requested.client_id],
+                        pending,
+                    )
+                    .optional()
+                    .map_err(db)?;
+                match current {
+                    Some(current) if current != *requested => {
+                        return Ok(Response::ExistingPending(current));
+                    }
+                    None => return Err(StoreError::OperationExpired),
+                    Some(_) => {}
+                }
+            }
+            return Ok(Response::Committed(Receipt {
+                revision: last_rev,
+                affected: last_affected,
+                replayed: true,
+            }));
         }
         if rev == i64::MAX as u64 {
             return Err(StoreError::CapacityExceeded);

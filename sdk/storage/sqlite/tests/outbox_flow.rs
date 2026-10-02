@@ -109,6 +109,164 @@ fn restart_resumes_same_pending() {
 }
 
 #[test]
+fn pending_state_change_invalidates_stale_enqueue_replay() {
+    let directory = Directory::new();
+    let mut store = directory.open();
+    let context = send_context(&store);
+    let created = outbox::enqueue(&mut store, 1, &context, intent(), 1_000).unwrap();
+    assert_eq!(created.state, OutboxState::Ready);
+
+    let ready = pending(&mut store, "stable");
+    let rev = revision(&mut store);
+    assert!(matches!(
+        outbox::plan_dispatch(&mut store, &ready, rev, &context, 1_000).unwrap(),
+        OutboxTransition::Send { .. }
+    ));
+    let in_flight = pending(&mut store, "stable");
+    let rev = revision(&mut store);
+    let auth = SendFailure::from_validated_code("stable", "room", "AUTH_REQUIRED").unwrap();
+    assert!(matches!(
+        outbox::apply_failure(&mut store, &in_flight, rev, &context, &auth, 1_000).unwrap(),
+        OutboxTransition::AuthRecovery { .. }
+    ));
+    assert_eq!(
+        OutboxRecord::decode(&pending(&mut store, "stable"))
+            .unwrap()
+            .state,
+        OutboxState::AuthRecovery
+    );
+    drop(store);
+
+    let mut reopened = directory.open();
+    let replay = outbox::enqueue(&mut reopened, 1, &context, intent(), 1_000).unwrap();
+    assert_eq!(replay.state, OutboxState::AuthRecovery);
+    let authoritative = pending(&mut reopened, "stable");
+    assert_eq!(authoritative.payload, replay.encode().unwrap());
+    let rev = revision(&mut reopened);
+    assert!(matches!(
+        outbox::plan_dispatch(&mut reopened, &authoritative, rev, &context, 1_000).unwrap(),
+        OutboxTransition::AuthRecovery { .. }
+    ));
+    assert_eq!(
+        OutboxRecord::decode(&pending(&mut reopened, "stable"))
+            .unwrap()
+            .state,
+        OutboxState::AuthRecovery
+    );
+}
+
+#[test]
+fn retry_wait_stale_enqueue_replay_preserves_deadline() {
+    let directory = Directory::new();
+    let mut store = directory.open();
+    let context = send_context(&store);
+    outbox::enqueue(&mut store, 1, &context, intent(), 1_000).unwrap();
+    let ready = pending(&mut store, "stable");
+    let rev = revision(&mut store);
+    outbox::plan_dispatch(&mut store, &ready, rev, &context, 1_000).unwrap();
+    let in_flight = pending(&mut store, "stable");
+    let rev = revision(&mut store);
+    let auth = SendFailure::from_validated_code("stable", "room", "AUTH_REQUIRED").unwrap();
+    outbox::apply_failure(&mut store, &in_flight, rev, &context, &auth, 1_000).unwrap();
+    let auth_pending = pending(&mut store, "stable");
+    let rev = revision(&mut store);
+    let until_ms =
+        match outbox::resume_auth(&mut store, &auth_pending, rev, &context, 1_000).unwrap() {
+            OutboxTransition::Wait { until_ms } => until_ms,
+            other => panic!("unexpected resume transition: {other:?}"),
+        };
+    drop(store);
+
+    let mut reopened = directory.open();
+    let replay = outbox::enqueue(&mut reopened, 1, &context, intent(), 1_000).unwrap();
+    assert_eq!(replay.state, OutboxState::RetryWait);
+    assert_eq!(replay.attempts, 1);
+    assert_eq!(replay.created_at_ms, 1_000);
+    assert_eq!(replay.deadline_ms, until_ms);
+    let authoritative = pending(&mut reopened, "stable");
+    assert_eq!(authoritative.payload, replay.encode().unwrap());
+    let rev = revision(&mut reopened);
+    assert!(matches!(
+        outbox::plan_dispatch(
+            &mut reopened,
+            &authoritative,
+            rev,
+            &context,
+            until_ms - 1
+        )
+        .unwrap(),
+        OutboxTransition::Wait { until_ms: observed } if observed == until_ms
+    ));
+    assert_eq!(
+        OutboxRecord::decode(&pending(&mut reopened, "stable"))
+            .unwrap()
+            .state,
+        OutboxState::RetryWait
+    );
+}
+
+#[test]
+fn unrelated_trim_replay_keeps_its_original_receipt_after_pending_mutation() {
+    let directory = Directory::new();
+    let mut store = directory.open();
+    let context = send_context(&store);
+    outbox::enqueue(&mut store, 1, &context, intent(), 0).unwrap();
+
+    let rev = revision(&mut store);
+    let inserted = run(&mut store, 2, batch(rev, vec![msg(1)])).unwrap();
+    assert!(matches!(inserted, Response::Committed(_)));
+    let trim = Action::Trim {
+        conversation: "room".into(),
+        through: 1,
+        limit: 1,
+    };
+    let original = match run(&mut store, 3, trim.clone()).unwrap() {
+        Response::Committed(receipt) => receipt,
+        other => panic!("unexpected trim response: {other:?}"),
+    };
+    assert!(!original.replayed);
+    assert_eq!(original.affected, 1);
+
+    let ready = pending(&mut store, "stable");
+    let rev = revision(&mut store);
+    outbox::plan_dispatch(&mut store, &ready, rev, &context, 0).unwrap();
+    let replay = match run(&mut store, 3, trim).unwrap() {
+        Response::Committed(receipt) => receipt,
+        other => panic!("unexpected trim replay response: {other:?}"),
+    };
+    assert_eq!(replay.revision, original.revision);
+    assert_eq!(replay.affected, original.affected);
+    assert!(replay.replayed);
+}
+
+#[test]
+fn removed_terminal_pending_cannot_be_recreated_by_stale_enqueue_replay() {
+    let directory = Directory::new();
+    let mut store = directory.open();
+    let context = send_context(&store);
+    outbox::enqueue(&mut store, 1, &context, intent(), 0).unwrap();
+    let ready = pending(&mut store, "stable");
+    let rev = revision(&mut store);
+    outbox::plan_dispatch(&mut store, &ready, rev, &context, 0).unwrap();
+    let in_flight = pending(&mut store, "stable");
+    let rev = revision(&mut store);
+    let auth = SendFailure::from_validated_code("stable", "room", "AUTH_REQUIRED").unwrap();
+    outbox::apply_failure(&mut store, &in_flight, rev, &context, &auth, 0).unwrap();
+    let terminal = pending(&mut store, "stable");
+    let rev = revision(&mut store);
+    outbox::remove_terminal(&mut store, &terminal, rev, &context).unwrap();
+    assert_eq!(pending_count(&directory), 0);
+    drop(store);
+
+    let mut reopened = directory.open();
+    assert_eq!(
+        outbox::enqueue(&mut reopened, 1, &context, intent(), 0).unwrap_err(),
+        OutboxError::Store(StoreError::OperationExpired)
+    );
+    assert_eq!(pending_count(&directory), 0);
+}
+
+#[test]
 fn retry_wait_rebinds_after_reopen_and_dispatches() {
     let directory = Directory::new();
     let mut store = directory.open();

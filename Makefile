@@ -168,6 +168,14 @@ sdk-outbox-ack: toolchain
 	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test outbox_flow -- --exact commit_outcome_unknown_requires_authoritative_reload
 
 sdk-outbox-terminal: toolchain
+	$(call require-outbox-test,python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test outbox_flow -- --list,pending_state_change_invalidates_stale_enqueue_replay)
+	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test outbox_flow -- --exact pending_state_change_invalidates_stale_enqueue_replay
+	$(call require-outbox-test,python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test outbox_flow -- --list,retry_wait_stale_enqueue_replay_preserves_deadline)
+	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test outbox_flow -- --exact retry_wait_stale_enqueue_replay_preserves_deadline
+	$(call require-outbox-test,python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test outbox_flow -- --list,removed_terminal_pending_cannot_be_recreated_by_stale_enqueue_replay)
+	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test outbox_flow -- --exact removed_terminal_pending_cannot_be_recreated_by_stale_enqueue_replay
+	$(call require-outbox-test,python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test outbox_flow -- --list,unrelated_trim_replay_keeps_its_original_receipt_after_pending_mutation)
+	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test outbox_flow -- --exact unrelated_trim_replay_keeps_its_original_receipt_after_pending_mutation
 	$(call require-outbox-test,python3 sdk/storage/sqlite/engine.py run cargo test -p newim-sdk-core --locked --offline --lib -- --list,outbox::conformance::generation_terminal_and_explicit_removal)
 	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-sdk-core --locked --offline --lib -- --exact outbox::conformance::generation_terminal_and_explicit_removal
 	$(call require-outbox-test,python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test outbox_flow -- --list,rollback_preserves_pending_and_terminal_cas_removes_exactly)

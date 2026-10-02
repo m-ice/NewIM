@@ -69,7 +69,11 @@ Auth recovery requires an explicit host resume with the current generation. Resu
 active store/connection generation while preserving the original audit fields. A terminal or
 auth-recovery row can be removed only by explicit revision-CAS `remove_pending`; queued work and
 non-terminal records cannot be silently removed. Resume and removal require the same trusted
-sender and account/instance identity but do not require the original connection generation.
+sender and account/instance identity but do not require the original connection generation. A successful direct pending mutation advances the store revision. On an
+identical `Enqueue` retry, the adapter compares the requested pending row with the
+authoritative row: changed state returns `ExistingPending`, while an explicitly removed row
+returns `OperationExpired` and cannot recreate the intent. Other LocalStore operation replays
+keep their original receipt semantics.
 
 ## ACK resolution
 
