@@ -1,3 +1,4 @@
+<img src="https://github.com/m-ice/NewIM/blob/main/raw/main/Resources/banner.png?raw=true"/>
 # NewIM
 
 NewIM is an independently developed messaging platform for 澜遇科技. The current

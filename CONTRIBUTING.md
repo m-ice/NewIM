@@ -1,3 +1,5 @@
+<img src="https://github.com/m-ice/NewIM/blob/main/raw/main/Resources/banner.png?raw=true"/>
+
 # Contributing to NewIM
 
 Start from a branch with a clean understanding of existing changes. Keep one
