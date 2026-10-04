@@ -16,6 +16,14 @@ fn bounded(row: &Row<'_>, index: usize, max: usize) -> rusqlite::Result<()> {
     }
     Ok(())
 }
+fn message_read_error(error: rusqlite::Error) -> StoreError {
+    match error {
+        rusqlite::Error::InvalidQuery | rusqlite::Error::InvalidColumnType(..) => {
+            StoreError::Corrupt
+        }
+        _ => db(error),
+    }
+}
 fn message(row: &Row<'_>) -> rusqlite::Result<Message> {
     for index in 0..4 {
         bounded(row, index, 128)?;
@@ -45,7 +53,7 @@ fn lookup(conn: &Connection, id: &str) -> Result<Option<Message>, StoreError> {
             message,
         )
         .optional()
-        .map_err(db)?;
+        .map_err(message_read_error)?;
     if let Some(message) = &found {
         validate_message_read(message)?;
     }
@@ -176,7 +184,7 @@ impl SqliteStore {
                 let mut bytes = 0;
                 let mut more = false;
                 for row in rows {
-                    let m = row.map_err(db)?;
+                    let m = row.map_err(message_read_error)?;
                     validate_message_read(&m)?;
                     if m.payload
                         .as_ref()
@@ -363,7 +371,10 @@ impl SqliteStore {
                         )
                         .map_err(db)?
                         .collect::<rusqlite::Result<Vec<_>>>()
-                        .map_err(db)?;
+                        .map_err(message_read_error)?;
+                    for old in &existing {
+                        validate_message_read(old)?;
+                    }
                     if existing.len() > 1 || existing.first().is_some_and(|old| !identity(old, m)) {
                         return Err(StoreError::IdentityConflict);
                     }

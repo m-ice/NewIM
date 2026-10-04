@@ -386,18 +386,14 @@ fn unbound_unreadable_quarantine_identity_fails_before_active_creation() {
     }
 }
 
-fn corrupt_message_read(action: Action) {
+fn corrupt_message_read(action: Action, update: &str) {
     let d = Directory::new();
     let mut store = d.open();
     run(&mut store, 1, batch(0, vec![msg(1)])).unwrap();
     drop(store);
 
     let conn = d.db();
-    conn.execute(
-        "UPDATE messages SET sender_id='', message_type='' WHERE server_id='s1'",
-        [],
-    )
-    .unwrap();
+    conn.execute(update, []).unwrap();
     drop(conn);
 
     let mut store = d.open();
@@ -410,16 +406,40 @@ fn corrupt_message_read(action: Action) {
 
 #[test]
 fn corrupt_message_page_fails_closed() {
-    corrupt_message_read(Action::Messages {
-        conversation: "room".into(),
-        after: None,
-        limit: 64,
-    });
+    corrupt_message_read(
+        Action::Messages {
+            conversation: "room".into(),
+            after: None,
+            limit: 64,
+        },
+        "UPDATE messages SET sender_id='', message_type='' WHERE server_id='s1'",
+    );
 }
 
 #[test]
 fn corrupt_message_lookup_fails_closed() {
-    corrupt_message_read(Action::Lookup {
-        server_id: "s1".into(),
-    });
+    corrupt_message_read(
+        Action::Lookup {
+            server_id: "s1".into(),
+        },
+        "UPDATE messages SET sender_id='', message_type='' WHERE server_id='s1'",
+    );
+}
+
+#[test]
+fn corrupt_message_existing_apply_fails_closed() {
+    corrupt_message_read(
+        batch(1, vec![msg(1)]),
+        "UPDATE messages SET message_type='' WHERE server_id='s1'",
+    );
+}
+
+#[test]
+fn corrupt_message_decode_fails_closed() {
+    corrupt_message_read(
+        Action::Lookup {
+            server_id: "s1".into(),
+        },
+        "UPDATE messages SET sequence='not-an-integer' WHERE server_id='s1'",
+    );
 }
