@@ -18,9 +18,13 @@ fn bounded(row: &Row<'_>, index: usize, max: usize) -> rusqlite::Result<()> {
 }
 fn message_read_error(error: rusqlite::Error) -> StoreError {
     match error {
-        rusqlite::Error::InvalidQuery | rusqlite::Error::InvalidColumnType(..) => {
-            StoreError::Corrupt
-        }
+        rusqlite::Error::InvalidQuery
+        | rusqlite::Error::InvalidColumnType(..)
+        | rusqlite::Error::FromSqlConversionFailure(..)
+        | rusqlite::Error::IntegralValueOutOfRange(..)
+        | rusqlite::Error::Utf8Error(..) => StoreError::Corrupt,
+        // 持久化行的解码/类型错误必须按损坏处理并冻结适配器。
+        // Persisted row decoding/type failures are corruption and must freeze the adapter.
         _ => db(error),
     }
 }

@@ -443,3 +443,21 @@ fn corrupt_message_decode_fails_closed() {
         "UPDATE messages SET sequence='not-an-integer' WHERE server_id='s1'",
     );
 }
+
+#[test]
+fn corrupt_message_invalid_utf8_lookup_fails_closed() {
+    corrupt_message_read(
+        Action::Lookup {
+            server_id: "s1".into(),
+        },
+        "UPDATE messages SET sender_id=CAST(X'80' AS TEXT) WHERE server_id='s1'",
+    );
+}
+
+#[test]
+fn corrupt_message_invalid_utf8_existing_apply_fails_closed() {
+    corrupt_message_read(
+        batch(1, vec![msg(1)]),
+        "UPDATE messages SET message_type=CAST(X'80' AS TEXT) WHERE server_id='s1'",
+    );
+}
