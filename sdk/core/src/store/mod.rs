@@ -98,6 +98,16 @@ pub struct Message {
     /// None 表示已裁剪缓存 / None means the payload cache was trimmed.
     pub payload: Option<Blob>,
 }
+impl Message {
+    /// 校验本地持久化快照的字段与边界 / Validate a persisted local snapshot and its bounds.
+    pub fn validate(&self) -> Result<(), StoreError> {
+        if validation::message(self, false) {
+            Ok(())
+        } else {
+            Err(StoreError::InvalidInput)
+        }
+    }
+}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Pending {

@@ -385,3 +385,41 @@ fn unbound_unreadable_quarantine_identity_fails_before_active_creation() {
         assert_eq!(fs::read(d.0.join("initialized")).unwrap(), marker);
     }
 }
+
+fn corrupt_message_read(action: Action) {
+    let d = Directory::new();
+    let mut store = d.open();
+    run(&mut store, 1, batch(0, vec![msg(1)])).unwrap();
+    drop(store);
+
+    let conn = d.db();
+    conn.execute(
+        "UPDATE messages SET sender_id='', message_type='' WHERE server_id='s1'",
+        [],
+    )
+    .unwrap();
+    drop(conn);
+
+    let mut store = d.open();
+    assert_eq!(run(&mut store, 2, action), Err(StoreError::Corrupt));
+    assert_eq!(
+        run(&mut store, 3, Action::Metrics),
+        Err(StoreError::RecoveryRequired)
+    );
+}
+
+#[test]
+fn corrupt_message_page_fails_closed() {
+    corrupt_message_read(Action::Messages {
+        conversation: "room".into(),
+        after: None,
+        limit: 64,
+    });
+}
+
+#[test]
+fn corrupt_message_lookup_fails_closed() {
+    corrupt_message_read(Action::Lookup {
+        server_id: "s1".into(),
+    });
+}

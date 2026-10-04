@@ -34,14 +34,22 @@ fn message(row: &Row<'_>) -> rusqlite::Result<Message> {
         payload: row.get::<_, Option<Vec<u8>>>(8)?.map(Blob),
     })
 }
+fn validate_message_read(m: &Message) -> Result<(), StoreError> {
+    m.validate().map_err(|_| StoreError::Corrupt)
+}
 fn lookup(conn: &Connection, id: &str) -> Result<Option<Message>, StoreError> {
-    conn.query_row(
-        &format!("SELECT {COLUMNS} FROM messages WHERE server_id=?"),
-        [id],
-        message,
-    )
-    .optional()
-    .map_err(db)
+    let found = conn
+        .query_row(
+            &format!("SELECT {COLUMNS} FROM messages WHERE server_id=?"),
+            [id],
+            message,
+        )
+        .optional()
+        .map_err(db)?;
+    if let Some(message) = &found {
+        validate_message_read(message)?;
+    }
+    Ok(found)
 }
 fn identity(a: &Message, b: &Message) -> bool {
     a.server_id == b.server_id
@@ -169,6 +177,7 @@ impl SqliteStore {
                 let mut more = false;
                 for row in rows {
                     let m = row.map_err(db)?;
+                    validate_message_read(&m)?;
                     if m.payload
                         .as_ref()
                         .is_some_and(|p| p.0.len() > MAX_VALUE_BYTES)

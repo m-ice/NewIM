@@ -16,7 +16,7 @@ fn blob(b: &Blob) -> bool {
 fn pending(p: &Pending) -> bool {
     id(&p.sender_id) && id(&p.client_id) && id(&p.conversation_id) && blob(&p.payload)
 }
-fn message(m: &Message, insert: bool) -> bool {
+pub(crate) fn message(m: &Message, insert: bool) -> bool {
     id(&m.server_id)
         && id(&m.sender_id)
         && id(&m.client_id)
