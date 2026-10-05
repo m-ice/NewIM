@@ -506,6 +506,10 @@ SET status='dead_letter',completed_at=clock_timestamp(),last_error_code=$2,lease
 WHERE delivery_id=$1`, deliveryID, app.CodeDeliveryDeadLetter); err != nil {
 			return false, mapStorageError(err)
 		}
+		if err = tx.Commit(ctx); err != nil {
+			return false, mapStorageError(err)
+		}
+		return false, app.Fail(app.CodeDeliveryDeadLetter)
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return false, mapStorageError(err)

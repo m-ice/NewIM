@@ -180,7 +180,11 @@ func (w *Worker) deliver(ctx context.Context, delivery Delivery) {
 	now := w.cfg.Clock.Now()
 	allowed, err := w.store.BeginAttempt(ctx, delivery.ID, delivery.LeaseToken, now, w.cfg.MaxAttempts, w.cfg.RequestTimeout+w.cfg.RequestTimeout/2)
 	if err != nil {
-		w.observe(OperationAttempt, ErrorCode(err), time.Since(started))
+		code := ErrorCode(err)
+		if code == CodeDeliveryDeadLetter {
+			w.observe(OperationFinish, CodeDeliveryDeadLetter, 0)
+		}
+		w.observe(OperationAttempt, code, time.Since(started))
 		return
 	}
 	if !allowed {

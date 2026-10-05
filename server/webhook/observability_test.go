@@ -91,6 +91,36 @@ func TestBlockedWebhookObserverDoesNotBlockDelivery(t *testing.T) {
 	worker.Close()
 }
 
+func TestWebhookExhaustedAttemptEmitsTerminalObservation(t *testing.T) {
+	now := time.UnixMilli(1790189001000)
+	store := &exhaustedAttemptStore{testStore: &testStore{delivery: testDelivery(nil)}}
+	registry := api.NewMetricsRegistry()
+	cfg := testConfig(now)
+	cfg.Metrics = registry
+	worker, err := NewWorker(cfg, store, testDoer{status: http.StatusNoContent}, testResolver{secret: []byte("0123456789abcdef0123456789abcdef")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = worker.cycle(context.Background(), make(chan struct{}, 2)); err != nil {
+		t.Fatal(err)
+	}
+	if !waitForWebhookMetric(registry, api.MetricWebhookDeliveries, map[string]string{"stage": "delivery_dead_letter", "result": "permanent"}) {
+		t.Fatalf("terminal dead-letter metric missing: %+v", registry.Snapshot())
+	}
+	store.mu.Lock()
+	finished := len(store.finished)
+	store.mu.Unlock()
+	if finished != 0 {
+		t.Fatalf("exhausted attempt unexpectedly called Finish %d times", finished)
+	}
+}
+
+type exhaustedAttemptStore struct{ *testStore }
+
+func (*exhaustedAttemptStore) BeginAttempt(context.Context, string, string, time.Time, int, time.Duration) (bool, error) {
+	return false, Fail(CodeDeliveryDeadLetter)
+}
+
 type panicWebhookObserver struct{}
 
 func (panicWebhookObserver) Observe(Observation) { panic("observer failure") }

@@ -162,6 +162,32 @@ func TestWebhookObservabilityRecovery(t *testing.T) {
 		t.Fatal("closed repository returned fabricated counts")
 	}
 	t.Run("authoritative-outcomes", testWebhookObservabilityAuthoritativeOutcomes)
+	t.Run("attempt-exhaustion", testWebhookAttemptExhaustion)
+}
+
+func testWebhookAttemptExhaustion(t *testing.T) {
+	f := openFixture(t)
+	eventID := f.seedEvent(f.id("webhook_attempt_exhaustion_room"))
+	_, _ = f.insertEndpoint(1, "https://example.invalid/exhaustion", []byte("0123456789abcdef0123456789abcdef"))
+	if n, err := f.repo.Fanout(ctx, f.now, 10, 1000, 10000); err != nil || n != 1 {
+		t.Fatalf("fanout=%d err=%v", n, err)
+	}
+	claimed, err := f.repo.Claim(ctx, f.now, "exhaustion_owner", 2*time.Second, 1)
+	must(t, err)
+	if len(claimed) != 1 {
+		t.Fatalf("claimed=%d", len(claimed))
+	}
+	f.sql("UPDATE newim.im_webhook_deliveries SET attempts=1 WHERE delivery_id=$1", claimed[0].ID)
+	allowed, err := f.repo.BeginAttempt(ctx, claimed[0].ID, claimed[0].LeaseToken, f.now, 1, time.Second)
+	if allowed || app.ErrorCode(err) != app.CodeDeliveryDeadLetter {
+		t.Fatalf("exhausted attempt allowed=%v err=%v", allowed, err)
+	}
+	if got := f.optionalString("SELECT status FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID); got != "dead_letter" {
+		t.Fatalf("exhausted delivery status=%q want dead_letter", got)
+	}
+	if got := f.optionalString("SELECT last_error_code FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID); got != string(app.CodeDeliveryDeadLetter) {
+		t.Fatalf("exhausted delivery code=%q want %s", got, app.CodeDeliveryDeadLetter)
+	}
 }
 
 func assertDeliveryGauge(t *testing.T, f *fixture, state string, want float64) {

@@ -174,6 +174,31 @@ func waitForMessageMetric(t *testing.T, registry *api.MetricsRegistry, name stri
 	t.Fatalf("metric %s labels=%v missing in %+v", name, labels, registry.Snapshot())
 }
 
+func waitForMessageMetricValue(t *testing.T, registry *api.MetricsRegistry, name string, labels map[string]string) float64 {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, sample := range registry.Snapshot() {
+			if sample.Name != name {
+				continue
+			}
+			matches := true
+			for key, value := range labels {
+				if sample.Labels[key] != value {
+					matches = false
+					break
+				}
+			}
+			if matches {
+				return sample.Value
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("metric %s labels=%v missing in %+v", name, labels, registry.Snapshot())
+	return 0
+}
+
 func TestMessageObservabilityRecovery(t *testing.T) {
 	f := openFixture(t)
 	user := "observability_user"
@@ -205,6 +230,95 @@ func TestMessageObservabilityRecovery(t *testing.T) {
 	}
 	t.Run("authoritative-lifecycle", testMessageObservabilityAuthoritativeLifecycle)
 	t.Run("concurrent-send-scrape", testMessageObservabilityConcurrentSendScrape)
+	t.Run("concurrent-same-intent-replay", testMessageObservabilityConcurrentReplay)
+	t.Run("source-timeout", testMessageObservabilitySourceTimeout)
+}
+
+func testMessageObservabilitySourceTimeout(t *testing.T) {
+	f := openFixture(t)
+	tx, err := f.db.Begin(ctx)
+	must(t, err)
+	if _, err = tx.Exec(ctx, "LOCK TABLE newim.im_outbox_events IN ACCESS EXCLUSIVE MODE"); err != nil {
+		_ = tx.Rollback(ctx)
+		t.Fatal(err)
+	}
+	started := time.Now()
+	_, snapshotErr := f.repo.SnapshotMetrics(ctx)
+	elapsed := time.Since(started)
+	if rollbackErr := tx.Rollback(ctx); rollbackErr != nil {
+		t.Fatal(rollbackErr)
+	}
+	if snapshotErr == nil {
+		t.Fatal("source timeout unexpectedly returned a snapshot")
+	}
+	if elapsed < 900*time.Millisecond || elapsed > 4*time.Second {
+		t.Fatalf("source timeout elapsed=%s", elapsed)
+	}
+}
+
+func testMessageObservabilityConcurrentReplay(t *testing.T) {
+	f := openFixture(t)
+	user := "observability_replay_user"
+	conversationID := f.seedConversation("observability_replay", user)
+	registry := api.NewMetricsRegistry()
+	sink := api.NewBoundedMetricsSink(registry, 1024)
+	service, err := app.NewService(f.repo, app.Config{
+		IDs:      &sequenceIDs{prefix: "observability_replay_generated"},
+		TraceIDs: &traceSequence{},
+		Clock:    app.ClockFunc(func() time.Time { return time.UnixMilli(f.now.Load()).UTC() }),
+		Metrics:  sink,
+	})
+	must(t, err)
+	defer service.Close()
+	defer sink.Close()
+	request := f.request("observability_replay_client", conversationID, "same")
+	identity := f.identity(user)
+	const attempts = 8
+	results := make(chan string, attempts)
+	errorsFound := make(chan error, attempts)
+	var wait sync.WaitGroup
+	for index := 0; index < attempts; index++ {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			frame, sendErr := service.Send(ctx, identity, request)
+			if sendErr != nil {
+				errorsFound <- sendErr
+				return
+			}
+			if frame.Ack == nil {
+				errorsFound <- fmt.Errorf("missing ACK")
+				return
+			}
+			results <- frame.Ack.ServerMsgID
+		}()
+	}
+	wait.Wait()
+	close(results)
+	close(errorsFound)
+	for sendErr := range errorsFound {
+		t.Fatal(sendErr)
+	}
+	serverIDs := make(map[string]struct{})
+	for serverID := range results {
+		serverIDs[serverID] = struct{}{}
+	}
+	if len(serverIDs) != 1 {
+		t.Fatalf("concurrent same-intent replies used %d server identities", len(serverIDs))
+	}
+	if got := f.scalarInt64("SELECT count(*) FROM newim.im_messages WHERE conversation_id=$1", conversationID); got != 1 {
+		t.Fatalf("concurrent replay message rows=%d want=1", got)
+	}
+	if got := f.scalarInt64(`SELECT count(*) FROM newim.im_outbox_events e
+JOIN newim.im_messages m ON m.server_msg_id=e.server_msg_id WHERE m.conversation_id=$1`, conversationID); got != 1 {
+		t.Fatalf("concurrent replay outbox rows=%d want=1", got)
+	}
+	if got := waitForMessageMetricValue(t, registry, api.MetricMessageSendIdempotency, map[string]string{"outcome": "new"}); got != 1 {
+		t.Fatalf("new metric=%v want=1", got)
+	}
+	if got := waitForMessageMetricValue(t, registry, api.MetricMessageSendIdempotency, map[string]string{"outcome": "replayed"}); got != float64(attempts-1) {
+		t.Fatalf("replayed metric=%v want=%d", got, attempts-1)
+	}
 }
 
 func testMessageObservabilityConcurrentSendScrape(t *testing.T) {

@@ -36,7 +36,9 @@ Webhook operations are code-owned and bounded: `cycle`, `queue`, `fanout`,
 `claim`, `attempt`, `secret`, `envelope`, `signature`, `delivery` and `finish`.
 Unknown operation or code values converge to `unknown` and
 `WEBHOOK_UNKNOWN`. Terminal delivery labels are `delivery_success`,
-`delivery_retry` and `delivery_dead_letter`.
+`delivery_retry` and `delivery_dead_letter`. An exhausted attempt transition
+performed by authoritative `BeginAttempt` emits the same
+`delivery_dead_letter` observation even though no `Finish` call occurs.
 
 ## Metrics
 

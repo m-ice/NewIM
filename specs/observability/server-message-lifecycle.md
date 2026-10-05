@@ -51,7 +51,10 @@ uses fixed `component/stage/result/code` values:
 
 Unknown operation/code values converge to `unknown`, `unknown` and
 `WEBHOOK_UNKNOWN`; arbitrary strings never become metric labels. A successful
-`Finish` transition is the authority for terminal delivery observations.
+`Finish` transition is the authority for terminal delivery observations. When
+an exhausted lease is transitioned to `dead_letter` by authoritative
+`BeginAttempt`, that committed transition emits the same
+`delivery_dead_letter` observation without a fabricated `Finish` result.
 
 ## Metrics and bounds
 
