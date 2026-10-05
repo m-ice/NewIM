@@ -9,6 +9,8 @@ import (
 	"errors"
 	"math"
 	"time"
+
+	"github.com/m-ice/NewIM/server/api"
 )
 
 // Code is a stable webhook delivery outcome or failure code.
@@ -32,6 +34,11 @@ const (
 	CodeDeliveryDelivered  Code = "WEBHOOK_DELIVERY_DELIVERED"
 	CodeDeliveryRetry      Code = "WEBHOOK_DELIVERY_RETRY"
 	CodeFanoutLimit        Code = "WEBHOOK_FANOUT_LIMIT"
+	CodeFanoutSuccess      Code = "WEBHOOK_FANOUT_SUCCESS"
+	CodeClaimSuccess       Code = "WEBHOOK_CLAIM_SUCCESS"
+	CodeAttemptSuccess     Code = "WEBHOOK_ATTEMPT_SUCCESS"
+	CodeFinishSuccess      Code = "WEBHOOK_FINISH_SUCCESS"
+	CodeUnknown            Code = "WEBHOOK_UNKNOWN"
 )
 
 // MaxEndpointsPerEvent bounds endpoint fan-out for one event.
@@ -79,6 +86,8 @@ type JitterFunc func(string, time.Duration) time.Duration
 // Observation 只包含有界操作和码标签。
 type Observation struct {
 	Operation      string
+	Stage          string
+	Result         string
 	Code           Code
 	Elapsed        time.Duration
 	Total          int
@@ -211,6 +220,7 @@ type Config struct {
 	Clock               Clock
 	Jitter              JitterFunc
 	Observer            Observer
+	Metrics             api.MetricsSink
 }
 
 // Validate rejects unsafe or unbounded worker configuration.

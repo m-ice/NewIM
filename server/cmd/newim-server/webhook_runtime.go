@@ -140,6 +140,9 @@ func (r *webhookRuntime) Close() {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
+			if closer, ok := r.worker.(interface{ Close() }); ok {
+				closer.Close()
+			}
 			if r.lock != nil {
 				r.lock.Release()
 			}

@@ -55,12 +55,22 @@ func run(args []string, stdout, stderr io.Writer, read func() (buildinfo.Info, e
 		closeRuntime = authRuntime.Close
 	}
 
+	metricsRegistry := api.NewMetricsRegistry()
+	metricsSink := api.NewBoundedMetricsSink(metricsRegistry, 4096)
+	defer metricsSink.Close()
+	if err := attachMessageObservability(authRuntime, routes, metricsSink, logger); err != nil {
+		closeRuntime()
+		fmt.Fprintln(stderr, errorCode(err))
+		return 2
+	}
+
 	server, err := api.NewWithRoutes(cfg, logger, routes)
 	if err != nil {
 		closeRuntime()
 		fmt.Fprintln(stderr, errorCode(err))
 		return 2
 	}
+	server.AttachMetricsRegistry(metricsRegistry)
 
 	runtime, runtimeErr := newWebhookRuntimeFromEnv(ctx, logger)
 	if runtimeErr != nil {
@@ -75,8 +85,13 @@ func run(args []string, stdout, stderr io.Writer, read func() (buildinfo.Info, e
 	var runtimeDone chan error
 	if runtime != nil {
 		defer runtime.Close()
+		runtime.AttachMetricsSink(metricsSink)
+		server.AttachMetricsSource(webhookGaugeSource{store: runtime.repo})
 		runtimeDone = make(chan error, 1)
 		go func() { runtimeDone <- runtime.Run(workerCtx) }()
+	}
+	if authRuntime != nil {
+		server.AttachMetricsSource(authRuntime.messageRepo)
 	}
 	serverDone := make(chan error, 1)
 	go func() { serverDone <- server.Run(serverCtx) }()

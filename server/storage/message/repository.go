@@ -158,7 +158,9 @@ func (r *Repository) Persist(ctx context.Context, principal conversation.Princip
 		if err = tx.Commit(ctx); err != nil {
 			return app.PersistedMessage{}, app.Fail(app.SendStorageUnavailable)
 		}
-		return existing.persisted(), nil
+		stored := existing.persisted()
+		stored.Replayed = true
+		return stored, nil
 	}
 	if err = validate(); err != nil {
 		return app.PersistedMessage{}, fixed(err)

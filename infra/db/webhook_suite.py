@@ -15,6 +15,10 @@ from runtime import Commands, Database, Failure, ROOT, image_identity
 
 
 SUITES = {
+    'observability': {
+        'package': './tests/integration/webhook',
+        'tests': ('TestWebhookObservabilityRecovery',),
+    },
     'recovery': {
         'package': './tests/integration/webhook',
         'tests': ('TestWebhookRecovery', 'TestWebhookConcurrentRecovery', 'TestWebhookReceiverAmbiguity', 'TestWebhookRetryAndBacklog'),
