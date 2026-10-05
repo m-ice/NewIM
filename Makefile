@@ -269,7 +269,7 @@ message-observability-check: toolchain
 	go test -race -shuffle=on -count=1 ./server/api ./server/message ./server/messagehttp ./server/webhook
 
 message-observability-metrics: toolchain
-	go test -race -shuffle=on -count=1 -run '^(TestMetricsRegistry|TestObserverDispatcher|TestSlow|TestBoundedSink|TestAttachedSource|TestMessageLifecycle|TestMessageReplay|TestTraceID|TestPanickingObserver|TestBlockedObserver|TestOperationAndCode|TestPanickingWebhook|TestBlockedWebhook)' ./server/api ./server/message ./server/webhook
+	go test -race -shuffle=on -count=1 -run '^(TestMetricsRegistry|TestObserverDispatcher|TestSlow|TestSourceTimeout|TestBoundedSink|TestAttachedSource|TestMessageLifecycle|TestMessageReplay|TestTraceID|TestPanickingObserver|TestBlockedObserver|TestOperationAndCode|TestPanickingWebhook|TestBlockedWebhook)' ./server/api ./server/message ./server/webhook
 
 message-observability-security: toolchain
 	go test -race -shuffle=on -count=1 ./server/api ./server/message ./server/webhook

@@ -6,12 +6,17 @@ import (
 	"context"
 	"encoding/hex"
 	"fmt"
+	"io"
+	"net/http"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
 
+	protocol "github.com/m-ice/NewIM/core/protocol/go"
 	"github.com/m-ice/NewIM/server/api"
+	"github.com/m-ice/NewIM/server/auth/session"
 	app "github.com/m-ice/NewIM/server/message"
 	store "github.com/m-ice/NewIM/server/storage/message"
 )
@@ -199,6 +204,161 @@ func TestMessageObservabilityRecovery(t *testing.T) {
 		t.Fatal("closed repository returned a fabricated gauge")
 	}
 	t.Run("authoritative-lifecycle", testMessageObservabilityAuthoritativeLifecycle)
+	t.Run("concurrent-send-scrape", testMessageObservabilityConcurrentSendScrape)
+}
+
+func testMessageObservabilityConcurrentSendScrape(t *testing.T) {
+	f := openFixture(t)
+	user := "observability_concurrent_user"
+	conversationID := f.seedConversation("observability_concurrent", user)
+	identity := f.identity(user)
+	registry := api.NewMetricsRegistry()
+	sink := api.NewBoundedMetricsSink(registry, 4096)
+	handler := &concurrentMessageHandler{identity: identity, conversationID: conversationID, next: new(atomic.Int64)}
+	service, err := app.NewService(f.repo, app.Config{
+		IDs:      &sequenceIDs{prefix: "observability_concurrent_generated"},
+		TraceIDs: &traceSequence{},
+		Clock:    app.ClockFunc(func() time.Time { return time.UnixMilli(f.now.Load()).UTC() }),
+		Metrics:  sink,
+	})
+	must(t, err)
+	handler.service = service
+	defer service.Close()
+	defer sink.Close()
+
+	server, err := api.NewWithRoutes(api.Config{
+		APIAddr: "127.0.0.1:0", OpsAddr: "127.0.0.1:0", ServerVersion: "observability-test",
+	}, nil, []api.APIRoute{{
+		Name: "message_send", Path: "/api/v1/concurrent-send", AllowedMethods: []string{http.MethodPost}, Handler: handler,
+	}})
+	must(t, err)
+	server.AttachMetricsRegistry(registry)
+	runCtx, cancel := context.WithCancel(context.Background())
+	runDone := make(chan error, 1)
+	go func() { runDone <- server.Run(runCtx) }()
+	waitForServerReady(t, server)
+
+	client := &http.Client{Timeout: 2 * time.Second}
+	const sends = 32
+	var senders sync.WaitGroup
+	sendErrors := make(chan error, sends)
+	for index := 0; index < sends; index++ {
+		senders.Add(1)
+		go func() {
+			defer senders.Done()
+			request, requestErr := http.NewRequestWithContext(runCtx, http.MethodPost,
+				"http://"+server.APIAddr()+"/api/v1/concurrent-send", nil)
+			if requestErr != nil {
+				sendErrors <- requestErr
+				return
+			}
+			response, requestErr := client.Do(request)
+			if requestErr != nil {
+				sendErrors <- requestErr
+				return
+			}
+			defer response.Body.Close()
+			_, _ = io.Copy(io.Discard, response.Body)
+			if response.StatusCode != http.StatusOK {
+				sendErrors <- fmt.Errorf("send status %d", response.StatusCode)
+			}
+		}()
+	}
+	sendsDone := make(chan struct{})
+	go func() { senders.Wait(); close(sendsDone) }()
+	scrapeErrors := make(chan error, 2)
+	var scrapers sync.WaitGroup
+	for index := 0; index < 2; index++ {
+		scrapers.Add(1)
+		go func() {
+			defer scrapers.Done()
+			sawLifecycle := false
+			for {
+				select {
+				case <-sendsDone:
+					if !sawLifecycle {
+						scrapeErrors <- fmt.Errorf("metrics scrape never exposed lifecycle samples")
+					}
+					return
+				default:
+				}
+				response, requestErr := client.Get("http://" + server.OpsAddr() + "/metrics")
+				if requestErr != nil {
+					scrapeErrors <- requestErr
+					return
+				}
+				body, readErr := io.ReadAll(io.LimitReader(response.Body, 1<<20))
+				response.Body.Close()
+				if readErr != nil {
+					scrapeErrors <- readErr
+					return
+				}
+				if response.StatusCode != http.StatusOK {
+					scrapeErrors <- fmt.Errorf("metrics status %d", response.StatusCode)
+					return
+				}
+				sawLifecycle = sawLifecycle || strings.Contains(string(body), api.MetricMessageLifecycleEvents)
+			}
+		}()
+	}
+	<-sendsDone
+	scrapers.Wait()
+	close(sendErrors)
+	close(scrapeErrors)
+	for sendErr := range sendErrors {
+		t.Fatal(sendErr)
+	}
+	for scrapeErr := range scrapeErrors {
+		t.Fatal(scrapeErr)
+	}
+	if got := f.scalarInt64("SELECT count(*) FROM newim.im_messages WHERE conversation_id=$1", conversationID); got != sends {
+		t.Fatalf("message rows=%d want=%d", got, sends)
+	}
+	if got := f.scalarInt64(`SELECT count(*) FROM newim.im_outbox_events e
+JOIN newim.im_messages m ON m.server_msg_id=e.server_msg_id WHERE m.conversation_id=$1`, conversationID); got != sends {
+		t.Fatalf("outbox rows=%d want=%d", got, sends)
+	}
+	cancel()
+	if runErr := <-runDone; runErr != nil {
+		t.Fatalf("server shutdown failed: %v", runErr)
+	}
+}
+
+type concurrentMessageHandler struct {
+	service        *app.Service
+	identity       session.ConnectionIdentity
+	conversationID string
+	next           *atomic.Int64
+}
+
+func (h *concurrentMessageHandler) ServeHTTP(w http.ResponseWriter, request *http.Request) {
+	if h == nil || h.service == nil || request == nil || h.next == nil {
+		http.Error(w, "invalid", http.StatusInternalServerError)
+		return
+	}
+	clientID := fmt.Sprintf("concurrent_client_%d", h.next.Add(1))
+	_, err := h.service.Send(request.Context(), h.identity, protocol.Send{
+		ProtocolVersion: 1, ClientMsgID: clientID, ConversationID: h.conversationID,
+		Version: 1, Type: "text", Payload: []byte(`{"text":"concurrent"}`),
+	})
+	if err != nil {
+		http.Error(w, string(app.ErrorCode(err)), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusOK)
+	_, _ = w.Write([]byte("ok"))
+}
+
+func waitForServerReady(t *testing.T, server *api.Server) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if server.Ready() {
+			return
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatal("server did not become ready")
 }
 
 type traceSequence struct{ next atomic.Int64 }

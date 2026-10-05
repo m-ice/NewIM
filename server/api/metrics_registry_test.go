@@ -108,6 +108,21 @@ func TestSlowSourceDoesNotBlockUpdatesAndFailureDropsGauge(t *testing.T) {
 	}
 }
 
+func TestSourceTimeoutOmitsGaugeAndDropsStorageUnavailable(t *testing.T) {
+	m := newMetrics("test")
+	m.attachSource(timeoutSource{})
+	var output bytes.Buffer
+	if err := m.writeTo(&output); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(output.String(), MetricMessageOutboxFanoutPending) {
+		t.Fatalf("timed-out source exported a gauge: %s", output.String())
+	}
+	if !strings.Contains(output.String(), `newim_observability_dropped_total{reason="storage_unavailable"}`) {
+		t.Fatalf("timeout drop missing: %s", output.String())
+	}
+}
+
 func TestBoundedSinkQueueFullIsNonBlocking(t *testing.T) {
 	registry := NewMetricsRegistry()
 	sink := NewBoundedMetricsSink(registry, 1)
@@ -153,6 +168,15 @@ func TestAttachedSourceSamplesAreValidated(t *testing.T) {
 type staticSource struct{ samples []MetricSample }
 
 func (s staticSource) SnapshotMetrics(context.Context) ([]MetricSample, error) { return s.samples, nil }
+
+type timeoutSource struct{}
+
+func (timeoutSource) SnapshotMetrics(context.Context) ([]MetricSample, error) {
+	time.Sleep(5 * time.Millisecond)
+	return []MetricSample{{
+		Name: MetricMessageOutboxFanoutPending, Labels: map[string]string{"state": "pending"}, Value: 1,
+	}}, context.DeadlineExceeded
+}
 
 type blockingWriter struct {
 	started chan struct{}
