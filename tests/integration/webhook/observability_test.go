@@ -5,12 +5,100 @@ package webhook_test
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/m-ice/NewIM/server/api"
 	store "github.com/m-ice/NewIM/server/storage/webhook"
 	app "github.com/m-ice/NewIM/server/webhook"
 )
+
+func testWebhookObservabilityAuthoritativeOutcomes(t *testing.T) {
+	cases := []struct {
+		name       string
+		httpStatus int
+		wantStatus string
+		stage      string
+		result     string
+		code       app.Code
+	}{
+		{name: "success", httpStatus: http.StatusNoContent, wantStatus: "delivered", stage: "delivery_success", result: "success", code: app.CodeDeliveryDelivered},
+		{name: "dead_letter", httpStatus: http.StatusBadRequest, wantStatus: "dead_letter", stage: "delivery_dead_letter", result: "permanent", code: app.CodeHTTPPermanent},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			f := openFixture(t)
+			conversation := f.id("webhook_observability_" + tc.name)
+			eventID := f.seedEvent(conversation)
+			secret := []byte("0123456789abcdef0123456789abcdef")
+			_, master := f.insertEndpoint(1, "https://example.invalid/observability", secret)
+			registry := api.NewMetricsRegistry()
+			sink := api.NewBoundedMetricsSink(registry, 1024)
+			observer := &captureObserver{}
+			worker, err := app.NewWorker(app.Config{
+				Owner: "observability_authoritative_owner", BatchSize: 8, MaxConcurrent: 2,
+				MaxPerDestination: 2, MaxAttempts: 1, MaxResponseBytes: 64 * 1024,
+				LeaseTTL: 2 * time.Second, RequestTimeout: time.Second,
+				BaseBackoff: 10 * time.Millisecond, MaxBackoff: time.Second,
+				HighWater: 100, LowWater: 10, MaxDestinationQueue: 100,
+				RatePerSecond: 100, RateBurst: 100, IdleDelay: 10 * time.Millisecond,
+				Clock:    app.ClockFunc(func() time.Time { return f.now }),
+				Observer: observer, Metrics: sink,
+			}, f.repo, doerFunc(func(context.Context, string, map[string]string, []byte) (app.Response, error) {
+				return app.Response{StatusCode: tc.httpStatus}, nil
+			}), f.resolver(master))
+			must(t, err)
+			runWorkerUntil(t, worker, 5*time.Second, func() bool {
+				return f.optionalString("SELECT status FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID) == tc.wantStatus
+			}, func() string {
+				return f.scalarString("SELECT COALESCE(string_agg(status||':'||attempts||':'||COALESCE(last_error_code,''),','),'') FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID)
+			})
+			worker.Close()
+			sink.Close()
+
+			waitForIntegrationMetric(t, registry, api.MetricMessageLifecycleEvents,
+				map[string]string{"component": "webhook", "stage": tc.stage, "result": tc.result})
+			waitForIntegrationMetric(t, registry, api.MetricWebhookDeliveries,
+				map[string]string{"stage": tc.stage, "result": tc.result})
+			if tc.wantStatus == "dead_letter" {
+				waitForIntegrationMetric(t, registry, api.MetricMessageLifecycleErrors,
+					map[string]string{"component": "webhook", "code": string(tc.code)})
+			}
+			if !strings.Contains(observer.text(), string(tc.code)) {
+				t.Fatalf("observer missing authoritative code %s: %s", tc.code, observer.text())
+			}
+			if got := f.scalarString("SELECT status FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID); got != tc.wantStatus {
+				t.Fatalf("authoritative status=%s want=%s", got, tc.wantStatus)
+			}
+		})
+	}
+}
+
+func waitForIntegrationMetric(t *testing.T, registry *api.MetricsRegistry, name string, labels map[string]string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		for _, sample := range registry.Snapshot() {
+			if sample.Name != name {
+				continue
+			}
+			matches := true
+			for key, value := range labels {
+				if sample.Labels[key] != value {
+					matches = false
+					break
+				}
+			}
+			if matches {
+				return
+			}
+		}
+		time.Sleep(time.Millisecond)
+	}
+	t.Fatalf("metric %s labels=%v missing in %+v", name, labels, registry.Snapshot())
+}
 
 func TestWebhookObservabilityRecovery(t *testing.T) {
 	f := openFixture(t)
@@ -73,6 +161,7 @@ func TestWebhookObservabilityRecovery(t *testing.T) {
 	if _, err = f.repo.Counts(context.Background()); err == nil {
 		t.Fatal("closed repository returned fabricated counts")
 	}
+	t.Run("authoritative-outcomes", testWebhookObservabilityAuthoritativeOutcomes)
 }
 
 func assertDeliveryGauge(t *testing.T, f *fixture, state string, want float64) {
