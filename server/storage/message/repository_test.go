@@ -77,3 +77,22 @@ func TestInstallGuardWiresHooksAndMapsFailure(t *testing.T) {
 		t.Fatal("guard failure did not trip terminal state")
 	}
 }
+
+func TestUserPairHasOneLockOrderForBothDirections(t *testing.T) {
+	forward, valid := newUserPair("alice", "Bob")
+	if !valid || forward.low != "Bob" || forward.high != "alice" {
+		t.Fatalf("expected ASCII ordering, got %#v", forward)
+	}
+	reverse, valid := newUserPair("Bob", "alice")
+	if !valid || forward != reverse {
+		t.Fatalf("pair changed when reversed: %#v and %#v", forward, reverse)
+	}
+	if forward.peer("alice") != "Bob" || forward.peer("Bob") != "alice" || forward.peer("mallory") != "" {
+		t.Fatal("peer resolution accepted the wrong member")
+	}
+	for _, invalid := range [][2]string{{"alice", "alice"}, {"", "Bob"}, {"alice:Bob", "mallory"}} {
+		if _, valid := newUserPair(invalid[0], invalid[1]); valid {
+			t.Fatalf("accepted invalid pair %v", invalid)
+		}
+	}
+}

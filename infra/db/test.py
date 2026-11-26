@@ -73,6 +73,12 @@ def check_catalog(db, target=None):
     scalar(db, "SELECT has_schema_privilege('public','newim','USAGE');", 'f', 'schema denies public usage')
     scalar(db, "SELECT count(*) FROM pg_trigger WHERE tgrelid IN (SELECT oid FROM pg_class WHERE relnamespace='newim'::regnamespace) AND NOT tgisinternal;",
            0, 'no application triggers')
+    policy_columns = db.sql("SELECT column_name||'|'||is_nullable FROM information_schema.columns "
+                            "WHERE table_schema='newim' AND table_name='im_conversations' "
+                            "AND column_name IN ('kind','direct_user_low','direct_user_high') "
+                            "ORDER BY column_name;").splitlines()
+    equal(policy_columns, ['direct_user_high|YES', 'direct_user_low|YES', 'kind|YES'] if target >= 7 else [],
+          'conversation policy classification is additive and nullable')
     check_ledger(db, target)
 
 
@@ -583,17 +589,17 @@ def webhook_migration_faults(db, commands):
             (directory/path.name).write_bytes(path.read_bytes())
         candidate = directory/source.name
         candidate.write_text(source.read_text().replace(marker, 'SELECT 1/0;', 1))
-        db.sql(migration_sql(directory=directory), error='22012')
+        db.sql(migration_sql(6, directory=directory), error='22012')
         equal(snapshot(db), before, 'failed 006 leaves exact populated 005 state')
         check_catalog(db, 5)
         candidate.write_text(source.read_text().replace(marker, 'SELECT pg_sleep(30);', 1))
-        held = db.session("SET application_name='newim_webhook_migration_interrupt'; "+migration_sql(directory=directory))
+        held = db.session("SET application_name='newim_webhook_migration_interrupt'; "+migration_sql(6, directory=directory))
         db.wait_sql("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name='newim_webhook_migration_interrupt' AND wait_event='PgSleep');")
         db.sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='newim_webhook_migration_interrupt';")
         held.finish(error='57P01')
         equal(snapshot(db), before, 'terminated 006 leaves exact populated 005 state')
         check_catalog(db, 5)
-    db.sql(migration_sql())
+    db.sql(migration_sql(6))
     check_catalog(db, 6)
     scalar(db, "SELECT count(*) FROM newim.im_outbox_events WHERE webhook_fanout_at IS NOT NULL;",
            1, '006 cuts over every pre-existing outbox event')
@@ -610,6 +616,25 @@ def webhook_migration_faults(db, commands):
     scalar(db, "SELECT count(*) FROM newim.im_outbox_events WHERE event_id='e_migration_webhook_post' AND webhook_fanout_at IS NULL;",
            1, 'post-006 outbox events remain pending for webhook fan-out')
     print('PASS populated 006 failure/termination rollback, legacy dead-letter cutover and original-source retry', flush=True)
+
+
+def direct_policy_migration(db):
+    # The three added fields change the record shape. Compare the original
+    # conversation columns and verify every other historical table exactly.
+    conversation_hash = ("SELECT md5(string_agg(ROW(conversation_id,last_seq,latest_server_msg_id)::text,"
+                         " E'\\n' ORDER BY conversation_id)) FROM newim.im_conversations;")
+    original_conversations = db.sql(conversation_hash)
+    historical = snapshot(db)
+    db.sql(migration_sql(7))
+    check_catalog(db, 7)
+    upgraded = snapshot(db)
+    compare = set(historical) - {'im_conversations', 'migrations'}
+    equal({key: upgraded[key] for key in compare}, {key: historical[key] for key in compare},
+          '007 preserves every pre-existing message, member and related row')
+    equal(db.sql(conversation_hash), original_conversations, '007 preserves original conversation columns')
+    scalar(db, "SELECT count(*) FROM newim.im_conversations WHERE kind IS NOT NULL "
+           "OR direct_user_low IS NOT NULL OR direct_user_high IS NOT NULL;", 0, '007 does not guess legacy classification')
+    print('PASS populated 007 preserves historical data and leaves classification unassigned', flush=True)
 
 
 def migrations(db, commands):
@@ -631,6 +656,7 @@ def migrations(db, commands):
     auth_migration_faults(db, commands)
     media_migration_faults(db, commands)
     webhook_migration_faults(db, commands)
+    direct_policy_migration(db)
     after = snapshot(db)
     db.sql(migration_sql())
     equal(snapshot(db), after, 'head replay stable')

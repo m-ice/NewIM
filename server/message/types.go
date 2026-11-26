@@ -19,6 +19,7 @@ type Code string
 const (
 	SendInvalidInput        Code = "SEND_INVALID_INPUT"
 	SendUnauthorized        Code = "SEND_UNAUTHORIZED"
+	BlockedByRecipient      Code = "BLOCKED_BY_RECIPIENT"
 	SendConversationMissing Code = "SEND_CONVERSATION_NOT_FOUND"
 	SendSequenceExhausted   Code = "SEND_SEQUENCE_EXHAUSTED"
 	SendIDConflict          Code = "SEND_ID_CONFLICT"

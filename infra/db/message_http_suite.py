@@ -17,6 +17,7 @@ TESTS = {
     "check": ("TestMessageHTTPCheck", "TestMessageHTTPIdentity"),
     "identity": ("TestMessageHTTPIdentity",),
     "security": "TestMessageHTTPSecurity",
+    "private-policy": "TestPrivateMessagePolicy",
 }
 
 
@@ -137,7 +138,8 @@ def main():
         migration_file = directory / "migration.sql"
         migration_file.write_text(migration_sql())
         with Database(commands, image, platform) as db:
-            db.sql(migration_sql())
+            # Seed legacy conversations before applying the policy migration.
+            db.sql(migration_sql(6) if args.suite == "private-policy" else migration_sql())
             commands.run(["docker", "cp", str(test_binary), db.name + ":/tmp/messagehttp.test"],
                          label="copy-owned-message-http-test-binary")
             commands.run(["docker", "cp", str(server_binary), db.name + ":/tmp/newim-server"],

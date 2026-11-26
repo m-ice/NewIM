@@ -151,6 +151,7 @@ var metricSpecs = map[string]metricSpec{
 
 var knownMetricCodes = map[string]struct{}{
 	"SEND_INVALID_INPUT": {}, "SEND_UNAUTHORIZED": {}, "SEND_CONVERSATION_NOT_FOUND": {},
+	"BLOCKED_BY_RECIPIENT":    {},
 	"SEND_SEQUENCE_EXHAUSTED": {}, "SEND_ID_CONFLICT": {}, "SEND_LOCK_UNAVAILABLE": {},
 	"SEND_STORAGE_UNAVAILABLE": {}, "SEND_UNKNOWN": {}, "SERVER_PERSISTED": {},
 	"SEND_ACCEPTED": {}, "SEND_VALIDATED": {}, "SEND_PERSISTING": {}, "SEND_PERSISTED": {},

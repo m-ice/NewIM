@@ -31,6 +31,7 @@ var errInvalidMessageConfig error = &messageConfigError{}
 
 const (
 	messageHTTPEnv             = "NEWIM_MESSAGE_HTTP"
+	privateMessagePolicyEnv    = "NEWIM_PRIVATE_MESSAGE_POLICY"
 	authDSNEnv                 = "NEWIM_AUTH_DSN"
 	authAllowLocalSocketEnv    = "NEWIM_AUTH_ALLOW_LOCAL_SOCKET"
 	messageHTTPApplicationName = "newim-message-http"
@@ -60,6 +61,12 @@ func newAuthRuntimeFromEnv(ctx context.Context, cfg api.Config, logger *slog.Log
 	dsn := strings.TrimSpace(os.Getenv(authDSNEnv))
 	allowLocalSocket := os.Getenv(authAllowLocalSocketEnv) == "1"
 	messageEnabled := os.Getenv(messageHTTPEnv) == "1"
+	privatePolicyValue := os.Getenv(privateMessagePolicyEnv)
+	privatePolicy := privatePolicyValue == "1"
+	if (privatePolicy && !messageEnabled) ||
+		(privatePolicyValue != "" && privatePolicyValue != "0" && !privatePolicy) {
+		return nil, nil, errInvalidMessageConfig
+	}
 
 	if !messageEnabled {
 		if dsn == "" {
@@ -86,9 +93,13 @@ func newAuthRuntimeFromEnv(ctx context.Context, cfg api.Config, logger *slog.Log
 		MaxConnections:   8,
 		ApplicationName:  messageHTTPApplicationName,
 		Guard:            guard,
+		PrivatePolicy:    privatePolicy,
 	})
 	if err != nil {
 		runtime.Close()
+		if privatePolicy {
+			return nil, nil, errInvalidMessageConfig
+		}
 		return nil, nil, messageStartupError(guard, err)
 	}
 	runtime.messageRepo = messageRepo
@@ -121,6 +132,27 @@ func newAuthRuntimeFromEnv(ctx context.Context, cfg api.Config, logger *slog.Log
 		RejectQuery:    true,
 		Handler:        handler,
 	})
+	if privatePolicy {
+		policyHandler, err := messagehttp.NewPrivatePolicyHandler(runtime.service, messageRepo)
+		if err != nil {
+			runtime.Close()
+			return nil, nil, errInvalidMessageConfig
+		}
+		for _, route := range []struct{ name, path string }{
+			{"direct_conversation", messagehttp.DirectConversationRoute},
+			{"relationship_block", messagehttp.BlockPeerRoute},
+			{"relationship_unblock", messagehttp.UnblockPeerRoute},
+		} {
+			routes = append(routes, api.APIRoute{
+				Name:           route.name,
+				Path:           route.path,
+				AllowedMethods: []string{http.MethodPost},
+				MaxBodyBytes:   messagehttp.PrivatePolicyBodyLimit,
+				RejectQuery:    true,
+				Handler:        policyHandler,
+			})
+		}
+	}
 	return runtime, routes, nil
 }
 

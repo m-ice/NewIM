@@ -257,6 +257,10 @@ message-errors: toolchain
 message-http-check: toolchain
 	python3 -B infra/db/message_http_suite.py check
 
+.PHONY: private-message-policy-check
+private-message-policy-check: toolchain
+	python3 -B infra/db/message_http_suite.py private-policy
+
 message-http-security: toolchain
 	python3 -B server/messagehttp/security_gate.py --self-test
 	python3 -B server/messagehttp/security_gate.py

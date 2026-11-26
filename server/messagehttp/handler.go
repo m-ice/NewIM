@@ -33,6 +33,7 @@ const (
 	CodeInvalidInput         Code = "SEND_INVALID_INPUT"
 	CodeInvalidToken         Code = "AUTH_INVALID_TOKEN"
 	CodeUnauthorized         Code = "SEND_UNAUTHORIZED"
+	CodeBlockedByRecipient   Code = "BLOCKED_BY_RECIPIENT"
 	CodeConversationNotFound Code = "SEND_CONVERSATION_NOT_FOUND"
 	CodeMethodNotAllowed     Code = "HTTP_METHOD_NOT_ALLOWED"
 	CodeRouteNotFound        Code = "HTTP_ROUTE_NOT_FOUND"
@@ -137,27 +138,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	rawToken, ok := bearerhttp.ParseBearerHeader(r.Header.Values("Authorization"))
-	if !ok {
-		writeUnauthorized(recorder)
-		return
-	}
 	ctx := r.Context()
 	if ctx == nil {
 		ctx = context.Background()
 	}
-	session, err := h.authenticator.AuthenticateBearer(ctx, rawToken)
-	if err != nil {
-		status, _ := bearerhttp.MapAuthenticationError(err)
-		if status == http.StatusUnauthorized {
-			writeUnauthorized(recorder)
-			return
-		}
-		writeError(recorder, http.StatusServiceUnavailable, CodeAuthUnavailable, false)
-		return
-	}
-	if session.ExpiresAt().IsZero() {
-		writeError(recorder, http.StatusServiceUnavailable, CodeAuthUnavailable, false)
+	session, authenticated := authenticateSession(recorder, ctx, r.Header, h.authenticator)
+	if !authenticated {
 		return
 	}
 	identity, err := app.NewConnectionIdentity(session.UserID(), session.DeviceID(), session.SessionID(), session.TokenID(), session.TokenID())
@@ -191,6 +177,27 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeACK(recorder, frame)
+}
+
+func authenticateSession(w http.ResponseWriter, ctx context.Context, header http.Header, authenticator Authenticator) (app.BearerSession, bool) {
+	rawToken, ok := bearerhttp.ParseBearerHeader(header.Values("Authorization"))
+	if !ok {
+		writeUnauthorized(w)
+		return app.BearerSession{}, false
+	}
+	session, err := authenticator.AuthenticateBearer(ctx, rawToken)
+	if err != nil {
+		status, _ := bearerhttp.MapAuthenticationError(err)
+		if status == http.StatusUnauthorized {
+			writeUnauthorized(w)
+			return app.BearerSession{}, false
+		}
+	}
+	if err != nil || session.ExpiresAt().IsZero() {
+		writeError(w, http.StatusServiceUnavailable, CodeAuthUnavailable, false)
+		return app.BearerSession{}, false
+	}
+	return session, true
 }
 
 func validContentType(header http.Header) bool {
@@ -256,6 +263,8 @@ func mapSendError(err error) (int, Code, bool) {
 		return http.StatusBadRequest, CodeInvalidInput, false
 	case messageservice.SendUnauthorized:
 		return http.StatusForbidden, CodeUnauthorized, false
+	case messageservice.BlockedByRecipient:
+		return http.StatusForbidden, CodeBlockedByRecipient, false
 	case messageservice.SendConversationMissing:
 		return http.StatusNotFound, CodeConversationNotFound, false
 	case messageservice.SendIDConflict:

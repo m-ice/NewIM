@@ -32,6 +32,11 @@ behavior remains unchanged. Missing, empty, non-local-socket, fallback or
 otherwise invalid required configuration fails before listener bind with
 `SERVER_INVALID_MESSAGE_CONFIG`; it does not fall back to session-only mode.
 
+Deployments enabling [private message policy](private-message-policy.md)
+receive `403 BLOCKED_BY_RECIPIENT` for new direct messages denied by the
+recipient's block list. Such requests receive no success frame or retry hint.
+Previously committed same-intent requests retain their durable receipt.
+
 ## Request body
 
 The body must be one strict protocol v1 `send` frame. Only inner version `1` and

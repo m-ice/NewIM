@@ -27,6 +27,9 @@ type Config struct {
 	AllowLocalSocket bool
 	MaxConnections   int
 	ApplicationName  string
+	// PrivatePolicy requires trusted conversation classification and enables
+	// private-message policy in the send transaction.
+	PrivatePolicy bool
 	// Guard enables shared backend identity validation when non-nil.
 	// Guard 非 nil 时启用共享后端身份校验。
 	Guard *postgresidentity.Guard
@@ -35,8 +38,9 @@ type Config struct {
 // Repository owns a bounded pgx pool and the membership authorizer.
 // Repository 持有有界 pgx 连接池与会话成员授权器。
 type Repository struct {
-	pool       *pgxpool.Pool
-	authorizer conversation.Authorizer
+	pool          *pgxpool.Pool
+	authorizer    conversation.Authorizer
+	privatePolicy bool
 }
 
 // Open requires verified TLS for TCP or explicitly enabled local sockets.
@@ -97,7 +101,13 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 		pool.Close()
 		return nil, app.Fail(app.SendStorageUnavailable)
 	}
-	return &Repository{pool: pool, authorizer: conversationAuthorizer{}}, nil
+	if config.PrivatePolicy {
+		if err = verifyConversationClassification(ctx, pool); err != nil {
+			pool.Close()
+			return nil, err
+		}
+	}
+	return &Repository{pool: pool, authorizer: conversationAuthorizer{}, privatePolicy: config.PrivatePolicy}, nil
 }
 
 func installGuard(poolConfig *pgxpool.Config, guard *postgresidentity.Guard) {
@@ -143,24 +153,15 @@ func (r *Repository) Persist(ctx context.Context, principal conversation.Princip
 	if err = r.authorizer.Authorize(ctx, conversationTx{tx: tx}, principal.UserID, request.ConversationID); err != nil {
 		return app.PersistedMessage{}, fixed(err)
 	}
-	existing, found, err := loadMessage(ctx, tx, principal.UserID, request.ClientMsgID)
-	if err != nil {
-		return app.PersistedMessage{}, mapStorageError(err)
+	receipt, found, err := loadReceipt(ctx, tx, principal.UserID, request)
+	if found || err != nil {
+		return receipt, err
 	}
-	if found {
-		same, compareErr := protocol.SameIntent(existing.intent(), request)
-		if compareErr != nil {
-			return app.PersistedMessage{}, app.Fail(app.SendStorageUnavailable)
+	if r.privatePolicy {
+		receipt, found, err = checkPrivateSend(ctx, tx, principal.UserID, request)
+		if found || err != nil {
+			return receipt, err
 		}
-		if !same {
-			return app.PersistedMessage{}, app.Fail(app.SendIDConflict)
-		}
-		if err = tx.Commit(ctx); err != nil {
-			return app.PersistedMessage{}, app.Fail(app.SendStorageUnavailable)
-		}
-		stored := existing.persisted()
-		stored.Replayed = true
-		return stored, nil
 	}
 	if err = validate(); err != nil {
 		return app.PersistedMessage{}, fixed(err)
@@ -192,6 +193,26 @@ func (r *Repository) Persist(ctx context.Context, principal conversation.Princip
 	// 并发等 intent 重试会通过 unique-violation 路径返回胜者的生成身份。
 	persisted.Replayed = stored.ServerMsgID != generated.ServerMsgID
 	return persisted, nil
+}
+
+func loadReceipt(ctx context.Context, tx pgx.Tx, senderID string, request protocol.Send) (app.PersistedMessage, bool, error) {
+	existing, found, err := loadMessage(ctx, tx, senderID, request.ClientMsgID)
+	if err != nil || !found {
+		return app.PersistedMessage{}, false, mapStorageError(err)
+	}
+	same, err := protocol.SameIntent(existing.intent(), request)
+	if err != nil {
+		return app.PersistedMessage{}, false, app.Fail(app.SendStorageUnavailable)
+	}
+	if !same {
+		return app.PersistedMessage{}, false, app.Fail(app.SendIDConflict)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return app.PersistedMessage{}, false, app.Fail(app.SendStorageUnavailable)
+	}
+	receipt := existing.persisted()
+	receipt.Replayed = true
+	return receipt, true, nil
 }
 
 func loadMessage(ctx context.Context, tx pgx.Tx, senderID, clientMsgID string) (storedRow, bool, error) {
