@@ -17,6 +17,7 @@ TESTS = {
     'check': 'TestMessageCheck',
     'recovery': 'TestMessageRecovery',
     'errors': 'TestMessageErrors',
+    'observability': 'TestMessageObservabilityRecovery',
 }
 
 

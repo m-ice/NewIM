@@ -1,4 +1,4 @@
-.PHONY: build check docs-check api-check api-recovery api-security toolchain protocol-golden protocol-unknown-fields protocol-unknown-type protocol-limits webhook-envelope webhook-envelope-security webhook-protocol webhook-recovery webhook-security webhook-redaction media-protocol media-db media-security media-authz media-check message-http-check message-http-security message-http-gate-self-test
+.PHONY: build check docs-check api-check api-recovery api-security toolchain protocol-golden protocol-unknown-fields protocol-unknown-type protocol-limits webhook-envelope webhook-envelope-security webhook-protocol webhook-recovery webhook-security webhook-redaction media-protocol media-db media-security media-authz media-check message-http-check message-http-security message-http-gate-self-test message-observability-check message-observability-metrics message-observability-security message-observability-recovery
 
 export GOTOOLCHAIN := local
 
@@ -28,7 +28,7 @@ build: toolchain
 	python3 sdk/storage/sqlite/engine.py run cargo build --workspace --locked --offline
 	cargo build -p newim-sdk-core -p newim-protocol --locked --offline --target wasm32-unknown-unknown
 
-check: toolchain docs-check
+check: toolchain docs-check message-observability-check
 	@set -eu; unformatted=$$(gofmt -l core server tests); if [ -n "$$unformatted" ]; then printf '%s\n' "$$unformatted"; exit 1; fi
 	go vet ./...
 	go test -race -shuffle=on -count=1 ./...
@@ -264,6 +264,23 @@ message-http-security: toolchain
 message-http-gate-self-test: toolchain
 	python3 -B infra/db/message_http_suite.py --self-test
 	python3 -B server/messagehttp/security_gate.py --self-test
+
+message-observability-check: toolchain
+	go test -race -shuffle=on -count=1 ./server/api ./server/message ./server/messagehttp ./server/webhook
+
+message-observability-metrics: toolchain
+	go test -race -shuffle=on -count=1 -run '^(TestMetricsRegistry|TestObserverDispatcher|TestSlow|TestSourceTimeout|TestBoundedSink|TestAttachedSource|TestMessageLifecycle|TestMessageReplay|TestTraceID|TestPanickingObserver|TestBlockedObserver|TestOperationAndCode|TestPanickingWebhook|TestBlockedWebhook|TestWebhookExhausted)' ./server/api ./server/message ./server/webhook
+
+message-observability-security: toolchain
+	go test -race -shuffle=on -count=1 ./server/api ./server/message ./server/webhook
+	python3 -B server/messagehttp/security_gate.py --self-test
+	python3 -B server/messagehttp/security_gate.py
+
+message-observability-recovery: toolchain
+	go test -race -shuffle=on -count=1 ./server/api ./server/message ./server/storage/message ./server/storage/webhook ./server/webhook
+	python3 -B infra/db/message_suite.py observability
+	python3 -B infra/db/webhook_suite.py observability
+
 
 .PHONY: message-delta-authz message-delta message-delta-query-plan message-delta-recovery message-delta-redaction message-delta-check
 message-delta-authz:

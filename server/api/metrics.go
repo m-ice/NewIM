@@ -31,6 +31,10 @@ type metrics struct {
 	counts        map[totalKey]uint64
 	durationSum   map[metricKey]time.Duration
 	durationCount map[metricKey]uint64
+
+	registry  *MetricsRegistry
+	sourcesMu sync.RWMutex
+	sources   []MetricsSource
 }
 
 func newMetrics(serverVersion string) *metrics {
@@ -41,6 +45,7 @@ func newMetrics(serverVersion string) *metrics {
 		counts:        make(map[totalKey]uint64),
 		durationSum:   make(map[metricKey]time.Duration),
 		durationCount: make(map[metricKey]uint64),
+		registry:      NewMetricsRegistry(),
 	}
 }
 
@@ -65,9 +70,9 @@ func (m *metrics) end(listener, route, method string, status int, elapsed time.D
 }
 
 func (m *metrics) writeTo(w io.Writer) error {
-	m.mu.Lock()
-	defer m.mu.Unlock()
-
+	if m == nil || w == nil {
+		return fmt.Errorf("nil metrics writer")
+	}
 	if _, err := fmt.Fprintf(w, "newim_server_info{server_version=\"%s\"} 1\n", escapeLabel(m.serverVersion)); err != nil {
 		return err
 	}
@@ -75,20 +80,37 @@ func (m *metrics) writeTo(w io.Writer) error {
 		return err
 	}
 	if err := m.writeInflight(w); err != nil {
+		m.registry.Drop("writer_error")
 		return err
 	}
 	if err := m.writeDurations(w); err != nil {
+		m.registry.Drop("writer_error")
 		return err
 	}
-	return m.writeCounts(w)
+	if err := m.writeCounts(w); err != nil {
+		m.registry.Drop("writer_error")
+		return err
+	}
+
+	// Source and observer locks are never held across storage reads or writes.
+	sourceSamples := m.collectSourceMetrics()
+	registrySamples := m.registry.Snapshot()
+	if err := writeMetricSamples(w, append(registrySamples, sourceSamples...)); err != nil {
+		m.registry.Drop("writer_error")
+		return err
+	}
+	return nil
 }
 
 func (m *metrics) writeInflight(w io.Writer) error {
+	m.mu.Lock()
 	aggregated := make(map[metricKey]int)
 	for key, count := range m.inFlight {
 		group := metricKey{listener: key.listener, route: key.route}
 		aggregated[group] += count
 	}
+	m.mu.Unlock()
+
 	keys := make([]metricKey, 0, len(aggregated))
 	for key := range aggregated {
 		keys = append(keys, key)
@@ -109,22 +131,33 @@ func (m *metrics) writeInflight(w io.Writer) error {
 }
 
 func (m *metrics) writeDurations(w io.Writer) error {
-	keys := make([]metricKey, 0, len(m.durationCount))
-	for key := range m.durationCount {
+	m.mu.Lock()
+	counts := make(map[metricKey]uint64, len(m.durationCount))
+	for key, value := range m.durationCount {
+		counts[key] = value
+	}
+	sums := make(map[metricKey]time.Duration, len(m.durationSum))
+	for key, value := range m.durationSum {
+		sums[key] = value
+	}
+	m.mu.Unlock()
+
+	keys := make([]metricKey, 0, len(counts))
+	for key := range counts {
 		keys = append(keys, key)
 	}
 	sort.Slice(keys, func(i, j int) bool {
 		return metricKeyString(keys[i]) < metricKeyString(keys[j])
 	})
 	for _, key := range keys {
-		seconds := m.durationSum[key].Seconds()
+		seconds := sums[key].Seconds()
 		if _, err := fmt.Fprintf(w, "newim_http_request_duration_seconds_sum{listener=%s,route=%s,method=%s} %s\n",
 			quoteLabel(key.listener), quoteLabel(key.route), quoteLabel(key.method),
 			strconv.FormatFloat(seconds, 'f', 9, 64)); err != nil {
 			return err
 		}
 		if _, err := fmt.Fprintf(w, "newim_http_request_duration_seconds_count{listener=%s,route=%s,method=%s} %d\n",
-			quoteLabel(key.listener), quoteLabel(key.route), quoteLabel(key.method), m.durationCount[key]); err != nil {
+			quoteLabel(key.listener), quoteLabel(key.route), quoteLabel(key.method), counts[key]); err != nil {
 			return err
 		}
 	}
@@ -132,8 +165,15 @@ func (m *metrics) writeDurations(w io.Writer) error {
 }
 
 func (m *metrics) writeCounts(w io.Writer) error {
-	keys := make([]totalKey, 0, len(m.counts))
-	for key := range m.counts {
+	m.mu.Lock()
+	counts := make(map[totalKey]uint64, len(m.counts))
+	for key, value := range m.counts {
+		counts[key] = value
+	}
+	m.mu.Unlock()
+
+	keys := make([]totalKey, 0, len(counts))
+	for key := range counts {
 		keys = append(keys, key)
 	}
 	sort.Slice(keys, func(i, j int) bool {
@@ -141,7 +181,7 @@ func (m *metrics) writeCounts(w io.Writer) error {
 	})
 	for _, key := range keys {
 		if _, err := fmt.Fprintf(w, "newim_http_requests_total{listener=%s,route=%s,method=%s,status=%s} %d\n",
-			quoteLabel(key.listener), quoteLabel(key.route), quoteLabel(key.method), quoteLabel(key.status), m.counts[key]); err != nil {
+			quoteLabel(key.listener), quoteLabel(key.route), quoteLabel(key.method), quoteLabel(key.status), counts[key]); err != nil {
 			return err
 		}
 	}

@@ -9,7 +9,7 @@ conversation-sync projection, policy-neutral opaque auth-session/token
 primitives, an internal provider-neutral media credential/metadata flow, plus a
 portable SDK local-store contract with a native SQLite adapter and a wire-neutral
 SDK Core outbox/send state machine, an internal durable Webhook delivery core, and
-a loopback-only HTTP API/Ops service foundation. The NIM-SRV-008 slice defines
+a loopback-only HTTP API/Ops service foundation and server-side message/outbox/Webhook lifecycle observability. The NIM-SRV-008 slice defines
 an opt-in loopback text-send boundary over the existing durable send transaction;
 its implementation and independent product acceptance remain separate. Storage
 has real migration, idempotency, pagination, query-plan, concurrency, rollback and recovery tests. User credential
@@ -63,6 +63,8 @@ make auth-route-check auth-logout-check auth-logout-security
 make media-protocol media-db media-security media-authz media-check
 make message-check message-recovery message-errors
 make webhook-protocol webhook-recovery webhook-security webhook-redaction
+make message-observability-check message-observability-metrics
+make message-observability-security message-observability-recovery
 ```
 
 Preparation verifies the locked official PostgreSQL image and pulls it if absent.

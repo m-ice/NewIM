@@ -54,6 +54,12 @@ public endpoint-management API. Migration 006 adds endpoint revisions and fenced
 delivery state. See [ADR 0015](../docs/adr/0015-webhook-delivery.md) and the
 [delivery specification](../specs/webhook/delivery.md).
 
+Server-side lifecycle observability is additive: the API package owns a generic
+bounded sink/source seam, message/webhook packages emit fixed stage/result
+observations, and the server composes independent PostgreSQL snapshots for
+outbox fanout and Webhook delivery gauges. See [ADR 0021](../docs/adr/0021-server-message-lifecycle-observability.md)
+and the [lifecycle specification](../specs/observability/server-message-lifecycle.md).
+
 There is no public network server or UI, WebSocket gateway, push delivery, or
 complete multi-device login/reconnect policy. The API/Ops foundation defaults
 to loopback and does not expose message persistence through a public route. The
@@ -64,7 +70,9 @@ the root `make build`, `make check`, `make docs-check`, `make api-check`,
 `make auth-http-security`, `make auth-route-check`, `make auth-logout-check`,
 `make auth-logout-security`, `make webhook-protocol`,
 `make webhook-recovery`,
-`make webhook-security`, and `make webhook-redaction`
-commands. See
+`make webhook-security`, `make webhook-redaction`,
+`make message-observability-check`, `make message-observability-metrics`,
+`make message-observability-security`, and
+`make message-observability-recovery` commands. See
 [architecture](../docs/architecture.md) and
 [third-party notices](../THIRD_PARTY_NOTICES.md).

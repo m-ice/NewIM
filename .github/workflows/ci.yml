@@ -86,6 +86,12 @@ jobs:
       - name: Exercise message HTTP security gates
         timeout-minutes: 20
         run: make message-http-security
+      - name: Exercise server observability contracts
+        timeout-minutes: 15
+        run: make message-observability-check message-observability-metrics message-observability-security
+      - name: Exercise server observability recovery gauges
+        timeout-minutes: 15
+        run: make message-observability-recovery
       - name: Verify message HTTP negative gate self-tests
         timeout-minutes: 5
         run: make message-http-gate-self-test

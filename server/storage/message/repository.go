@@ -158,7 +158,9 @@ func (r *Repository) Persist(ctx context.Context, principal conversation.Princip
 		if err = tx.Commit(ctx); err != nil {
 			return app.PersistedMessage{}, app.Fail(app.SendStorageUnavailable)
 		}
-		return existing.persisted(), nil
+		stored := existing.persisted()
+		stored.Replayed = true
+		return stored, nil
 	}
 	if err = validate(); err != nil {
 		return app.PersistedMessage{}, fixed(err)
@@ -184,7 +186,12 @@ func (r *Repository) Persist(ctx context.Context, principal conversation.Princip
 	if err = tx.Commit(ctx); err != nil {
 		return app.PersistedMessage{}, app.Fail(app.SendStorageUnavailable)
 	}
-	return stored.persisted(), nil
+	persisted := stored.persisted()
+	// A concurrent equal-intent retry is returned by persist_message's
+	// unique-violation path with the winner's generated identity.
+	// 并发等 intent 重试会通过 unique-violation 路径返回胜者的生成身份。
+	persisted.Replayed = stored.ServerMsgID != generated.ServerMsgID
+	return persisted, nil
 }
 
 func loadMessage(ctx context.Context, tx pgx.Tx, senderID, clientMsgID string) (storedRow, bool, error) {

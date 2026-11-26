@@ -14,19 +14,24 @@ import (
 	"time"
 
 	protocol "github.com/m-ice/NewIM/core/protocol/go"
+	"github.com/m-ice/NewIM/server/api"
 )
 
 const defaultIdleDelay = 100 * time.Millisecond
+const defaultObserverQueueCapacity = 256
 
 // Worker consumes the transactional outbox and delivers webhook-v1 requests.
 // Worker 消费事务 outbox 并投递 Webhook v1 请求。
 type Worker struct {
-	cfg      Config
-	store    Store
-	doer     Doer
-	resolver SecretResolver
-	paused   bool
-	limiter  *destinationLimiter
+	cfg           Config
+	store         Store
+	doer          Doer
+	resolver      SecretResolver
+	paused        bool
+	limiter       *destinationLimiter
+	metricsMu     sync.RWMutex
+	observerQueue *api.ObserverDispatcher[Observation]
+	observerOnce  sync.Once
 }
 
 // NewWorker creates a worker; callers must provide real storage, HTTP and secret ports.
@@ -53,6 +58,31 @@ func NewWorker(cfg Config, store Store, doer Doer, resolver SecretResolver) (*Wo
 	}, nil
 }
 
+// AttachMetricsSink attaches the process sink before the worker starts.
+// AttachMetricsSink 在 worker 启动前附加进程 metrics sink。
+func (w *Worker) AttachMetricsSink(sink api.MetricsSink) {
+	if w == nil {
+		return
+	}
+	w.metricsMu.Lock()
+	w.cfg.Metrics = sink
+	w.metricsMu.Unlock()
+}
+
+// Close stops best-effort observer submissions without waiting for a stuck observer.
+// Close 停止最佳努力 observer 提交，但不会等待已经阻塞的 observer。
+func (w *Worker) Close() {
+	if w == nil {
+		return
+	}
+	w.metricsMu.RLock()
+	queue := w.observerQueue
+	w.metricsMu.RUnlock()
+	if queue != nil {
+		queue.Close()
+	}
+}
+
 // Run performs bounded cycles until cancellation; in-flight work is waited for.
 // Run 执行有界循环直到取消，并等待 in-flight 工作结束。
 func (w *Worker) Run(ctx context.Context) error {
@@ -71,7 +101,7 @@ func (w *Worker) Run(ctx context.Context) error {
 			if ctx.Err() != nil {
 				return nil
 			}
-			w.observe("cycle", ErrorCode(err), 0)
+			w.observe(OperationCycle, ErrorCode(err), 0)
 			if !sleepContext(ctx, w.cfg.IdleDelay) {
 				return nil
 			}
@@ -93,11 +123,11 @@ func (w *Worker) cycle(ctx context.Context, sem chan struct{}) error {
 		return err
 	}
 	if counts.Total > 0 {
-		w.observeCounts("queue", CodeDeliveryRetry, counts)
+		w.observeCounts(OperationQueue, CodeDeliveryRetry, counts)
 	}
 	if w.paused {
 		if counts.Total > w.cfg.LowWater || counts.MaxDestination > w.cfg.LowWater {
-			w.observe("fanout", CodeBacklogPaused, 0)
+			w.observe(OperationFanout, CodeBacklogPaused, 0)
 		} else {
 			w.paused = false
 		}
@@ -108,15 +138,17 @@ func (w *Worker) cycle(ctx context.Context, sem chan struct{}) error {
 	if !w.paused {
 		n, err := w.store.Fanout(ctx, now, w.cfg.BatchSize, w.cfg.MaxDestinationQueue, w.cfg.HighWater)
 		if err != nil {
-			w.observe("fanout", ErrorCode(err), 0)
+			w.observe(OperationFanout, ErrorCode(err), 0)
 		} else {
 			_ = n
+			w.observe(OperationFanout, CodeFanoutSuccess, 0)
 		}
 	}
 	deliveries, err := w.store.Claim(ctx, now, w.cfg.Owner, w.cfg.LeaseTTL, w.cfg.BatchSize)
 	if err != nil {
 		return err
 	}
+	w.observe(OperationClaim, CodeClaimSuccess, 0)
 	var wg sync.WaitGroup
 	for _, delivery := range deliveries {
 		delivery := delivery
@@ -148,38 +180,43 @@ func (w *Worker) deliver(ctx context.Context, delivery Delivery) {
 	now := w.cfg.Clock.Now()
 	allowed, err := w.store.BeginAttempt(ctx, delivery.ID, delivery.LeaseToken, now, w.cfg.MaxAttempts, w.cfg.RequestTimeout+w.cfg.RequestTimeout/2)
 	if err != nil {
-		w.observe("attempt", ErrorCode(err), time.Since(started))
+		code := ErrorCode(err)
+		if code == CodeDeliveryDeadLetter {
+			w.observe(OperationFinish, CodeDeliveryDeadLetter, 0)
+		}
+		w.observe(OperationAttempt, code, time.Since(started))
 		return
 	}
 	if !allowed {
-		w.observe("attempt", CodeLeaseLost, time.Since(started))
+		w.observe(OperationAttempt, CodeLeaseLost, time.Since(started))
 		return
 	}
+	w.observe(OperationAttempt, CodeAttemptSuccess, time.Since(started))
 	attemptCtx, cancel := context.WithTimeout(ctx, w.cfg.RequestTimeout)
 	defer cancel()
 	attempts := delivery.Attempts + 1
 	secret, err := w.resolver.Resolve(attemptCtx, delivery.Secret)
 	if err != nil {
 		w.finish(ctx, delivery, now, outcomeForSecretError(err, attempts, w.cfg, now))
-		w.observe("secret", ErrorCode(err), time.Since(started))
+		w.observe(OperationSecret, ErrorCode(err), time.Since(started))
 		return
 	}
 	defer clear(secret)
 	if len(secret) < protocol.WebhookMinSecretBytes {
 		w.finish(ctx, delivery, now, terminalOutcome(CodeSecretInvalid, now))
-		w.observe("secret", CodeSecretInvalid, time.Since(started))
+		w.observe(OperationSecret, CodeSecretInvalid, time.Since(started))
 		return
 	}
 	body, err := buildEnvelope(delivery.Event)
 	if err != nil {
 		w.finish(ctx, delivery, now, terminalOutcome(CodeProtocolInvalid, now))
-		w.observe("envelope", CodeProtocolInvalid, time.Since(started))
+		w.observe(OperationEnvelope, CodeProtocolInvalid, time.Since(started))
 		return
 	}
 	headers, err := signedHeaders(secret, delivery, body, now)
 	if err != nil {
 		w.finish(ctx, delivery, now, terminalOutcome(CodeProtocolInvalid, now))
-		w.observe("signature", CodeProtocolInvalid, time.Since(started))
+		w.observe(OperationSignature, CodeProtocolInvalid, time.Since(started))
 		return
 	}
 	response, err := w.doer.Do(attemptCtx, delivery.URL, headers, body)
@@ -188,21 +225,21 @@ func (w *Worker) deliver(ctx context.Context, delivery Delivery) {
 			return
 		}
 		w.finish(ctx, delivery, now, retryOutcome(CodeHTTPTemporary, attempts, w.cfg, delivery.ID, now, 0))
-		w.observe("delivery", CodeHTTPTemporary, time.Since(started))
+		w.observe(OperationDelivery, CodeHTTPTemporary, time.Since(started))
 		return
 	}
 	if response.StatusCode >= 200 && response.StatusCode < 300 {
 		w.finish(ctx, delivery, now, Outcome{Status: "delivered", HTTPStatus: persistedHTTPStatus(response.StatusCode), ErrorCode: CodeDeliveryDelivered, CompletedAt: now})
-		w.observe("delivery", CodeDeliveryDelivered, time.Since(started))
+		w.observe(OperationDelivery, CodeDeliveryDelivered, time.Since(started))
 		return
 	}
 	if retryableStatus(response.StatusCode) {
 		w.finish(ctx, delivery, now, retryOutcome(CodeHTTPTemporary, attempts, w.cfg, delivery.ID, now, response.RetryAfter))
-		w.observe("delivery", CodeHTTPTemporary, time.Since(started))
+		w.observe(OperationDelivery, CodeHTTPTemporary, time.Since(started))
 		return
 	}
 	w.finish(ctx, delivery, now, Outcome{Status: "dead_letter", HTTPStatus: persistedHTTPStatus(response.StatusCode), ErrorCode: CodeHTTPPermanent, CompletedAt: now})
-	w.observe("delivery", CodeHTTPPermanent, time.Since(started))
+	w.observe(OperationDelivery, CodeHTTPPermanent, time.Since(started))
 }
 
 func persistedHTTPStatus(status int) int {
@@ -214,29 +251,121 @@ func persistedHTTPStatus(status int) int {
 
 func (w *Worker) finish(ctx context.Context, delivery Delivery, now time.Time, outcome Outcome) {
 	if err := w.store.Finish(ctx, delivery.ID, delivery.LeaseToken, delivery.Attempts+1, now, outcome); err != nil {
-		w.observe("finish", ErrorCode(err), 0)
+		w.observe(OperationFinish, ErrorCode(err), 0)
+		return
 	}
+	w.observe(OperationFinish, outcome.ErrorCode, 0)
 }
 
 func (w *Worker) deferDelivery(ctx context.Context, delivery Delivery, now time.Time) {
-	if err := w.store.Finish(ctx, delivery.ID, delivery.LeaseToken, 0, now, Outcome{Status: "retry", RetryDelay: w.cfg.BaseBackoff, ErrorCode: CodeBacklogPaused}); err != nil {
-		w.observe("finish", ErrorCode(err), 0)
+	outcome := Outcome{Status: "retry", RetryDelay: w.cfg.BaseBackoff, ErrorCode: CodeBacklogPaused}
+	if err := w.store.Finish(ctx, delivery.ID, delivery.LeaseToken, 0, now, outcome); err != nil {
+		w.observe(OperationFinish, ErrorCode(err), 0)
+		return
+	}
+	w.observe(OperationFinish, outcome.ErrorCode, 0)
+}
+
+func (w *Worker) observe(operation Operation, code Code, elapsed time.Duration) {
+	if w == nil {
+		return
+	}
+	observation := ClassifyObservation(Observation{Operation: string(operation), Code: code, Elapsed: elapsed})
+	w.metricsMu.RLock()
+	observer := w.cfg.Observer
+	metrics := w.cfg.Metrics
+	w.metricsMu.RUnlock()
+	if observer != nil {
+		w.dispatchObservation(observer, observation)
+	}
+	w.recordMetrics(metrics, observation)
+}
+
+func (w *Worker) observeCounts(operation Operation, code Code, counts Counts) {
+	observation := ClassifyObservation(Observation{
+		Operation: string(operation), Code: code, Total: counts.Total, MaxDestination: counts.MaxDestination,
+		Pending: counts.Pending, Retry: counts.Retry, Leased: counts.Leased, DeadLetter: counts.DeadLetter,
+	})
+	w.metricsMu.RLock()
+	observer := w.cfg.Observer
+	metrics := w.cfg.Metrics
+	w.metricsMu.RUnlock()
+	if observer != nil {
+		w.dispatchObservation(observer, observation)
+	}
+	w.recordMetrics(metrics, observation)
+}
+
+func (w *Worker) dispatchObservation(observer Observer, observation Observation) {
+	if w == nil || observer == nil {
+		return
+	}
+	w.observerOnce.Do(func() {
+		queue := api.NewObserverDispatcher(defaultObserverQueueCapacity, observer.Observe, w.dropCurrent)
+		w.metricsMu.Lock()
+		w.observerQueue = queue
+		w.metricsMu.Unlock()
+	})
+	w.metricsMu.RLock()
+	queue := w.observerQueue
+	w.metricsMu.RUnlock()
+	if queue != nil {
+		queue.Enqueue(observation)
 	}
 }
 
-func (w *Worker) observe(operation string, code Code, elapsed time.Duration) {
-	if w.cfg.Observer != nil {
-		w.cfg.Observer.Observe(Observation{Operation: operation, Code: code, Elapsed: elapsed})
+func (w *Worker) recordMetrics(metrics api.MetricsSink, observation Observation) {
+	if metrics == nil {
+		return
+	}
+	defer func() {
+		if recover() != nil {
+			w.drop(metrics, "writer_error")
+		}
+	}()
+	metrics.Record(api.MetricSample{Name: api.MetricMessageLifecycleEvents, Labels: map[string]string{
+		"component": "webhook", "stage": observation.Stage, "result": observation.Result,
+	}, Value: 1})
+	if observation.Operation == string(OperationFinish) {
+		metrics.Record(api.MetricSample{Name: api.MetricWebhookDeliveries, Labels: map[string]string{
+			"stage": observation.Stage, "result": observation.Result,
+		}, Value: 1})
+	}
+	if observation.Elapsed > 0 {
+		metrics.Record(api.MetricSample{Name: api.MetricMessageLifecycleDurationSum, Labels: map[string]string{
+			"component": "webhook", "stage": observation.Stage,
+		}, Value: observation.Elapsed.Seconds()})
+		metrics.Record(api.MetricSample{Name: api.MetricMessageLifecycleDurationCount, Labels: map[string]string{
+			"component": "webhook", "stage": observation.Stage,
+		}, Value: 1})
+	}
+	if observation.Result != "success" || observation.Code == CodeUnknown {
+		code := observation.Code
+		if code == "" {
+			code = CodeUnknown
+		}
+		metrics.Record(api.MetricSample{Name: api.MetricMessageLifecycleErrors, Labels: map[string]string{
+			"component": "webhook", "code": string(code),
+		}, Value: 1})
 	}
 }
 
-func (w *Worker) observeCounts(operation string, code Code, counts Counts) {
-	if w.cfg.Observer != nil {
-		w.cfg.Observer.Observe(Observation{
-			Operation: operation, Code: code, Total: counts.Total, MaxDestination: counts.MaxDestination,
-			Pending: counts.Pending, Retry: counts.Retry, Leased: counts.Leased, DeadLetter: counts.DeadLetter,
-		})
+func (w *Worker) drop(metrics api.MetricsSink, reason string) {
+	if metrics == nil {
+		return
 	}
+	defer func() { _ = recover() }()
+	metrics.Drop(reason)
+}
+
+func (w *Worker) dropCurrent(reason string) {
+	if w == nil {
+		return
+	}
+	w.metricsMu.RLock()
+	metrics := w.cfg.Metrics
+	w.metricsMu.RUnlock()
+	w.drop(metrics, reason)
 }
 
 func buildEnvelope(event Event) ([]byte, error) {

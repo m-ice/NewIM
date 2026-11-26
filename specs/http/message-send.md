@@ -253,7 +253,10 @@ does not probe either database. Database outage remains a route-level 503.
 Responses, logs, metrics and errors must not contain raw tokens, payloads,
 client/conversation/sender IDs from an ACK, secrets, digests, DSNs, SQL or
 driver diagnostics. Metrics may add only the bounded `route="message_send"`
-label.
+label at the HTTP layer. The application layer additionally emits the fixed
+send lifecycle observations and server-generated request-local `traceId`
+defined in [server-message-lifecycle.md](../observability/server-message-lifecycle.md);
+the trace ID is never a wire, ACK, database, metric or raw-log value.
 
 This route does not implement login, refresh, logout, device limits or kick,
 gateway/WebSocket registration, public ingress, TLS, CORS, WAF, rate limiting,

@@ -85,6 +85,13 @@ normalized classes); `status` is a three-digit handler
 status. Request paths, query strings, headers, client addresses, tokens,
 message data, and revisions are never labels.
 
+The additive server-only lifecycle families and their fixed low-cardinality
+domains are defined in
+[server-message-lifecycle.md](../observability/server-message-lifecycle.md).
+They are separate from `newim_http_*`; the HTTP layer still permits only the
+bounded `route="message_send"` request-route label and never accepts a business
+identifier.
+
 ## Lifecycle and security limits
 
 - Both listeners bind before readiness becomes true.

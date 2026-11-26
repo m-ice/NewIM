@@ -8,6 +8,7 @@ import (
 	"time"
 
 	protocol "github.com/m-ice/NewIM/core/protocol/go"
+	"github.com/m-ice/NewIM/server/api"
 	"github.com/m-ice/NewIM/server/conversation"
 )
 
@@ -105,6 +106,9 @@ type PersistedMessage struct {
 	ServerMsgID     string
 	ConversationSeq int64
 	ServerTime      int64
+	// Replayed is observational metadata only; it never changes the ACK contract.
+	// Replayed 仅用于观测，不改变 ACK 契约。
+	Replayed bool
 }
 
 // IDGenerator is trusted server-side identity generation.
@@ -125,11 +129,38 @@ type ClockFunc func() time.Time
 
 func (f ClockFunc) Now() time.Time { return f() }
 
-// Observation contains only bounded operation/timing labels.
-// Observation 只包含有界操作与耗时标签。
+// Lifecycle stages and results are fixed bounded label values.
+// 生命周期阶段与结果使用固定有界标签值。
+const (
+	LifecycleAccepted   = "accepted"
+	LifecycleValidated  = "validated"
+	LifecyclePersisting = "persisting"
+	LifecyclePersisted  = "persisted"
+	LifecycleACKReady   = "ack_ready"
+	LifecycleRejected   = "rejected"
+
+	LifecycleResultSuccess   = "success"
+	LifecycleResultRetryable = "retryable"
+	LifecycleResultPermanent = "permanent"
+	LifecycleResultUnknown   = "unknown"
+
+	LifecycleCodeAccepted   Code = "SEND_ACCEPTED"
+	LifecycleCodeValidated  Code = "SEND_VALIDATED"
+	LifecycleCodePersisting Code = "SEND_PERSISTING"
+	LifecycleCodePersisted  Code = "SEND_PERSISTED"
+	LifecycleCodeACKReady   Code = "SEND_ACK_READY"
+	LifecycleCodeRejected   Code = "SEND_REJECTED"
+)
+
+// Observation contains only bounded operation, lifecycle and timing labels.
+// Observation 只包含有界 operation、生命周期与耗时标签。
 type Observation struct {
 	Operation string
+	Stage     string
+	Result    string
 	Code      Code
+	TraceID   string
+	Replayed  bool
 	Elapsed   time.Duration
 }
 
@@ -137,6 +168,13 @@ type Observation struct {
 // Observer 接收可选的最佳努力发送观测。
 type Observer interface {
 	Observe(Observation)
+}
+
+// MetricsSink receives bounded lifecycle metric samples without blocking send.
+// MetricsSink 接收有界生命周期指标样本，且不得阻塞发送。
+type MetricsSink interface {
+	Record(api.MetricSample)
+	Drop(reason string)
 }
 
 // Store is the application-to-storage port for the send transaction.

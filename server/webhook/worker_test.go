@@ -90,11 +90,32 @@ func (d *headerCaptureDoer) Do(_ context.Context, _ string, headers map[string]s
 }
 
 type captureObserver struct {
+	mu     sync.Mutex
 	values []string
 }
 
 func (o *captureObserver) Observe(observation Observation) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
 	o.values = append(o.values, string(observation.Code))
+}
+
+func (o *captureObserver) joined() string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return strings.Join(o.values, "|")
+}
+
+func (o *captureObserver) waitForValues(timeout time.Duration) string {
+	deadline := time.Now().Add(timeout)
+	for time.Now().Before(deadline) {
+		values := o.joined()
+		if values != "" {
+			return values
+		}
+		time.Sleep(time.Millisecond)
+	}
+	return o.joined()
 }
 
 func (d testDoer) Do(context.Context, string, map[string]string, []byte) (Response, error) {
@@ -353,7 +374,7 @@ func TestWorkerRedactsDoerError(t *testing.T) {
 	if err = worker.cycle(context.Background(), make(chan struct{}, 1)); err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(strings.Join(observer.values, "|"), sentinel) {
+	if strings.Contains(observer.waitForValues(time.Second), sentinel) {
 		t.Fatal("observer leaked raw doer error")
 	}
 	store.mu.Lock()
