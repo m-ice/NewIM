@@ -119,6 +119,13 @@ func testAdmissionUpgrade(t *testing.T) {
 	inspectIssuedToken(t, f, legacy, newToken, 2*time.Minute)
 	assertAdmissionBearer(t, server, newToken.Token, http.StatusOK)
 
+	f.sql("UPDATE newim.im_sessions SET admitted_at=NULL WHERE session_id=$1", legacy.SessionID)
+	assertAdmissionBearer(t, server, old.RawToken(), http.StatusUnauthorized)
+	assertAdmissionBearer(t, server, newToken.Token, http.StatusUnauthorized)
+	f.sql(`UPDATE newim.im_sessions SET admitted_at=(
+		SELECT created_at FROM newim.im_auth_tokens WHERE token_id=$2) WHERE session_id=$1`, legacy.SessionID, old.TokenID())
+	assertAdmissionBearer(t, server, old.RawToken(), http.StatusOK)
+
 	before := f.tokenCount()
 	requireIssuerError(t, callIssuer(t, server, http.MethodPost, issuerRoute, issuerRequestBody(t, inactive), "Bearer "+key),
 		http.StatusForbidden, "AUTH_SESSION_NOT_ELIGIBLE")

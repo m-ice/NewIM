@@ -251,6 +251,9 @@ func (r *Repository) Authenticate(ctx context.Context, tokenID string, verify fu
 		return app.Fail(app.AuthStorageUnavailable)
 	}
 	verifyErr := verify(snapshot)
+	if verifyErr == nil && r.admissionRequired {
+		verifyErr = verifyAdmittedBinding(ctx, tx, snapshot.Binding())
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return app.Fail(app.AuthStorageUnavailable)
 	}
