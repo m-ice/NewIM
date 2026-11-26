@@ -73,12 +73,28 @@ observations, and the server composes independent PostgreSQL snapshots for
 outbox fanout and Webhook delivery gauges. See [ADR 0021](../docs/adr/0021-server-message-lifecycle-observability.md)
 and the [lifecycle specification](../specs/observability/server-message-lifecycle.md).
 
-There is no public network server or UI, WebSocket gateway, push delivery, or
-complete multi-device login/reconnect policy. The API/Ops foundation defaults
-to loopback and does not expose message persistence through a public route. The
-NIM-SRV-008 send route does not implement login, device/kick, rate limiting,
-media HTTP, Push, sync/read, Webhook management or delivery. Run
-the root `make build`, `make check`, `make docs-check`, `make api-check`,
+`newim-gateway` 为原生客户端提供独立的实时消息监听。启动前应用迁移 009，
+并统一设置 `NEWIM_AUTH_DEVICE_ADMISSION=1`。必填项为
+`NEWIM_GATEWAY_ADDR`、`NEWIM_GATEWAY_TLS_CERT_FILE`、`NEWIM_GATEWAY_TLS_KEY_FILE`
+和 `NEWIM_AUTH_DSN`。TLS 证书与私钥使用绝对路径，数据库 TCP 连接校验证书。
+数据库角色需有既有会话和消息增量读取权限、账号行锁和设备活动更新权限，
+以及握手记录的读写和过期清理权限。
+使用本地数据库套接字时显式设置 `NEWIM_AUTH_ALLOW_LOCAL_SOCKET=1`。网关按直接
+入口地址限流，部署时可在可信的四层转发环境使用直连 TLS。
+
+| 网关选项 | 默认值 |
+| --- | ---: |
+| `NEWIM_GATEWAY_MAX_CONNECTIONS` | 128 |
+| `NEWIM_GATEWAY_IP_ATTEMPTS_PER_MINUTE` | 64 |
+| `NEWIM_GATEWAY_DEVICE_ATTEMPTS_PER_MINUTE` | 12 |
+| `NEWIM_GATEWAY_SUBSCRIBE_TIMEOUT_MS` | 3000 |
+| `NEWIM_GATEWAY_WRITE_TIMEOUT_MS` | 3000 |
+| `NEWIM_GATEWAY_DRAIN_TIMEOUT_MS` | 12000 |
+
+[接入规范](../specs/gateway/websocket.md) · [ADR 0025](../docs/adr/0025-wss-gateway.md)。
+在 PostgreSQL 测试环境运行 `make gateway-check gateway-security gateway-recovery`。
+
+Run the root `make build`, `make check`, `make docs-check`, `make api-check`,
 `make api-recovery`, `make api-security`, `make auth-http-check`,
 `make auth-http-security`, `make auth-route-check`, `make auth-logout-check`,
 `make auth-logout-security`, `make webhook-protocol`,

@@ -13,10 +13,13 @@ Webhook lifecycle observations are additive and non-blocking; durable fanout and
 delivery backlog gauges are read-only PostgreSQL snapshots taken outside the
 metrics registry lock. See [ADR 0021](adr/0021-server-message-lifecycle-observability.md)
 and the [lifecycle specification](../specs/observability/server-message-lifecycle.md).
-The following remain future work: a public network API or UI, a WebSocket gateway, push delivery, complete
-credential verification and multi-device login or kick policy,
-reconnect/lifecycle integration, retention/moderation/account erasure, and
-platform wrappers. This document does not claim those capabilities. A
+The public network realtime gateway runs as a separate TLS process. Native
+clients authenticate with a bearer token, then subscribe to committed messages
+after their durable conversation sequence. See [ADR 0025](adr/0025-wss-gateway.md)
+and the [gateway specification](../specs/gateway/websocket.md).
+The public HTTP API, UI, push delivery, complete credential verification, client
+lifecycle integration, retention/moderation/account erasure, and platform
+wrappers remain future work. A
 bearer-session HTTP handler validates already-issued tokens when an explicit
 loopback auth DSN is configured; a separate exact DELETE route idempotently
 revokes only the presented token and does not perform session-wide logout. They
@@ -36,6 +39,7 @@ implementation and independent product acceptance remain separate.
 | `server/auth/session` | Policy-neutral token issuance, authentication, bearer resolution and token/session revocation over a store port, including atomic token-only `RevokeBearer`. |
 | `server/auth/bearerhttp` | Policy-neutral `GET /api/v1/session` and exact `DELETE /api/v1/session/tokens/current` handlers with strict Authorization/body/route/method rules and stable HTTP errors; mounted only by explicit loopback auth composition. |
 | `server/messagehttp` | Exact loopback `POST /api/v1/messages` adapter: strict bearer/body/type checks, token-scoped logical identity, stable HTTP error mapping and ACK-after-commit; it owns no transaction or delivery semantics. |
+| `server/gateway` | Independent TLS listener for bearer-authenticated, single-conversation delivery and resume. Reads committed message sequence pages and records one-time handshake reservations in PostgreSQL. |
 | `server/message` | Send validation, media preconditions, idempotent persistence orchestration, persisted ACK construction, and bounded request-local lifecycle observations. |
 | `server/sync/*` | Internal bounded conversation bootstrap/delta and message delta read services; trusted principals are supplied by their callers. |
 | `server/media` | Protocol-neutral media application rules and ports for grants, metadata, validation, and private download authorization. |
@@ -90,9 +94,8 @@ authorization precedes signer invocation.
 On clients, `sdk/core` owns the protocol-neutral outbox state machine and
 `sdk/storage/sqlite` provides the native SQLite adapter with atomic batch writes,
 generation fencing, recovery, and pending CAS. The recovery contract treats
-PostgreSQL persistence plus sync as truth; WebSocket remains the intended realtime
-path, but no public WebSocket transport is implemented. Push is future notification
-infrastructure, not the message truth source. See
+PostgreSQL persistence plus sync as truth. The realtime WebSocket gateway uses
+the same committed sequence. Push remains future notification infrastructure. See
 [ADR 0008](adr/0008-auth-session-core.md),
 [ADR 0019](adr/0019-bearer-token-revocation.md),
 [token revocation specification](../specs/http/session-logout.md),

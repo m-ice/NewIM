@@ -35,6 +35,7 @@ AUTH_TABLES = {'im_auth_tokens'}
 MEDIA_TABLES = {'im_media_assets'}
 WEBHOOK_TABLES = {'im_webhook_endpoints', 'im_webhook_endpoint_revisions'}
 ADMISSION_TABLES = {'im_session_revocation_events'}
+GATEWAY_TABLES = {'im_gateway_handshakes'}
 
 
 def source_migrations():
@@ -61,6 +62,7 @@ def check_catalog(db, target=None):
     expected |= MEDIA_TABLES if target >= 5 else set()
     expected |= WEBHOOK_TABLES if target >= 6 else set()
     expected |= ADMISSION_TABLES if target >= 8 else set()
+    expected |= GATEWAY_TABLES if target >= 9 else set()
     actual_tables = set(db.sql("SELECT tablename FROM pg_tables WHERE schemaname='newim';").splitlines())
     if actual_tables != expected:
         raise Failure('exact catalog table set: missing='+repr(sorted(expected-actual_tables))+
@@ -281,6 +283,7 @@ def schema(db, commands):
     equal(snapshot(db), before, 'negative writes preserve database')
     sync_constraints(db)
     auth_constraints(db)
+    gateway_handshake_constraints(db)
     media_constraints(db)
     webhook_constraints(db)
     print(f'PASS schema catalogs and {len(negatives)} negative writes', flush=True)
@@ -391,6 +394,35 @@ def auth_constraints(db):
     equal(snapshot(db), before, 'auth constraint failures preserve state')
     print(f'PASS auth schema constraints: {len(negatives)} rejected writes', flush=True)
 
+
+
+def gateway_handshake_constraints(db):
+    db.sql("INSERT INTO newim.im_auth_tokens(token_id,token_digest,session_id,created_at,expires_at) "
+           "VALUES (repeat('d',32),decode(repeat('25',32),'hex'),'auth_session',"
+           "'2026-01-01 00:00:00+00','2026-01-01 01:00:00+00');")
+    db.sql("INSERT INTO newim.im_gateway_handshakes(token_id,nonce_hash,expires_at) "
+           "SELECT token_id,decode(repeat('05',32),'hex'),expires_at FROM newim.im_auth_tokens "
+           "WHERE session_id='auth_session';")
+    scalar(db, "SELECT count(*) FROM newim.im_gateway_handshakes;", 2,
+           'gateway replay identity is per token')
+    scalar(db, "SELECT string_agg(column_name,',' ORDER BY ordinal_position) FROM information_schema.columns "
+           "WHERE table_schema='newim' AND table_name='im_gateway_handshakes';",
+           'token_id,nonce_hash,expires_at', 'exact gateway replay columns')
+    scalar(db, "SELECT pg_get_indexdef('newim.im_gateway_handshakes_expiry_idx'::regclass);",
+           'CREATE INDEX im_gateway_handshakes_expiry_idx ON newim.im_gateway_handshakes USING btree '
+           '(expires_at, token_id, nonce_hash)', 'gateway replay expiry index')
+    negatives = [
+        ("INSERT INTO newim.im_gateway_handshakes SELECT * FROM newim.im_gateway_handshakes;", '23505'),
+        ("UPDATE newim.im_gateway_handshakes SET nonce_hash=decode(repeat('05',31),'hex');", '23514'),
+        ("UPDATE newim.im_gateway_handshakes SET expires_at='infinity';", '23514'),
+        ("UPDATE newim.im_gateway_handshakes SET token_id=repeat('e',32) WHERE token_id=repeat('d',32);", '23503'),
+        ("DELETE FROM newim.im_auth_tokens WHERE token_id=repeat('d',32);", '23503'),
+    ]
+    before = snapshot(db)
+    for sql, error in negatives:
+        db.sql(sql, error=error)
+    equal(snapshot(db), before, 'gateway replay constraint failures preserve state')
+    print(f'PASS gateway replay schema constraints: {len(negatives)} rejected writes', flush=True)
 
 
 def media_constraints(db):
@@ -669,6 +701,18 @@ def device_admission_migration(db):
     print('PASS populated 008 preserves historical device, session and token data', flush=True)
 
 
+def gateway_handshake_migration(db):
+    historical = snapshot(db)
+    db.sql(migration_sql(9))
+    check_catalog(db, 9)
+    upgraded = snapshot(db)
+    equal({k: v for k, v in upgraded.items() if k not in {'migrations', 'im_gateway_handshakes'}},
+          {k: v for k, v in historical.items() if k != 'migrations'}, '009 preserves all historical rows')
+    scalar(db, "SELECT count(*) FROM newim.im_gateway_handshakes;", 0,
+           '009 creates no unverified replay records')
+    print('PASS populated 009 preserves historical data and leaves replay storage empty', flush=True)
+
+
 def migrations(db, commands):
     head = len(source_migrations())
     db.sql(migration_sql(1))
@@ -690,6 +734,7 @@ def migrations(db, commands):
     webhook_migration_faults(db, commands)
     direct_policy_migration(db)
     device_admission_migration(db)
+    gateway_handshake_migration(db)
     after = snapshot(db)
     db.sql(migration_sql())
     equal(snapshot(db), after, 'head replay stable')

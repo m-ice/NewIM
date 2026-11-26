@@ -2,10 +2,36 @@ package authsession
 
 import (
 	"context"
+	"errors"
 
 	"github.com/jackc/pgx/v5"
 	app "github.com/m-ice/NewIM/server/auth/session"
 )
+
+// GatewayRevocationReason returns the committed event reason for one binding.
+// GatewayRevocationReason 读取指定账号和会话的已提交撤销原因。
+func (r *Repository) GatewayRevocationReason(ctx context.Context, userID, sessionID string) (string, error) {
+	if ctx == nil || !identifier(userID) || !identifier(sessionID) {
+		return "", app.Fail(app.AuthInvalidInput)
+	}
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+	tx, err := r.begin(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted, AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return "", err
+	}
+	defer rollback(tx)
+	var reason string
+	err = tx.QueryRow(ctx, `SELECT reason FROM newim.im_session_revocation_events
+		WHERE user_id=$1 AND session_id=$2`, userID, sessionID).Scan(&reason)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return "", fixed(err)
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return "", fixed(err)
+	}
+	return reason, nil
+}
 
 // MaxRevocationEvents is the maximum size of one account replay page.
 const MaxRevocationEvents = 100

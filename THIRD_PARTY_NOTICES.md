@@ -3,6 +3,10 @@
 These notices apply to the Rust protocol library and the Go conversation-sync dependencies. NewIM has not selected its own distribution license. MIT is the available path used for dual-licensed packages below; unicode-ident also retains its Unicode-3.0 notice. Packages present only in the lock graph are included for completeness. This file preserves the actual notice text from verified crate archives.
 
 
+## Go WebSocket gateway dependency
+
+The gateway uses `github.com/coder/websocket v1.8.15` under the ISC license. The exact release notice is preserved at [third_party/licenses/websocket/LICENSE.txt](third_party/licenses/websocket/LICENSE.txt).
+
 ## Go conversation-sync dependencies
 The conversation-sync adapter pins `github.com/jackc/pgx/v5 v5.11.0` and the exact module graph recorded in [`docs/dependencies/conversation-sync.md`](docs/dependencies/conversation-sync.md). The six imported modules are pgx/v5 v5.11.0, pgpassfile v1.0.0, pgservicefile v0.0.0-20240606120523-5a60cdf6a761, puddle/v2 v2.2.2, golang.org/x/sync v0.21.0 and golang.org/x/text v0.39.0. The graph-only modules x/mod v0.37.0, x/tools v0.47.0, go-spew v1.1.1, kr/pretty v0.3.0, go-difflib v1.0.0, objx v0.1.0, testify v1.11.1, check.v1 v1.0.0-20201130134442-10cb98267c6c and yaml.v3 v3.0.1 are not claimed to be linked. Their source/notice conditions remain applicable if they are later vendored or redistributed.
 ### pgx/v5 v5.11.0

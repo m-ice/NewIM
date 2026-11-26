@@ -250,6 +250,17 @@ auth-logout-security: toolchain
 	python3 -B server/auth/bearerhttp/security_gate.py --self-test
 	python3 -B server/auth/bearerhttp/security_gate.py --suite logout
 
+.PHONY: gateway-check gateway-security gateway-recovery
+gateway-check: toolchain
+	go test -race -shuffle=on -count=1 ./server/gateway ./server/cmd/newim-gateway
+	python3 -B infra/db/gateway_suite.py check
+
+gateway-security: toolchain
+	python3 -B infra/db/gateway_suite.py security
+
+gateway-recovery: toolchain
+	python3 -B infra/db/gateway_suite.py recovery
+
 .PHONY: message-check message-recovery message-errors
 message-check: toolchain
 	python3 -B infra/db/message_suite.py check

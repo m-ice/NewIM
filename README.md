@@ -92,14 +92,17 @@ make message-delta-check
 
 该目标覆盖 authz、delta、query-plan、recovery 和 redaction；它不代表公共同步协议或客户端网络接入已经完成。
 
+## 实时消息网关
+
+`newim-gateway` 提供独立的 TLS 监听。原生客户端用会话令牌连接，并携带本地已持久化的会话序号恢复消息。部署配置见 [服务端说明](server/README.md)，协议见 [网关规范](specs/gateway/websocket.md)。
+
 ## HTTP service foundation
 
 The `newim-server` process exposes two loopback-only listeners by default:
 `127.0.0.1:8080` for `GET /api/v1/health`, and `127.0.0.1:9090` for
 `GET /ready` and `GET /metrics`. Both listeners bind before readiness becomes
-true, and SIGINT/SIGTERM performs a bounded drain. The service has no public
-auth, message, sync, WebSocket, push, TLS, or rate-limiting semantics yet; see
-[ADR 0013](docs/adr/0013-http-api-service-foundation.md) and the
+true, and SIGINT/SIGTERM performs a bounded drain. These HTTP listeners serve
+loopback callers. See [ADR 0013](docs/adr/0013-http-api-service-foundation.md) and the
 [service specification](specs/http/service-foundation.md). A separate
 policy-neutral `GET /api/v1/session` handler validates already-issued opaque
 tokens against persisted bindings. It is mounted only when `NEWIM_AUTH_DSN` is

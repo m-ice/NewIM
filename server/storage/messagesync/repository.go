@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/m-ice/NewIM/server/storage/postgresidentity"
 	app "github.com/m-ice/NewIM/server/sync/message"
 )
 
@@ -23,6 +24,9 @@ type Config struct {
 	AllowLocalSocket bool
 	MaxConnections   int
 	ApplicationName  string
+	// Guard verifies a shared backend identity before any message read.
+	// Guard 在读取消息前校验共享数据库身份。
+	Guard *postgresidentity.Guard
 }
 
 // Repository owns a bounded pgx pool and implements message.Store.
@@ -78,6 +82,20 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 		config.ApplicationName = "newim-messagesync"
 	}
 	poolConfig.ConnConfig.RuntimeParams["application_name"] = config.ApplicationName
+	if guard := config.Guard; guard != nil {
+		poolConfig.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+			if err := guard.AfterConnect(ctx, conn); err != nil {
+				return app.Fail(app.StorageUnavailable)
+			}
+			return nil
+		}
+		poolConfig.PrepareConn = func(ctx context.Context, conn *pgx.Conn) (bool, error) {
+			if err := guard.Verify(ctx, conn); err != nil {
+				return false, app.Fail(app.StorageUnavailable)
+			}
+			return true, nil
+		}
+	}
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	pool, err := pgxpool.NewWithConfig(ctx, poolConfig)
