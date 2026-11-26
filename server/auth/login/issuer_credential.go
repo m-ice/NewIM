@@ -32,6 +32,9 @@ func loadIssuerDigest(path string) ([sha256.Size]byte, error) {
 	if !ok || stat.Uid != uint32(os.Geteuid()) || info.Size() < issuerCredentialLength || info.Size() > issuerCredentialLength+1 {
 		return [sha256.Size]byte{}, errInvalidIssuerConfig
 	}
+	if !issuerACLIsRestricted(fd) {
+		return [sha256.Size]byte{}, errInvalidIssuerConfig
+	}
 
 	var buffer [issuerCredentialLength + 2]byte
 	defer clear(buffer[:])
