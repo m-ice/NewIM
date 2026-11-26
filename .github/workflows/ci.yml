@@ -62,6 +62,9 @@ jobs:
       - name: Exercise loopback bearer session route mounting
         timeout-minutes: 12
         run: make auth-route-check
+      - name: Exercise trusted application token issuance
+        timeout-minutes: 12
+        run: make auth-issuer-check
       - name: Exercise idempotent current-token revocation
         timeout-minutes: 12
         run: make auth-logout-check

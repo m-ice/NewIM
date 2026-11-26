@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"time"
 
@@ -15,6 +16,7 @@ import (
 	protocol "github.com/m-ice/NewIM/core/protocol/go"
 	"github.com/m-ice/NewIM/server/api"
 	"github.com/m-ice/NewIM/server/auth/bearerhttp"
+	"github.com/m-ice/NewIM/server/auth/login"
 	app "github.com/m-ice/NewIM/server/auth/session"
 	messageservice "github.com/m-ice/NewIM/server/message"
 	"github.com/m-ice/NewIM/server/messagehttp"
@@ -34,6 +36,8 @@ const (
 	privateMessagePolicyEnv    = "NEWIM_PRIVATE_MESSAGE_POLICY"
 	authDSNEnv                 = "NEWIM_AUTH_DSN"
 	authAllowLocalSocketEnv    = "NEWIM_AUTH_ALLOW_LOCAL_SOCKET"
+	authIssuerTokenFileEnv     = "NEWIM_AUTH_ISSUER_TOKEN_FILE"
+	authIssuerTTLEnv           = "NEWIM_AUTH_ISSUER_TTL_SECONDS"
 	messageHTTPApplicationName = "newim-message-http"
 )
 
@@ -52,12 +56,39 @@ type authRuntime struct {
 	closer       *orderedCloser
 }
 
-// newAuthRuntimeFromEnv composes the enabled HTTP runtime from environment
-// configuration. A missing DSN disables auth unless message HTTP explicitly
-// requires the shared DSN.
-// newAuthRuntimeFromEnv 根据环境配置组合已启用的 HTTP runtime；DSN 缺失时关闭
-// auth，除非 message HTTP 已显式要求该共享 DSN。
 func newAuthRuntimeFromEnv(ctx context.Context, cfg api.Config, logger *slog.Logger) (*authRuntime, []api.APIRoute, error) {
+	tokenFile, ttlConfig := os.Getenv(authIssuerTokenFileEnv), os.Getenv(authIssuerTTLEnv)
+	if tokenFile == "" && ttlConfig == "" {
+		return newAuthAndMessageRuntime(ctx, cfg, logger)
+	}
+	seconds, err := strconv.ParseInt(ttlConfig, 10, 32)
+	if err != nil || seconds < int64(app.MinTTL/time.Second) || seconds > int64(app.MaxTTL/time.Second) ||
+		!filepath.IsAbs(tokenFile) || !loopbackAPIAddress(cfg.APIAddr) || strings.TrimSpace(os.Getenv(authDSNEnv)) == "" {
+		return nil, nil, api.ErrInvalidAuthConfig
+	}
+	runtime, routes, err := newAuthAndMessageRuntime(ctx, cfg, logger)
+	if err != nil {
+		if errors.Is(err, errInvalidMessageConfig) {
+			return nil, nil, err
+		}
+		return nil, nil, api.ErrInvalidAuthConfig
+	}
+	handler, err := login.NewIssuerHandler(runtime.service, tokenFile, time.Duration(seconds)*time.Second)
+	if err != nil {
+		runtime.Close()
+		return nil, nil, api.ErrInvalidAuthConfig
+	}
+	return runtime, append(routes, api.APIRoute{
+		Name:           "auth_issuer",
+		Path:           login.IssuerRoute,
+		AllowedMethods: []string{http.MethodPost},
+		MaxBodyBytes:   login.IssuerBodyLimit,
+		RejectQuery:    true,
+		Handler:        handler,
+	}), nil
+}
+
+func newAuthAndMessageRuntime(ctx context.Context, cfg api.Config, logger *slog.Logger) (*authRuntime, []api.APIRoute, error) {
 	dsn := strings.TrimSpace(os.Getenv(authDSNEnv))
 	allowLocalSocket := os.Getenv(authAllowLocalSocketEnv) == "1"
 	messageEnabled := os.Getenv(messageHTTPEnv) == "1"

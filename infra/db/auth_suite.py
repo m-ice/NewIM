@@ -20,6 +20,7 @@ TESTS = {
     'policy': 'TestAuthPolicy',
     'http': 'TestAuthHTTP',
     'route': 'TestAuthRoute',
+    'issuer': 'TestAuthIssuer',
     'logout': 'TestAuthLogout',
     'logout-restore': 'TestAuthLogoutRestore',
 }
@@ -133,23 +134,23 @@ def main():
             print(result.stderr.decode(), end='')
             raise Failure('auth integration cross compilation failed')
         server_binary = None
-        if args.suite == 'route':
+        if args.suite in ('route', 'issuer'):
             server_binary = directory/'newim-server'
             server_argv = ['go', 'build', '-o', str(server_binary), './server/cmd/newim-server']
             started = time.monotonic()
             result = subprocess.run(server_argv, cwd=ROOT, env=env, capture_output=True, timeout=180, check=False)
-            commands.record(server_argv, result.returncode, time.monotonic()-started, 'auth-route-server-build')
+            commands.record(server_argv, result.returncode, time.monotonic()-started, 'auth-'+args.suite+'-server-build')
             (directory/'server-build.log').write_bytes(result.stdout+result.stderr)
             if result.returncode:
                 print(result.stderr.decode(), end='')
-                raise Failure('auth route server binary build failed')
+                raise Failure('auth server binary build failed')
         with Database(commands, image, platform) as db:
             db.sql(migration_sql())
             commands.run(['docker', 'cp', str(binary), db.name+':/tmp/auth.test'],
                          label='copy-owned-auth-test-binary')
             if server_binary is not None:
                 commands.run(['docker', 'cp', str(server_binary), db.name+':/tmp/newim-server'],
-                             label='copy-owned-auth-route-server')
+                             label='copy-owned-auth-'+args.suite+'-server')
             if args.suite == 'recovery':
                 run_test(db, TESTS[args.suite], 'prepare')
                 commands.run(['docker', 'kill', '--signal=KILL', db.name], label='crash-auth-database')
@@ -162,7 +163,7 @@ def main():
                 run_test(db, TESTS['logout'], 'prepare')
                 dump_and_restore(db)
                 run_test(db, TESTS['logout-restore'], 'restore')
-            elif args.suite == 'route':
+            elif server_binary is not None:
                 run_test(db, TESTS[args.suite], env={'NEWIM_SERVER_BINARY': '/tmp/newim-server'})
             else:
                 run_test(db, TESTS[args.suite])

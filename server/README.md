@@ -33,6 +33,13 @@ token revocation: it revokes only the presented token idempotently and never
 performs session-wide logout. See [ADR 0019](../docs/adr/0019-bearer-token-revocation.md) and the
 [token revocation specification](../specs/http/session-logout.md).
 
+可信应用可为已登记会话签发令牌。设置 `NEWIM_AUTH_ISSUER_TOKEN_FILE` 与
+`NEWIM_AUTH_ISSUER_TTL_SECONDS` 后，服务会在现有鉴权回环监听上启用
+`POST /api/v1/internal/session/token`。凭证文件由运行服务的账号拥有，使用
+0400 或 0600 权限，保存 32 个随机字节的 64 位小写十六进制编码。调用方在业务鉴权
+成功后提交用户、设备与会话的绑定。签发成功的令牌可直接用于会话查询和当前令牌撤销。
+[签发接口](../specs/http/session-issuance.md)。
+
 The NIM-SRV-008 slice defines `server/messagehttp` as the exact loopback
 `POST /api/v1/messages` adapter for already-issued bearer tokens and protocol
 text v1 requests. It is enabled only by `NEWIM_MESSAGE_HTTP=1` with the same
