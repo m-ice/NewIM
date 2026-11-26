@@ -434,14 +434,19 @@ func assertIssuerSessionBinding(t *testing.T, body []byte, binding app.SessionBi
 
 func assertIssuerRedaction(t *testing.T, server *runningServer, fragments ...string) {
 	t.Helper()
+	assertAuthRouteRedaction(t, server, "auth_issuer", fragments...)
+}
+
+func assertAuthRouteRedaction(t *testing.T, server *runningServer, route string, fragments ...string) {
+	t.Helper()
 	metrics, status, _ := doRawRequest(t, http.MethodGet, "http://"+server.ops+"/metrics", nil, "")
-	if status != http.StatusOK || !bytes.Contains(metrics, []byte(`route="auth_issuer"`)) {
-		t.Fatal("issuer route is missing its stable metric label")
+	if status != http.StatusOK || !bytes.Contains(metrics, []byte(`route="`+route+`"`)) {
+		t.Fatalf("auth route %s is missing its stable metric label", route)
 	}
 	log := server.stdout.String() + server.stderr.String()
 	for _, value := range fragments {
 		if strings.Contains(log, value) || bytes.Contains(metrics, []byte(value)) {
-			t.Fatal("issuer logs or metrics contain a credential, digest or storage detail")
+			t.Fatal("auth logs or metrics contain a credential, digest or storage detail")
 		}
 	}
 }

@@ -211,7 +211,7 @@ sync-migrations:
 
 sync-check: sync-bootstrap sync-delta sync-cursor sync-query-plan sync-recovery sync-migrations
 
-.PHONY: auth-check auth-recovery auth-policy auth-http-check auth-http-security auth-route-check auth-issuer-check auth-logout-check auth-logout-security
+.PHONY: auth-check auth-recovery auth-policy auth-http-check auth-http-security auth-route-check auth-issuer-check auth-admission-check auth-logout-check auth-logout-security
 auth-check: toolchain
 	python3 -B infra/db/auth_suite.py check
 
@@ -238,6 +238,9 @@ auth-route-check: toolchain
 
 auth-issuer-check: toolchain
 	python3 -B infra/db/auth_suite.py issuer
+
+auth-admission-check: toolchain
+	python3 -B infra/db/auth_suite.py admission
 
 auth-logout-check: toolchain
 	python3 -B infra/db/auth_suite.py --self-test

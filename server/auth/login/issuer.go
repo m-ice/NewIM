@@ -48,43 +48,61 @@ func NewIssuerHandler(service *app.Service, absoluteTokenFile string, ttl time.D
 }
 
 func (h *IssuerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	if h == nil || h.issue == nil {
-		writeIssuerError(w, http.StatusServiceUnavailable, string(bearerhttp.CodeUnavailable))
+	raw, ok := h.readTrustedRequest(w, r, IssuerRoute)
+	if !ok {
 		return
 	}
-	if r == nil {
+	binding, valid := decodeIssueBinding(raw)
+	if !valid {
 		writeIssuerError(w, http.StatusBadRequest, string(app.AuthInvalidInput))
 		return
 	}
-	if r.URL == nil || r.URL.EscapedPath() != IssuerRoute {
-		writeIssuerError(w, http.StatusNotFound, string(bearerhttp.CodeRouteNotFound))
+	issued, err := h.issue(r.Context(), app.IssueRequest{Binding: binding, TTL: h.ttl})
+	if err != nil {
+		writeSessionActionError(w, err)
 		return
+	}
+	writeIssuedToken(w, issued)
+}
+
+func (h *IssuerHandler) readTrustedRequest(w http.ResponseWriter, r *http.Request, route string) ([]byte, bool) {
+	if h == nil || h.issue == nil {
+		writeIssuerError(w, http.StatusServiceUnavailable, string(bearerhttp.CodeUnavailable))
+		return nil, false
+	}
+	if r == nil {
+		writeIssuerError(w, http.StatusBadRequest, string(app.AuthInvalidInput))
+		return nil, false
+	}
+	if r.URL == nil || r.URL.EscapedPath() != route {
+		writeIssuerError(w, http.StatusNotFound, string(bearerhttp.CodeRouteNotFound))
+		return nil, false
 	}
 	if r.Method != http.MethodPost {
 		w.Header().Set("Allow", http.MethodPost)
 		writeIssuerError(w, http.StatusMethodNotAllowed, string(bearerhttp.CodeMethodNotAllowed))
-		return
+		return nil, false
 	}
 	if r.URL.RawQuery != "" || r.URL.ForceQuery || r.URL.Fragment != "" || r.URL.RawFragment != "" {
 		writeIssuerError(w, http.StatusBadRequest, "HTTP_INVALID_QUERY")
-		return
+		return nil, false
 	}
 	if r.ContentLength > IssuerBodyLimit {
 		writeIssuerError(w, http.StatusRequestEntityTooLarge, "HTTP_BODY_TOO_LARGE")
-		return
+		return nil, false
 	}
 	if !validIssuerContentType(r.Header) {
 		writeIssuerError(w, http.StatusUnsupportedMediaType, "HTTP_UNSUPPORTED_MEDIA_TYPE")
-		return
+		return nil, false
 	}
 	if !h.authorized(r.Header) {
 		w.Header().Set("WWW-Authenticate", `Bearer realm="newim-issuer"`)
 		writeIssuerError(w, http.StatusUnauthorized, string(bearerhttp.CodeInvalidToken))
-		return
+		return nil, false
 	}
 	if r.Body == nil {
 		writeIssuerError(w, http.StatusBadRequest, string(app.AuthInvalidInput))
-		return
+		return nil, false
 	}
 	body := http.MaxBytesReader(w, r.Body, IssuerBodyLimit)
 	defer body.Close()
@@ -96,26 +114,22 @@ func (h *IssuerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		} else {
 			writeIssuerError(w, http.StatusBadRequest, string(app.AuthInvalidInput))
 		}
-		return
+		return nil, false
 	}
-	binding, valid := decodeIssueBinding(raw)
-	if !valid {
+	return raw, true
+}
+
+func writeSessionActionError(w http.ResponseWriter, err error) {
+	switch app.ErrorCode(err) {
+	case app.AuthInvalidInput:
 		writeIssuerError(w, http.StatusBadRequest, string(app.AuthInvalidInput))
-		return
+	case app.AuthForbidden, app.AuthSessionNotFound, app.AuthSessionRevoked:
+		writeIssuerError(w, http.StatusForbidden, codeSessionNotEligible)
+	case app.AuthDeviceLimitExceeded:
+		writeIssuerError(w, http.StatusConflict, string(app.AuthDeviceLimitExceeded))
+	default:
+		writeIssuerError(w, http.StatusServiceUnavailable, string(bearerhttp.CodeUnavailable))
 	}
-	issued, err := h.issue(r.Context(), app.IssueRequest{Binding: binding, TTL: h.ttl})
-	if err != nil {
-		switch app.ErrorCode(err) {
-		case app.AuthInvalidInput:
-			writeIssuerError(w, http.StatusBadRequest, string(app.AuthInvalidInput))
-		case app.AuthForbidden, app.AuthSessionNotFound, app.AuthSessionRevoked:
-			writeIssuerError(w, http.StatusForbidden, codeSessionNotEligible)
-		default:
-			writeIssuerError(w, http.StatusServiceUnavailable, string(bearerhttp.CodeUnavailable))
-		}
-		return
-	}
-	writeIssuedToken(w, issued)
 }
 
 func (h *IssuerHandler) authorized(header http.Header) bool {
@@ -153,41 +167,43 @@ func validIssuerContentType(header http.Header) bool {
 }
 
 func decodeIssueBinding(raw []byte) (app.SessionBinding, bool) {
+	var binding app.SessionBinding
+	valid := decodeIdentityFields(raw, map[string]*string{
+		"userId": &binding.UserID, "deviceId": &binding.DeviceID, "sessionId": &binding.SessionID,
+	})
+	return binding, valid && binding.Valid()
+}
+
+func decodeIdentityFields(raw []byte, fields map[string]*string) bool {
 	if !utf8.Valid(raw) {
-		return app.SessionBinding{}, false
+		return false
 	}
 	decoder := json.NewDecoder(bytes.NewReader(raw))
 	start, err := decoder.Token()
 	if err != nil || start != json.Delim('{') {
-		return app.SessionBinding{}, false
-	}
-	var binding app.SessionBinding
-	fields := map[string]*string{
-		"userId":    &binding.UserID,
-		"deviceId":  &binding.DeviceID,
-		"sessionId": &binding.SessionID,
+		return false
 	}
 	for decoder.More() {
 		token, err := decoder.Token()
 		key, ok := token.(string)
 		target := fields[key]
 		if err != nil || !ok || target == nil {
-			return app.SessionBinding{}, false
+			return false
 		}
 		token, err = decoder.Token()
 		value, ok := token.(string)
 		if err != nil || !ok {
-			return app.SessionBinding{}, false
+			return false
 		}
 		*target = value
 		delete(fields, key)
 	}
 	end, err := decoder.Token()
-	if err != nil || end != json.Delim('}') || len(fields) != 0 || !binding.Valid() {
-		return app.SessionBinding{}, false
+	if err != nil || end != json.Delim('}') || len(fields) != 0 {
+		return false
 	}
 	_, err = decoder.Token()
-	return binding, err == io.EOF
+	return err == io.EOF
 }
 
 func writeIssuedToken(w http.ResponseWriter, token app.IssuedToken) {
@@ -195,11 +211,19 @@ func writeIssuedToken(w http.ResponseWriter, token app.IssuedToken) {
 		writeIssuerError(w, http.StatusServiceUnavailable, string(bearerhttp.CodeUnavailable))
 		return
 	}
-	body, err := json.Marshal(struct {
-		Version   int       `json:"version"`
-		Token     string    `json:"token"`
-		ExpiresAt time.Time `json:"expiresAt"`
-	}{Version: bearerhttp.Version, Token: token.RawToken(), ExpiresAt: token.ExpiresAt().UTC()})
+	writeSessionResponse(w, issuedTokenResponse{
+		Version: bearerhttp.Version, Token: token.RawToken(), ExpiresAt: token.ExpiresAt().UTC(),
+	})
+}
+
+type issuedTokenResponse struct {
+	Version   int       `json:"version"`
+	Token     string    `json:"token"`
+	ExpiresAt time.Time `json:"expiresAt"`
+}
+
+func writeSessionResponse(w http.ResponseWriter, response any) {
+	body, err := json.Marshal(response)
 	if err != nil {
 		writeIssuerError(w, http.StatusServiceUnavailable, string(bearerhttp.CodeUnavailable))
 		return

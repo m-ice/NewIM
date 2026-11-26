@@ -20,10 +20,11 @@ const requestTimeout = 5 * time.Second
 // Config is trusted database configuration, never request input.
 // Config 仅接受可信数据库配置，不接受请求内容。
 type Config struct {
-	DSN              string
-	AllowLocalSocket bool
-	MaxConnections   int
-	ApplicationName  string
+	DSN               string
+	AllowLocalSocket  bool
+	MaxConnections    int
+	ApplicationName   string
+	AdmissionRequired bool
 	// Guard enables shared backend identity validation when non-nil.
 	// Guard 非 nil 时启用共享后端身份校验。
 	Guard *postgresidentity.Guard
@@ -31,7 +32,10 @@ type Config struct {
 
 // Repository owns a bounded pgx pool; DSNs and driver errors stay private.
 // Repository 持有有界 pgx 连接池，不暴露 DSN 或驱动错误。
-type Repository struct{ pool *pgxpool.Pool }
+type Repository struct {
+	pool              *pgxpool.Pool
+	admissionRequired bool
+}
 
 // Open requires verified TLS for TCP or explicitly enabled local sockets.
 // Open 的 TCP 必须校验主机证书，本地套接字须显式启用。
@@ -91,7 +95,13 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 		pool.Close()
 		return nil, app.Fail(app.AuthStorageUnavailable)
 	}
-	return &Repository{pool: pool}, nil
+	if config.AdmissionRequired {
+		if err = verifyAdmissionReadiness(ctx, pool); err != nil {
+			pool.Close()
+			return nil, err
+		}
+	}
+	return &Repository{pool: pool, admissionRequired: config.AdmissionRequired}, nil
 }
 
 func installGuard(poolConfig *pgxpool.Config, guard *postgresidentity.Guard) {
@@ -131,6 +141,11 @@ func (r *Repository) Issue(ctx context.Context, binding app.SessionBinding, gene
 		return app.IssuedToken{}, err
 	}
 	defer rollback(tx)
+	if r.admissionRequired {
+		if err = lockAccount(ctx, tx, binding.UserID); err != nil {
+			return app.IssuedToken{}, err
+		}
+	}
 	var userID, deviceID string
 	var revokedAt *time.Time
 	err = tx.QueryRow(ctx, "SELECT user_id,device_id,revoked_at FROM newim.im_sessions WHERE session_id=$1 FOR UPDATE", binding.SessionID).Scan(&userID, &deviceID, &revokedAt)
@@ -146,26 +161,51 @@ func (r *Repository) Issue(ctx context.Context, binding app.SessionBinding, gene
 	if revokedAt != nil {
 		return app.IssuedToken{}, app.Fail(app.AuthSessionRevoked)
 	}
-	issued, err := generate()
-	if err != nil {
-		return app.IssuedToken{}, fixed(err)
-	}
-	digest := issued.Digest()
-	if issued.TokenID() == "" || issued.RawToken() == "" || issued.ExpiresAt().IsZero() || !issued.ExpiresAt().After(issued.IssuedAt()) {
-		return app.IssuedToken{}, app.Fail(app.AuthStorageUnavailable)
-	}
-	_, err = tx.Exec(ctx, "INSERT INTO newim.im_auth_tokens(token_id,token_digest,session_id,created_at,expires_at) VALUES($1,$2,$3,$4,$5)",
-		issued.TokenID(), digest[:], binding.SessionID, issued.IssuedAt(), issued.ExpiresAt())
-	if err != nil {
-		if tokenCollision(err) {
-			return app.IssuedToken{}, app.Fail(app.AuthTokenCollision)
+	if r.admissionRequired {
+		if err = verifyAdmittedBinding(ctx, tx, binding); err != nil {
+			return app.IssuedToken{}, err
 		}
-		return app.IssuedToken{}, app.Fail(app.AuthStorageUnavailable)
+	}
+	issued, err := insertToken(ctx, tx, binding.SessionID, generate)
+	if err != nil {
+		return app.IssuedToken{}, err
+	}
+	if r.admissionRequired {
+		if err = refreshDeviceActivity(ctx, tx, binding.UserID, binding.DeviceID, issued.IssuedAt()); err != nil {
+			return app.IssuedToken{}, err
+		}
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return app.IssuedToken{}, app.Fail(app.AuthStorageUnavailable)
 	}
 	return issued, nil
+}
+
+func insertToken(ctx context.Context, tx pgx.Tx, sessionID string, generate func() (app.IssuedToken, error)) (app.IssuedToken, error) {
+	issued, err := generate()
+	if err != nil {
+		return app.IssuedToken{}, fixed(err)
+	}
+	if err = persistIssuedToken(ctx, tx, sessionID, issued); err != nil {
+		return app.IssuedToken{}, err
+	}
+	return issued, nil
+}
+
+func persistIssuedToken(ctx context.Context, tx pgx.Tx, sessionID string, issued app.IssuedToken) error {
+	digest := issued.Digest()
+	if issued.TokenID() == "" || issued.RawToken() == "" || issued.ExpiresAt().IsZero() || !issued.ExpiresAt().After(issued.IssuedAt()) {
+		return app.Fail(app.AuthStorageUnavailable)
+	}
+	_, err := tx.Exec(ctx, "INSERT INTO newim.im_auth_tokens(token_id,token_digest,session_id,created_at,expires_at) VALUES($1,$2,$3,$4,$5)",
+		issued.TokenID(), digest[:], sessionID, issued.IssuedAt(), issued.ExpiresAt())
+	if err != nil {
+		if tokenCollision(err) {
+			return app.Fail(app.AuthTokenCollision)
+		}
+		return app.Fail(app.AuthStorageUnavailable)
+	}
+	return nil
 }
 
 // Authenticate locks the token/session snapshot before invoking constant-time
@@ -322,6 +362,11 @@ func (r *Repository) RevokeSession(ctx context.Context, binding app.SessionBindi
 		return "", err
 	}
 	defer rollback(tx)
+	if r.admissionRequired {
+		if err = lockAccount(ctx, tx, binding.UserID); err != nil {
+			return "", err
+		}
+	}
 	var userID, deviceID string
 	var existingRevokedAt *time.Time
 	err = tx.QueryRow(ctx, "SELECT user_id,device_id,revoked_at FROM newim.im_sessions WHERE session_id=$1 FOR UPDATE", binding.SessionID).Scan(&userID, &deviceID, &existingRevokedAt)

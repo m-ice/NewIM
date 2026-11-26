@@ -65,6 +65,9 @@ jobs:
       - name: Exercise trusted application token issuance
         timeout-minutes: 12
         run: make auth-issuer-check
+      - name: Exercise durable device admission and session revocation
+        timeout-minutes: 12
+        run: make auth-admission-check
       - name: Exercise idempotent current-token revocation
         timeout-minutes: 12
         run: make auth-logout-check

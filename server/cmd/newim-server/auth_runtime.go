@@ -38,6 +38,10 @@ const (
 	authAllowLocalSocketEnv    = "NEWIM_AUTH_ALLOW_LOCAL_SOCKET"
 	authIssuerTokenFileEnv     = "NEWIM_AUTH_ISSUER_TOKEN_FILE"
 	authIssuerTTLEnv           = "NEWIM_AUTH_ISSUER_TTL_SECONDS"
+	authAdmissionEnv           = "NEWIM_AUTH_DEVICE_ADMISSION"
+	authMaxDevicesEnv          = "NEWIM_AUTH_MAX_DEVICES"
+	authMaxPerPlatformEnv      = "NEWIM_AUTH_MAX_DEVICES_PER_PLATFORM"
+	authSingleDeviceEnv        = "NEWIM_AUTH_SINGLE_DEVICE"
 	messageHTTPApplicationName = "newim-message-http"
 )
 
@@ -57,16 +61,23 @@ type authRuntime struct {
 }
 
 func newAuthRuntimeFromEnv(ctx context.Context, cfg api.Config, logger *slog.Logger) (*authRuntime, []api.APIRoute, error) {
+	limits, admission, err := deviceAdmissionConfig()
+	if err != nil {
+		return nil, nil, err
+	}
 	tokenFile, ttlConfig := os.Getenv(authIssuerTokenFileEnv), os.Getenv(authIssuerTTLEnv)
 	if tokenFile == "" && ttlConfig == "" {
-		return newAuthAndMessageRuntime(ctx, cfg, logger)
+		if admission {
+			return nil, nil, api.ErrInvalidAuthConfig
+		}
+		return newAuthAndMessageRuntime(ctx, cfg, false, logger)
 	}
 	seconds, err := strconv.ParseInt(ttlConfig, 10, 32)
 	if err != nil || seconds < int64(app.MinTTL/time.Second) || seconds > int64(app.MaxTTL/time.Second) ||
 		!filepath.IsAbs(tokenFile) || !loopbackAPIAddress(cfg.APIAddr) || strings.TrimSpace(os.Getenv(authDSNEnv)) == "" {
 		return nil, nil, api.ErrInvalidAuthConfig
 	}
-	runtime, routes, err := newAuthAndMessageRuntime(ctx, cfg, logger)
+	runtime, routes, err := newAuthAndMessageRuntime(ctx, cfg, admission, logger)
 	if err != nil {
 		if errors.Is(err, errInvalidMessageConfig) {
 			return nil, nil, err
@@ -78,17 +89,61 @@ func newAuthRuntimeFromEnv(ctx context.Context, cfg api.Config, logger *slog.Log
 		runtime.Close()
 		return nil, nil, api.ErrInvalidAuthConfig
 	}
-	return runtime, append(routes, api.APIRoute{
-		Name:           "auth_issuer",
-		Path:           login.IssuerRoute,
+	routes = append(routes, trustedSessionRoute("auth_issuer", login.IssuerRoute, handler))
+	if admission {
+		admit, err := login.NewAdmissionHandler(handler, runtime.service, limits)
+		if err != nil {
+			runtime.Close()
+			return nil, nil, api.ErrInvalidAuthConfig
+		}
+		routes = append(routes, trustedSessionRoute("auth_admission", login.AdmissionRoute, admit))
+	}
+	return runtime, routes, nil
+}
+
+func trustedSessionRoute(name, path string, handler http.Handler) api.APIRoute {
+	return api.APIRoute{
+		Name:           name,
+		Path:           path,
 		AllowedMethods: []string{http.MethodPost},
 		MaxBodyBytes:   login.IssuerBodyLimit,
 		RejectQuery:    true,
 		Handler:        handler,
-	}), nil
+	}
 }
 
-func newAuthAndMessageRuntime(ctx context.Context, cfg api.Config, logger *slog.Logger) (*authRuntime, []api.APIRoute, error) {
+func deviceAdmissionConfig() (app.DeviceLimits, bool, error) {
+	switch os.Getenv(authAdmissionEnv) {
+	case "", "0":
+		return app.DeviceLimits{}, false, nil
+	case "1":
+	default:
+		return app.DeviceLimits{}, false, api.ErrInvalidAuthConfig
+	}
+	account, accountOK := configuredDeviceLimit(os.Getenv(authMaxDevicesEnv), 8)
+	platform, platformOK := configuredDeviceLimit(os.Getenv(authMaxPerPlatformEnv), 3)
+	if !accountOK || !platformOK {
+		return app.DeviceLimits{}, false, api.ErrInvalidAuthConfig
+	}
+	switch os.Getenv(authSingleDeviceEnv) {
+	case "", "0":
+	case "1":
+		account = 1
+	default:
+		return app.DeviceLimits{}, false, api.ErrInvalidAuthConfig
+	}
+	return app.DeviceLimits{Account: account, Platform: platform}, true, nil
+}
+
+func configuredDeviceLimit(raw string, defaultValue int) (int, bool) {
+	if raw == "" {
+		return defaultValue, true
+	}
+	value, err := strconv.ParseInt(raw, 10, 32)
+	return int(value), err == nil && value > 0
+}
+
+func newAuthAndMessageRuntime(ctx context.Context, cfg api.Config, admission bool, logger *slog.Logger) (*authRuntime, []api.APIRoute, error) {
 	dsn := strings.TrimSpace(os.Getenv(authDSNEnv))
 	allowLocalSocket := os.Getenv(authAllowLocalSocketEnv) == "1"
 	messageEnabled := os.Getenv(messageHTTPEnv) == "1"
@@ -103,7 +158,7 @@ func newAuthAndMessageRuntime(ctx context.Context, cfg api.Config, logger *slog.
 		if dsn == "" {
 			return nil, nil, nil
 		}
-		return newAuthRuntimeWithGuard(ctx, cfg, dsn, allowLocalSocket, nil, logger)
+		return newAuthRuntimeWithGuard(ctx, cfg, dsn, allowLocalSocket, admission, nil, logger)
 	}
 	if err := validateMessageRuntimeConfig(cfg, dsn, allowLocalSocket); err != nil {
 		return nil, nil, err
@@ -111,7 +166,7 @@ func newAuthAndMessageRuntime(ctx context.Context, cfg api.Config, logger *slog.
 
 	terminal := newTerminalState()
 	guard := postgresidentity.NewGuard(func(error) { terminal.Trip(errInvalidMessageConfig) })
-	runtime, routes, err := newAuthRuntimeWithGuard(ctx, cfg, dsn, allowLocalSocket, guard, logger)
+	runtime, routes, err := newAuthRuntimeWithGuard(ctx, cfg, dsn, allowLocalSocket, admission, guard, logger)
 	if err != nil {
 		return nil, nil, messageStartupError(guard, err)
 	}
@@ -187,16 +242,17 @@ func newAuthAndMessageRuntime(ctx context.Context, cfg api.Config, logger *slog.
 	return runtime, routes, nil
 }
 
-func newAuthRuntimeWithGuard(ctx context.Context, cfg api.Config, dsn string, allowLocalSocket bool, guard *postgresidentity.Guard, logger *slog.Logger) (*authRuntime, []api.APIRoute, error) {
+func newAuthRuntimeWithGuard(ctx context.Context, cfg api.Config, dsn string, allowLocalSocket, admission bool, guard *postgresidentity.Guard, logger *slog.Logger) (*authRuntime, []api.APIRoute, error) {
 	if !loopbackAPIAddress(cfg.APIAddr) {
 		return nil, nil, api.ErrInvalidAuthConfig
 	}
 	repo, err := store.Open(ctx, store.Config{
-		DSN:              dsn,
-		AllowLocalSocket: allowLocalSocket,
-		MaxConnections:   8,
-		ApplicationName:  "newim-auth-http",
-		Guard:            guard,
+		DSN:               dsn,
+		AllowLocalSocket:  allowLocalSocket,
+		MaxConnections:    8,
+		ApplicationName:   "newim-auth-http",
+		Guard:             guard,
+		AdmissionRequired: admission,
 	})
 	if err != nil {
 		return nil, nil, err

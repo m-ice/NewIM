@@ -136,7 +136,7 @@ def main():
 
         test_binary, server_binary, wrapper_binary = build_binaries(commands, env, directory)
         migration_file = directory / "migration.sql"
-        migration_file.write_text(migration_sql())
+        migration_file.write_text(migration_sql(7) if args.suite == "private-policy" else migration_sql())
         with Database(commands, image, platform) as db:
             # Seed legacy conversations before applying the policy migration.
             db.sql(migration_sql(6) if args.suite == "private-policy" else migration_sql())

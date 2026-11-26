@@ -20,6 +20,35 @@ func TestAuthRuntimeDisabledWithoutDSN(t *testing.T) {
 	}
 }
 
+func TestDeviceAdmissionConfig(t *testing.T) {
+	for _, test := range []struct {
+		name, enabled, account, platform, single string
+		wantAccount, wantPlatform                int
+		wantEnabled, wantError                   bool
+	}{
+		{name: "disabled"},
+		{name: "defaults", enabled: "1", wantAccount: 8, wantPlatform: 3, wantEnabled: true},
+		{name: "overrides", enabled: "1", account: "4", platform: "2", wantAccount: 4, wantPlatform: 2, wantEnabled: true},
+		{name: "single device", enabled: "1", account: "4", platform: "2", single: "1", wantAccount: 1, wantPlatform: 2, wantEnabled: true},
+		{name: "unsupported enable value", enabled: "on", wantError: true},
+		{name: "zero device limit", enabled: "1", account: "0", wantError: true},
+		{name: "invalid platform limit", enabled: "1", platform: "invalid", wantError: true},
+		{name: "unsupported single mode", enabled: "1", single: "on", wantError: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv(authAdmissionEnv, test.enabled)
+			t.Setenv(authMaxDevicesEnv, test.account)
+			t.Setenv(authMaxPerPlatformEnv, test.platform)
+			t.Setenv(authSingleDeviceEnv, test.single)
+			limits, enabled, err := deviceAdmissionConfig()
+			if (err != nil) != test.wantError || enabled != test.wantEnabled ||
+				limits.Account != test.wantAccount || limits.Platform != test.wantPlatform {
+				t.Fatalf("admission limits=%+v enabled=%v err=%v", limits, enabled, err)
+			}
+		})
+	}
+}
+
 func TestMessageRuntimeMissingDSNFailsClosed(t *testing.T) {
 	t.Setenv(messageHTTPEnv, "1")
 	t.Setenv(authDSNEnv, "")

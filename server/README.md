@@ -40,6 +40,12 @@ performs session-wide logout. See [ADR 0019](../docs/adr/0019-bearer-token-revoc
 成功后提交用户、设备与会话的绑定。签发成功的令牌可直接用于会话查询和当前令牌撤销。
 [签发接口](../specs/http/session-issuance.md)。
 
+设置 `NEWIM_AUTH_DEVICE_ADMISSION=1` 后，可信应用可为已登记账号准入设备。账号和
+同平台上限默认分别为 8 和 3，由 `NEWIM_AUTH_MAX_DEVICES` 及
+`NEWIM_AUTH_MAX_DEVICES_PER_PLATFORM` 调整。`NEWIM_AUTH_SINGLE_DEVICE=1`
+启用单设备模式。启用前按可信应用记录核验存量设备与会话，并统一切换共享数据库的写入进程。
+[设备准入接口](../specs/http/device-admission.md)。
+
 The NIM-SRV-008 slice defines `server/messagehttp` as the exact loopback
 `POST /api/v1/messages` adapter for already-issued bearer tokens and protocol
 text v1 requests. It is enabled only by `NEWIM_MESSAGE_HTTP=1` with the same

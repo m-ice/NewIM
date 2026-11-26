@@ -34,6 +34,7 @@ SYNC_TABLES = {'im_conversation_sync_accounts', 'im_conversation_sync_keys',
 AUTH_TABLES = {'im_auth_tokens'}
 MEDIA_TABLES = {'im_media_assets'}
 WEBHOOK_TABLES = {'im_webhook_endpoints', 'im_webhook_endpoint_revisions'}
+ADMISSION_TABLES = {'im_session_revocation_events'}
 
 
 def source_migrations():
@@ -59,6 +60,7 @@ def check_catalog(db, target=None):
     expected |= AUTH_TABLES if target >= 4 else set()
     expected |= MEDIA_TABLES if target >= 5 else set()
     expected |= WEBHOOK_TABLES if target >= 6 else set()
+    expected |= ADMISSION_TABLES if target >= 8 else set()
     actual_tables = set(db.sql("SELECT tablename FROM pg_tables WHERE schemaname='newim';").splitlines())
     if actual_tables != expected:
         raise Failure('exact catalog table set: missing='+repr(sorted(expected-actual_tables))+
@@ -79,6 +81,12 @@ def check_catalog(db, target=None):
                             "ORDER BY column_name;").splitlines()
     equal(policy_columns, ['direct_user_high|YES', 'direct_user_low|YES', 'kind|YES'] if target >= 7 else [],
           'conversation policy classification is additive and nullable')
+    admission_columns = db.sql("SELECT table_name||'|'||column_name||'|'||is_nullable FROM information_schema.columns "
+                               "WHERE table_schema='newim' AND ((table_name='im_devices' AND column_name IN "
+                               "('last_active_at','platform')) OR (table_name='im_sessions' AND column_name='admitted_at')) "
+                               "ORDER BY table_name,column_name;").splitlines()
+    expected_admission = ['im_devices|last_active_at|YES', 'im_devices|platform|YES', 'im_sessions|admitted_at|YES']
+    equal(admission_columns, expected_admission if target >= 8 else [], 'device admission metadata is additive and nullable')
     check_ledger(db, target)
 
 
@@ -637,6 +645,30 @@ def direct_policy_migration(db):
     print('PASS populated 007 preserves historical data and leaves classification unassigned', flush=True)
 
 
+def device_admission_migration(db):
+    original_projection = (
+        "SELECT md5(string_agg(ROW(user_id,device_id,created_at)::text,E'\\n' ORDER BY user_id,device_id)) "
+        "FROM newim.im_devices;",
+        "SELECT md5(string_agg(ROW(session_id,user_id,device_id,created_at,revoked_at)::text,E'\\n' ORDER BY session_id)) "
+        "FROM newim.im_sessions;",
+    )
+    identity_hashes = [db.sql(query) for query in original_projection]
+    historical = snapshot(db)
+    db.sql(migration_sql(8))
+    check_catalog(db, 8)
+    upgraded = snapshot(db)
+    compare = set(historical) - {'im_devices', 'im_sessions', 'migrations'}
+    equal({key: upgraded[key] for key in compare}, {key: historical[key] for key in compare},
+          '008 preserves every pre-existing token and related row')
+    equal([db.sql(query) for query in original_projection], identity_hashes, '008 preserves original devices and sessions')
+    scalar(db, "SELECT count(*) FROM newim.im_devices WHERE platform IS NOT NULL OR last_active_at IS NOT NULL;",
+           0, '008 leaves legacy device platform and activity unassigned')
+    scalar(db, "SELECT count(*) FROM newim.im_sessions WHERE admitted_at IS NOT NULL;",
+           0, '008 does not admit historical sessions')
+    scalar(db, "SELECT count(*) FROM newim.im_session_revocation_events;", 0, '008 does not invent revocations')
+    print('PASS populated 008 preserves historical device, session and token data', flush=True)
+
+
 def migrations(db, commands):
     head = len(source_migrations())
     db.sql(migration_sql(1))
@@ -657,6 +689,7 @@ def migrations(db, commands):
     media_migration_faults(db, commands)
     webhook_migration_faults(db, commands)
     direct_policy_migration(db)
+    device_admission_migration(db)
     after = snapshot(db)
     db.sql(migration_sql())
     equal(snapshot(db), after, 'head replay stable')

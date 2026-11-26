@@ -74,13 +74,7 @@ func (s *Service) Issue(ctx context.Context, request IssueRequest) (issued Issue
 		return IssuedToken{}, Fail(AuthInvalidInput)
 	}
 	observedSessionID = request.Binding.SessionID
-	generate := func() (IssuedToken, error) {
-		now, err := s.currentTime()
-		if err != nil {
-			return IssuedToken{}, err
-		}
-		return generateIssuedToken(s.entropy, now, request.TTL)
-	}
+	generate := s.tokenGenerator(request.TTL)
 	for attempt := 0; attempt < maxIssueAttempts; attempt++ {
 		issued, err = s.issueAttempt(ctx, request.Binding, generate)
 		if err == nil {
@@ -92,6 +86,16 @@ func (s *Service) Issue(ctx context.Context, request IssueRequest) (issued Issue
 		}
 	}
 	return IssuedToken{}, Fail(AuthTokenCollision)
+}
+
+func (s *Service) tokenGenerator(ttl time.Duration) func() (IssuedToken, error) {
+	return func() (IssuedToken, error) {
+		now, err := s.currentTime()
+		if err != nil {
+			return IssuedToken{}, err
+		}
+		return generateIssuedToken(s.entropy, now, ttl)
+	}
 }
 
 func (s *Service) issueAttempt(ctx context.Context, binding SessionBinding, generate func() (IssuedToken, error)) (IssuedToken, error) {

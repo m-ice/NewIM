@@ -21,6 +21,7 @@ TESTS = {
     'http': 'TestAuthHTTP',
     'route': 'TestAuthRoute',
     'issuer': 'TestAuthIssuer',
+    'admission': 'TestAuthAdmission',
     'logout': 'TestAuthLogout',
     'logout-restore': 'TestAuthLogoutRestore',
 }
@@ -92,6 +93,12 @@ def run_test(db, name, phase='single', env=None):
         raise Failure('auth integration execution failed or skipped: '+phase+': '+', '.join(errors))
 
 
+def restart_database(db):
+    db.commands.run(['docker', 'kill', '--signal=KILL', db.name], label='crash-auth-database')
+    db.commands.run(['docker', 'start', db.name], label='restart-auth-database')
+    db.ready()
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('suite', nargs='?', choices=TESTS)
@@ -134,7 +141,7 @@ def main():
             print(result.stderr.decode(), end='')
             raise Failure('auth integration cross compilation failed')
         server_binary = None
-        if args.suite in ('route', 'issuer'):
+        if args.suite in ('route', 'issuer', 'admission'):
             server_binary = directory/'newim-server'
             server_argv = ['go', 'build', '-o', str(server_binary), './server/cmd/newim-server']
             started = time.monotonic()
@@ -145,7 +152,7 @@ def main():
                 print(result.stderr.decode(), end='')
                 raise Failure('auth server binary build failed')
         with Database(commands, image, platform) as db:
-            db.sql(migration_sql())
+            db.sql(migration_sql(7) if args.suite == 'admission' else migration_sql())
             commands.run(['docker', 'cp', str(binary), db.name+':/tmp/auth.test'],
                          label='copy-owned-auth-test-binary')
             if server_binary is not None:
@@ -153,12 +160,20 @@ def main():
                              label='copy-owned-auth-'+args.suite+'-server')
             if args.suite == 'recovery':
                 run_test(db, TESTS[args.suite], 'prepare')
-                commands.run(['docker', 'kill', '--signal=KILL', db.name], label='crash-auth-database')
-                commands.run(['docker', 'start', db.name], label='restart-auth-database')
-                db.ready()
+                restart_database(db)
                 run_test(db, TESTS[args.suite], 'restart')
                 dump_and_restore(db)
                 run_test(db, TESTS[args.suite], 'restore')
+            elif args.suite == 'admission':
+                migration = directory/'admission-migration.sql'
+                migration.write_text(migration_sql(8))
+                commands.run(['docker', 'cp', str(migration), db.name+':/tmp/admission-migration.sql'],
+                             label='copy-owned-auth-admission-migration')
+                test_env = {'NEWIM_SERVER_BINARY': '/tmp/newim-server',
+                            'NEWIM_ADMISSION_MIGRATION_SQL': '/tmp/admission-migration.sql'}
+                run_test(db, TESTS[args.suite], 'prepare', env=test_env)
+                restart_database(db)
+                run_test(db, TESTS[args.suite], 'restart', env=test_env)
             elif args.suite == 'logout':
                 run_test(db, TESTS['logout'], 'prepare')
                 dump_and_restore(db)
