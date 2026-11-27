@@ -1,9 +1,9 @@
-use crate::{SqliteStore, conversation_sync, db};
+use crate::{SqliteStore, conversation_sync, db, message_sync};
 use newim_sdk_core::store::*;
 use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 use std::{sync::mpsc, time::Duration};
 
-const COLUMNS: &str = "server_id,sender_id,client_id,conversation_id,sequence,server_time,schema_version,message_type,payload";
+pub(crate) const COLUMNS: &str = "server_id,sender_id,client_id,conversation_id,sequence,server_time,schema_version,message_type,payload";
 pub(crate) fn bounded(row: &Row<'_>, index: usize, max: usize) -> rusqlite::Result<()> {
     let value = row.get_ref(index)?;
     let len = match value {
@@ -28,7 +28,7 @@ pub(crate) fn row_read_error(error: rusqlite::Error) -> StoreError {
         _ => db(error),
     }
 }
-fn message(row: &Row<'_>) -> rusqlite::Result<Message> {
+pub(crate) fn message(row: &Row<'_>) -> rusqlite::Result<Message> {
     for index in 0..4 {
         bounded(row, index, 128)?;
     }
@@ -46,7 +46,7 @@ fn message(row: &Row<'_>) -> rusqlite::Result<Message> {
         payload: row.get::<_, Option<Vec<u8>>>(8)?.map(Blob),
     })
 }
-fn validate_message_read(m: &Message) -> Result<(), StoreError> {
+pub(crate) fn validate_message_read(m: &Message) -> Result<(), StoreError> {
     m.validate().map_err(|_| StoreError::Corrupt)
 }
 fn lookup(conn: &Connection, id: &str) -> Result<Option<Message>, StoreError> {
@@ -74,13 +74,13 @@ pub(crate) fn unsigned(row: &Row<'_>, index: usize) -> rusqlite::Result<u64> {
     let n: i64 = row.get(index)?;
     u64::try_from(n).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(index, n))
 }
-fn revision(conn: &Connection) -> Result<u64, StoreError> {
+pub(crate) fn revision(conn: &Connection) -> Result<u64, StoreError> {
     conn.query_row("SELECT revision FROM store_metadata WHERE id=1", [], |r| {
         unsigned(r, 0)
     })
     .map_err(db)
 }
-fn pending(row: &Row<'_>) -> rusqlite::Result<Pending> {
+pub(crate) fn pending(row: &Row<'_>) -> rusqlite::Result<Pending> {
     for index in 0..3 {
         bounded(row, index, 128)?;
     }
@@ -91,6 +91,65 @@ fn pending(row: &Row<'_>) -> rusqlite::Result<Pending> {
         conversation_id: row.get(2)?,
         payload: Blob(row.get(3)?),
     })
+}
+
+pub(crate) fn existing_message(
+    conn: &Connection,
+    item: &Message,
+) -> Result<Option<Message>, StoreError> {
+    let mut statement = conn.prepare(&format!(
+        "SELECT {COLUMNS} FROM messages WHERE server_id=? OR (sender_id=? AND client_id=?) OR (conversation_id=? AND sequence=?)"
+    )).map_err(db)?;
+    let mut matches = statement
+        .query_map(
+            params![
+                item.server_id,
+                item.sender_id,
+                item.client_id,
+                item.conversation_id,
+                item.sequence
+            ],
+            message,
+        )
+        .map_err(db)?
+        .collect::<rusqlite::Result<Vec<_>>>()
+        .map_err(row_read_error)?;
+    for found in &matches {
+        validate_message_read(found)?;
+    }
+    if matches.len() > 1 || matches.first().is_some_and(|found| !identity(found, item)) {
+        return Err(StoreError::IdentityConflict);
+    }
+    Ok(matches.pop())
+}
+
+pub(crate) fn insert_message(
+    conn: &Connection,
+    item: &Message,
+    max_records: usize,
+) -> Result<(), StoreError> {
+    let count: i64 = conn
+        .query_row("SELECT count(*) FROM messages", [], |row| row.get(0))
+        .map_err(db)?;
+    if count >= max_records as i64 {
+        return Err(StoreError::CapacityExceeded);
+    }
+    conn.execute(
+        "INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?)",
+        params![
+            item.server_id,
+            item.sender_id,
+            item.client_id,
+            item.conversation_id,
+            item.sequence,
+            item.server_time,
+            item.schema_version,
+            item.message_type,
+            item.payload.as_ref().map(|payload| &payload.0)
+        ],
+    )
+    .map_err(db)?;
+    Ok(())
 }
 pub(crate) fn pending_page(
     conn: &Connection,
@@ -178,15 +237,25 @@ impl SqliteStore {
                     conversation_sync::snapshot(&tx, query)?,
                 ))
             }
+            Action::MessageSyncSnapshot(query) => {
+                let tx = self.conn.transaction().map_err(db)?;
+                Ok(Response::MessageSyncSnapshot(message_sync::snapshot(
+                    &tx, query,
+                )?))
+            }
             Action::Messages {
                 conversation,
                 after,
                 limit,
             } => {
                 let tx = self.conn.transaction().map_err(db)?;
-                let after = after.unwrap_or(-1).max(
-                    conversation_sync::published_history_floor(&tx, conversation)?.unwrap_or(-1),
-                );
+                let after = after
+                    .unwrap_or(-1)
+                    .max(
+                        conversation_sync::published_history_floor(&tx, conversation)?
+                            .unwrap_or(-1),
+                    )
+                    .max(message_sync::history_floor(&tx, conversation)?.unwrap_or(-1));
                 let mut statement=tx.prepare(&format!("SELECT {COLUMNS} FROM messages WHERE conversation_id=? AND sequence>? ORDER BY sequence LIMIT ?")).map_err(db)?;
                 let rows = statement
                     .query_map(params![conversation, after, *limit as i64 + 1], message)
@@ -368,28 +437,8 @@ impl SqliteStore {
                     let m = match write {
                         MessageWrite::Insert(m) | MessageWrite::PreserveExisting(m) => m,
                     };
-                    let mut st=tx.prepare(&format!("SELECT {COLUMNS} FROM messages WHERE server_id=? OR (sender_id=? AND client_id=?) OR (conversation_id=? AND sequence=?)")).map_err(db)?;
-                    let existing = st
-                        .query_map(
-                            params![
-                                m.server_id,
-                                m.sender_id,
-                                m.client_id,
-                                m.conversation_id,
-                                m.sequence
-                            ],
-                            message,
-                        )
-                        .map_err(db)?
-                        .collect::<rusqlite::Result<Vec<_>>>()
-                        .map_err(row_read_error)?;
-                    for old in &existing {
-                        validate_message_read(old)?;
-                    }
-                    if existing.len() > 1 || existing.first().is_some_and(|old| !identity(old, m)) {
-                        return Err(StoreError::IdentityConflict);
-                    }
-                    match (write, existing.first()) {
+                    let existing = existing_message(&tx, m)?;
+                    match (write, existing.as_ref()) {
                         (MessageWrite::Insert(_), Some(old)) => {
                             return Ok(Response::Existing(old.clone()));
                         }
@@ -398,27 +447,7 @@ impl SqliteStore {
                             return Err(StoreError::StaleRevision);
                         }
                         (MessageWrite::Insert(_), None) => {
-                            let count: i64 = tx
-                                .query_row("SELECT count(*) FROM messages", [], |r| r.get(0))
-                                .map_err(db)?;
-                            if count >= self.limits.records as i64 {
-                                return Err(StoreError::CapacityExceeded);
-                            }
-                            tx.execute(
-                                "INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?)",
-                                params![
-                                    m.server_id,
-                                    m.sender_id,
-                                    m.client_id,
-                                    m.conversation_id,
-                                    m.sequence,
-                                    m.server_time,
-                                    m.schema_version,
-                                    m.message_type,
-                                    m.payload.as_ref().map(|p| &p.0)
-                                ],
-                            )
-                            .map_err(db)?;
+                            insert_message(&tx, m, self.limits.records)?;
                             affected += 1;
                         }
                     }
@@ -454,12 +483,34 @@ impl SqliteStore {
                 }
                 affected = conversation_sync::apply(&tx, batch)?;
             }
+            Action::ApplyMessageSync(batch) => {
+                if batch.expected_revision != rev {
+                    return Err(StoreError::StaleRevision);
+                }
+                affected = message_sync::apply(&tx, r, batch, self.limits.records)?;
+            }
             Action::Trim {
                 conversation,
                 through,
                 limit,
             } => {
-                affected=tx.execute("UPDATE messages SET payload=NULL WHERE server_id IN (SELECT server_id FROM messages WHERE conversation_id=? AND sequence<=? AND payload IS NOT NULL ORDER BY sequence LIMIT ?)",params![conversation,through,*limit as i64]).map_err(db)? as u32;
+                // An authoritative ACK still needs the original payload while the matching send is pending.
+                // 匹配的待发记录存在时，ACK 仍需要原始正文。
+                affected = tx
+                    .execute(
+                        "UPDATE messages SET payload=NULL WHERE server_id IN (
+                        SELECT m.server_id FROM messages m
+                        WHERE m.conversation_id=? AND m.sequence<=? AND m.payload IS NOT NULL
+                          AND NOT EXISTS (
+                            SELECT 1 FROM pending_outbox p
+                            WHERE p.sender_id=m.sender_id AND p.client_id=m.client_id
+                              AND p.conversation_id=m.conversation_id
+                          )
+                        ORDER BY m.sequence LIMIT ?
+                    )",
+                        params![conversation, through, *limit as i64],
+                    )
+                    .map_err(db)? as u32;
             }
             Action::AdvanceGeneration => {
                 if self.fence.generation == i64::MAX as u64 {

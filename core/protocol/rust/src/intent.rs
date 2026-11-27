@@ -87,6 +87,20 @@ pub fn compare_results(left: &ServerFrame, right: &ServerFrame) -> Result<(), Er
     Ok(())
 }
 
+/// Compare the payloads of validated messages without converting numbers to floats.
+pub fn same_message_payload(left: &[u8], right: &[u8]) -> Result<bool, Error> {
+    fn checked_payload(raw: &[u8]) -> Result<&RawValue, Error> {
+        crate::scan::check(raw)?;
+        let text = std::str::from_utf8(raw).map_err(|_| crate::Error::InvalidJson)?;
+        if !text.trim_start().starts_with('{') {
+            return Err(crate::Error::InvalidMessage.into());
+        }
+        serde_json::from_str(text).map_err(|_| crate::Error::InvalidMessage.into())
+    }
+
+    payload_equal(checked_payload(left)?, checked_payload(right)?)
+}
+
 // Operands have already passed the bounded strict scan. RawValue never parses numbers as floats.
 fn payload_equal(left: &RawValue, right: &RawValue) -> Result<bool, Error> {
     let left = left.get().trim();

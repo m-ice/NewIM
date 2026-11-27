@@ -4,9 +4,11 @@ pub const SQL2: &str = include_str!("../migrations/002-cache-indexes.sql");
 pub const HASH2: &str = "352174f3eea924f97ccb19795f0b365f28e600fdb3e8e67f2482f139de43555b";
 pub const SQL3: &str = include_str!("../migrations/003-conversation-sync.sql");
 pub const HASH3: &str = "1d5e4cb321646511f624866c33c0bdab239a0c5320af3ec2ff940eef60d8d4e2";
+pub const SQL4: &str = include_str!("../migrations/004-message-sync.sql");
+pub const HASH4: &str = "5482c1543d5d29318011a2caedf5a6c2549b98337d05c4eaf013464b1548bcee";
 use crate::{StoreError, db};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
-pub const VERSION: i64 = 3;
+pub const VERSION: i64 = 4;
 const APPLICATION_ID: i64 = 0x4e494d31;
 
 pub fn apply(
@@ -50,7 +52,12 @@ pub fn apply(
         return Err(StoreError::UnsupportedSchema);
     }
 
-    for (v, sql, hash) in [(1, SQL1, HASH1), (2, SQL2, HASH2), (3, SQL3, HASH3)] {
+    for (v, sql, hash) in [
+        (1, SQL1, HASH1),
+        (2, SQL2, HASH2),
+        (3, SQL3, HASH3),
+        (4, SQL4, HASH4),
+    ] {
         if v <= version {
             let existing: Option<(String, Vec<u8>)> = tx
                 .query_row(
@@ -104,6 +111,7 @@ fn validate_schema(conn: &Connection) -> Result<(), StoreError> {
     expected.execute_batch(SQL1).map_err(db)?;
     expected.execute_batch(SQL2).map_err(db)?;
     expected.execute_batch(SQL3).map_err(db)?;
+    expected.execute_batch(SQL4).map_err(db)?;
     if schema(conn)? != schema(&expected)? {
         return Err(StoreError::UnsupportedSchema);
     }

@@ -4,6 +4,7 @@ mod conversation_sync;
 mod deadline;
 mod files;
 mod initialization;
+mod message_sync;
 mod migrations;
 mod operations;
 mod recovery;

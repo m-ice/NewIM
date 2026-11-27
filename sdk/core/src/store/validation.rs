@@ -37,6 +37,46 @@ fn limit(n: usize) -> bool {
     (1..=MAX_ITEMS).contains(&n)
 }
 
+fn message_lookup(query: &MessageSyncQuery) -> bool {
+    id(&query.conversation_id)
+        && query.lookups.len() <= MAX_ITEMS
+        && query
+            .lookups
+            .iter()
+            .all(|key| id(&key.server_id) && id(&key.sender_id) && id(&key.client_id))
+}
+
+fn gap_attempt(attempt: &GapAttempt) -> bool {
+    (1..=i64::MAX as u64).contains(&attempt.operation_id)
+        && (1..=i64::MAX as u64).contains(&attempt.generation)
+        && attempt.after_seq >= 0
+        && attempt.expires_at_ms <= i64::MAX as u64
+        && limit(attempt.limit)
+}
+
+fn message_sync_batch(batch: &MessageSyncBatch) -> bool {
+    batch.expected_revision <= i64::MAX as u64
+        && batch.now_ms <= i64::MAX as u64
+        && id(&batch.conversation_id)
+        && match &batch.mutation {
+            MessageSyncMutation::Observe(write) => {
+                let observed = match write {
+                    MessageWrite::Insert(message) | MessageWrite::PreserveExisting(message) => {
+                        message
+                    }
+                };
+                observed.conversation_id == batch.conversation_id
+                    && observed.sequence > 0
+                    && message(observed, matches!(write, MessageWrite::Insert(_)))
+            }
+            MessageSyncMutation::StartAttempt | MessageSyncMutation::Resume => true,
+            MessageSyncMutation::CommitPage { attempt, page } => {
+                gap_attempt(attempt) && page.validate(&batch.conversation_id, attempt).is_ok()
+            }
+            MessageSyncMutation::FailAttempt { attempt, .. } => gap_attempt(attempt),
+        }
+}
+
 fn sync_cursor(cursor: &Blob) -> bool {
     (1..=MAX_SYNC_CURSOR_BYTES).contains(&cursor.0.len())
 }
@@ -168,6 +208,8 @@ pub fn validate_request(r: &Request) -> Result<(), StoreError> {
             Action::AdvanceGeneration | Action::Metrics => true,
             Action::ConversationSyncSnapshot(query) => sync_query(query),
             Action::ApplyConversationSync(batch) => sync_batch(batch),
+            Action::MessageSyncSnapshot(query) => message_lookup(query),
+            Action::ApplyMessageSync(batch) => message_sync_batch(batch),
         };
     if !valid {
         return Err(StoreError::InvalidInput);
@@ -185,6 +227,27 @@ struct Writer {
     count_only: bool,
 }
 impl Writer {
+    fn message_sync_attempt(&mut self, attempt: &GapAttempt) {
+        self.number(attempt.operation_id);
+        self.number(attempt.generation);
+        self.number(attempt.after_seq as u64);
+        self.number(attempt.limit as u64);
+        self.number(attempt.expires_at_ms);
+    }
+
+    fn message_write(&mut self, write: &MessageWrite) {
+        match write {
+            MessageWrite::Insert(message) => {
+                self.number(0);
+                self.message(message);
+            }
+            MessageWrite::PreserveExisting(message) => {
+                self.number(1);
+                self.message(message);
+            }
+        }
+    }
+
     fn number(&mut self, n: u64) {
         self.raw(&n.to_le_bytes());
     }
@@ -318,16 +381,7 @@ impl Writer {
                 self.number(b.expected_revision);
                 self.number(b.messages.len() as u64);
                 for w in &b.messages {
-                    match w {
-                        MessageWrite::Insert(m) => {
-                            self.number(0);
-                            self.message(m);
-                        }
-                        MessageWrite::PreserveExisting(m) => {
-                            self.number(1);
-                            self.message(m);
-                        }
-                    }
+                    self.message_write(w);
                 }
                 self.number(b.conversations.len() as u64);
                 for c in &b.conversations {
@@ -396,6 +450,53 @@ impl Writer {
                             self.sync_item(item);
                         }
                     }
+                }
+            }
+            Action::MessageSyncSnapshot(query) => {
+                self.number(12);
+                self.text(&query.conversation_id);
+                self.number(query.lookups.len() as u64);
+                for key in &query.lookups {
+                    self.text(&key.server_id);
+                    self.text(&key.sender_id);
+                    self.text(&key.client_id);
+                }
+            }
+            Action::ApplyMessageSync(batch) => {
+                self.number(13);
+                self.number(batch.expected_revision);
+                self.text(&batch.conversation_id);
+                self.number(batch.now_ms);
+                match &batch.mutation {
+                    MessageSyncMutation::Observe(write) => {
+                        self.number(0);
+                        self.message_write(write);
+                    }
+                    MessageSyncMutation::StartAttempt => self.number(1),
+                    MessageSyncMutation::CommitPage { attempt, page } => {
+                        self.number(2);
+                        self.message_sync_attempt(attempt);
+                        self.number(page.history_after_seq as u64);
+                        self.number(page.latest_seq as u64);
+                        self.number(u64::from(page.has_next));
+                        self.number(u64::from(page.next_after_seq.is_some()));
+                        self.number(page.next_after_seq.unwrap_or(0) as u64);
+                        self.number(page.messages.len() as u64);
+                        for write in &page.messages {
+                            self.message_write(write);
+                        }
+                    }
+                    MessageSyncMutation::FailAttempt { attempt, failure } => {
+                        self.number(3);
+                        self.message_sync_attempt(attempt);
+                        self.number(match failure {
+                            GapFailure::Temporary => 0,
+                            GapFailure::InvalidCursor => 1,
+                            GapFailure::Authentication => 2,
+                            GapFailure::PageCapacity => 3,
+                        });
+                    }
+                    MessageSyncMutation::Resume => self.number(4),
                 }
             }
         }

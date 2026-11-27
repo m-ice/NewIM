@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, fmt};
 
 use serde_json::value::{RawValue, to_raw_value};
 
-pub use crate::intent::{compare_results, correlate, same_intent};
+pub use crate::intent::{compare_results, correlate, same_intent, same_message_payload};
 use crate::{Message, Object, decimal, field, id, object, scan, string, version};
 
 pub const MAX_FRAME_BYTES: usize = 66_048;

@@ -113,6 +113,9 @@ jobs:
       - name: Exercise native SDK conversation sync through TLS
         timeout-minutes: 12
         run: make conversation-account-sdk-check
+      - name: Exercise SDK message convergence and gap recovery
+        timeout-minutes: 15
+        run: make message-sdk-sync-check message-sdk-sync-convergence message-sdk-sync-retries message-sdk-sync-recovery
       - name: Exercise idempotent current-token revocation
         timeout-minutes: 12
         run: make auth-logout-check

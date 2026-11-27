@@ -1,8 +1,10 @@
 //! 原子本地存储端口 / Atomic local storage port, independent of physical storage.
 
 mod conversation_sync;
+mod message_sync;
 mod validation;
 pub use conversation_sync::*;
+pub use message_sync::*;
 pub use validation::{request_bytes, validate_request};
 
 use std::fmt;
@@ -171,6 +173,8 @@ pub enum Action {
     Apply(Batch),
     ConversationSyncSnapshot(ConversationSyncQuery),
     ApplyConversationSync(ConversationSyncBatch),
+    MessageSyncSnapshot(MessageSyncQuery),
+    ApplyMessageSync(MessageSyncBatch),
     AdvanceGeneration,
     Trim {
         conversation: String,
@@ -228,6 +232,7 @@ pub struct Metrics {
 pub enum Response {
     Snapshot(Snapshot),
     ConversationSyncSnapshot(ConversationSyncSnapshot),
+    MessageSyncSnapshot(MessageSyncSnapshot),
     Found(Option<Message>),
     Messages(MessagePage),
     Pending(PendingPage),

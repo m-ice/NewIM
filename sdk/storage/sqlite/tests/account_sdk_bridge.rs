@@ -1,4 +1,6 @@
 mod common;
+#[path = "bridge/message_sync.rs"]
+mod message_sync;
 
 use common::{Directory, batch, run, snapshot};
 use newim_protocol::conversation_sync as wire;
@@ -43,8 +45,12 @@ impl Reply {
 
 impl Bridge {
     fn start() -> Self {
+        Self::start_fixture("TestAccountSDKBridge")
+    }
+
+    fn start_fixture(name: &str) -> Self {
         let container = std::env::var("NEWIM_ACCOUNT_SDK_BRIDGE_CONTAINER")
-            .expect("run the owned native bridge with make conversation-account-sdk-check");
+            .expect("start the owned TLS fixture through its Make target");
         assert!(container.strip_prefix("newim-db-").is_some_and(|id| {
             id.len() == 32
                 && id
@@ -64,7 +70,7 @@ impl Bridge {
                 &container,
                 "/tmp/conversationsynchttp.test",
                 "-test.run",
-                "^TestAccountSDKBridge$",
+                &format!("^{name}$"),
                 "-test.count=1",
                 "-test.timeout=120s",
             ])
@@ -92,13 +98,17 @@ impl Bridge {
     }
 
     fn line(&mut self) -> String {
+        self.line_with_limit(MAX_REPLY_LINE)
+    }
+
+    fn line_with_limit(&mut self, max: usize) -> String {
         let mut bytes = Vec::new();
         (&mut self.output)
-            .take(MAX_REPLY_LINE as u64 + 1)
+            .take(max as u64 + 1)
             .read_until(b'\n', &mut bytes)
             .expect("could not read TLS fixture response");
         assert!(
-            !bytes.is_empty() && bytes.len() <= MAX_REPLY_LINE && bytes.pop() == Some(b'\n'),
+            !bytes.is_empty() && bytes.len() <= max && bytes.pop() == Some(b'\n'),
             "TLS fixture response is missing or exceeds the transport limit"
         );
         let line = String::from_utf8(bytes).expect("TLS fixture transport returned invalid UTF-8");
@@ -119,7 +129,13 @@ impl Bridge {
             "HTTP\t{device}\t{method}\t{path}\t{}",
             encode_hex(body)
         ));
-        let line = self.line();
+        let line = if path == newim_protocol::message_delta::MESSAGE_DELTA_PATH {
+            self.line_with_limit(
+                2 * newim_protocol::message_delta::MAX_MESSAGE_DELTA_PAGE_BYTES + 32,
+            )
+        } else {
+            self.line()
+        };
         let mut parts = line.splitn(3, '\t');
         assert!(
             parts.next() == Some("HTTP"),

@@ -6,5 +6,6 @@ pub mod build_info;
 pub mod conversation_sync;
 pub mod media;
 pub mod message;
+pub mod message_sync;
 pub mod outbox;
 pub mod store;

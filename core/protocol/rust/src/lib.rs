@@ -6,6 +6,7 @@
 pub mod conversation_sync;
 mod intent;
 pub mod media;
+pub mod message_delta;
 mod scan;
 pub mod send;
 

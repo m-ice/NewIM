@@ -155,6 +155,59 @@ fn populated_version_two_keeps_legacy_apply_receipt() {
 }
 
 #[test]
+fn populated_version_three_keeps_directory_and_discovers_old_messages() {
+    let d = Directory::new();
+    legacy(&d);
+    let conn = d.db();
+    for (version, script, hash) in [
+        (2, migrations_source::SQL2, migrations_source::HASH2),
+        (3, migrations_source::SQL3, migrations_source::HASH3),
+    ] {
+        conn.execute_batch(script).unwrap();
+        conn.execute(
+            "INSERT INTO schema_migrations VALUES(?,?,?)",
+            params![version, hash, script.as_bytes()],
+        )
+        .unwrap();
+    }
+    conn.execute_batch(
+        "PRAGMA user_version=3;
+         INSERT INTO messages VALUES('s3','alice','c3','room',3,0,1,'text',NULL);
+         INSERT INTO conversation_sync_items(round,conversation_id,revision,latest_seq,
+         latest_server_id,known_clear_through_seq) VALUES(1,'room',3,3,'s3',1);
+         UPDATE conversation_sync_state SET phase=2,cursor=X'01',published_round=1;",
+    )
+    .unwrap();
+    drop(conn);
+
+    let mut store = d.open();
+    let query = Action::MessageSyncSnapshot(MessageSyncQuery {
+        conversation_id: "room".into(),
+        lookups: vec![],
+    });
+    let Response::MessageSyncSnapshot(snapshot) = run(&mut store, 1, query).unwrap() else {
+        panic!("unexpected message sync state");
+    };
+    assert!(snapshot.visible);
+    assert_eq!(snapshot.state.history_after_seq, 1);
+    assert_eq!(snapshot.state.highest_observed_seq, 3);
+    assert!(snapshot.state.job.is_none());
+    assert_eq!(found(&mut store, 3).unwrap().payload, None);
+    drop(store);
+
+    let conn = d.db();
+    let (hash, script): (String, Vec<u8>) = conn
+        .query_row(
+            "SELECT checksum,script FROM schema_migrations WHERE version=4",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(hash, migrations_source::HASH4);
+    assert_eq!(script, migrations_source::SQL4.as_bytes());
+}
+
+#[test]
 fn future_tampered_and_interrupted_migrations() {
     let d = Directory::new();
     legacy(&d);
@@ -180,8 +233,11 @@ fn future_tampered_and_interrupted_migrations() {
         SqliteStore::open(&d.0, "alice", Limits::default()),
         Err(StoreError::UnsupportedSchema)
     ));
-    conn.execute_batch(
-        "PRAGMA user_version=3; UPDATE schema_migrations SET checksum='changed' WHERE version=3",
+    conn.pragma_update(None, "user_version", migrations_source::VERSION)
+        .unwrap();
+    conn.execute(
+        "UPDATE schema_migrations SET checksum='changed' WHERE version=3",
+        [],
     )
     .unwrap();
     assert!(matches!(

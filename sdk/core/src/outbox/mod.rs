@@ -832,7 +832,7 @@ pub fn resolve_ack<S: LocalStore>(
     }
 }
 
-fn identity_matches(existing: &Message, expected: &Message) -> bool {
+pub(crate) fn identity_matches(existing: &Message, expected: &Message) -> bool {
     existing.server_id == expected.server_id
         && existing.sender_id == expected.sender_id
         && existing.client_id == expected.client_id

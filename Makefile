@@ -421,6 +421,19 @@ conversation-account-sync-query-plan: toolchain
 conversation-account-sdk-check: toolchain
 	python3 -B infra/db/sync_http_suite.py conversation-account-sdk-check
 
+.PHONY: message-sdk-sync-check message-sdk-sync-convergence message-sdk-sync-retries message-sdk-sync-recovery
+message-sdk-sync-check: toolchain
+	python3 -B infra/db/sync_http_suite.py message-sdk-sync-check
+
+message-sdk-sync-convergence: toolchain
+	python3 -B infra/db/sync_http_suite.py message-sdk-sync-convergence
+
+message-sdk-sync-retries: toolchain
+	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test message_sync
+
+message-sdk-sync-recovery: toolchain
+	python3 -B infra/db/sync_http_suite.py message-sdk-sync-recovery
+
 .PHONY: message-delta-http-check message-delta-http-security message-delta-http-recovery
 message-delta-http-check: toolchain
 	python3 -B infra/db/message_delta_http_suite.py check

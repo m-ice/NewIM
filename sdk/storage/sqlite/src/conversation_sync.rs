@@ -1,5 +1,5 @@
 use crate::{
-    db,
+    db, message_sync,
     operations::{bounded, row_read_error, unsigned},
 };
 use newim_sdk_core::{conversation_sync::merge_revision, store::*};
@@ -371,10 +371,12 @@ pub(crate) fn apply(
         } => {
             write_page(tx, &state, items)?;
             if !state.position.is_bootstrap() {
+                message_sync::removed(tx, items)?;
                 prune_delta_history(tx, items)?;
             } else if !has_more {
                 if let Some(previous) = published_round {
                     archive_missing_history(tx, previous, state.position.round)?;
+                    message_sync::missing(tx, previous, state.position.round)?;
                     delete_round(tx, previous)?;
                 }
                 prune_round_history(tx, state.position.round)?;

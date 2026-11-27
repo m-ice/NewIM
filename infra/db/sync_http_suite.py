@@ -28,7 +28,12 @@ TESTS = {
     'conversation-account-sync-security': 'TestAccountSettingsHTTPSecurity',
     'conversation-account-sync-recovery': 'TestAccountSettingsHTTPRecovery',
     'conversation-account-sync-query-plan': 'TestAccountSettingsHTTPWide',
-    'conversation-account-sdk-check': 'TestAccountSDKBridge',
+}
+SDK_TESTS = {
+    'conversation-account-sdk-check': 'tls_sqlite_conversation_account_sync',
+    'message-sdk-sync-check': 'message_sync::tls_sqlite_message_sync',
+    'message-sdk-sync-convergence': 'message_sync::tls_sqlite_message_convergence',
+    'message-sdk-sync-recovery': 'message_sync::tls_sqlite_message_recovery',
 }
 
 
@@ -49,26 +54,25 @@ def run_test(db, name, phase='single', binary='conversationsynchttp.test'):
         raise Failure('TLS conversation sync test failed or skipped: ' + phase + ': ' + ', '.join(problems))
 
 
-def run_account_sdk(db):
-    name = 'tls_sqlite_conversation_account_sync'
+def run_sdk_bridge(db, name, label):
     result = db.commands.run([
         'env', 'NEWIM_ACCOUNT_SDK_BRIDGE_CONTAINER=' + db.name,
         'python3', 'sdk/storage/sqlite/engine.py', 'run',
         'cargo', 'test', '-p', 'newim-store-sqlite', '--locked', '--offline',
         '--test', 'account_sdk_bridge', '--', '--ignored', '--exact', name,
-    ], label='conversation-account-sdk-bridge', timeout=360, check=False)
+    ], label=label, timeout=360, check=False)
     output = result.stdout + result.stderr
     (db.commands.directory / 'test-sdk.log').write_bytes(output)
     print(output.decode(errors='replace'), end='', flush=True)
     if (result.returncode or b'running 1 test' not in output
             or ('test ' + name + ' ... ok').encode() not in output
             or b'test result: ok. 1 passed; 0 failed; 0 ignored' not in output):
-        raise Failure('native SQLite account sync bridge failed or ran no tests')
+        raise Failure('native SQLite sync bridge did not pass its exact test')
 
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('suite', choices=TESTS)
+    parser.add_argument('suite', choices=(*TESTS, *SDK_TESTS))
     args = parser.parse_args()
     directory = ROOT / 'build' / 'sync-http' / (args.suite + '-' + uuid.uuid4().hex)
     commands = Commands(directory)
@@ -80,7 +84,7 @@ def main():
         read_sync = args.suite.startswith('read-sync-')
         read_suite = args.suite.startswith('read-')
         account_sync = args.suite.startswith('conversation-account-')
-        sdk_bridge = args.suite == 'conversation-account-sdk-check'
+        sdk_bridge = SDK_TESTS.get(args.suite)
         query_plan = args.suite.endswith('query-plan')
         servers = ('newim-gateway', 'newim-server')
         if not read_suite or read_sync:
@@ -97,14 +101,15 @@ def main():
             build(commands, ['go', 'build', '-o', str(directory / name), './server/cmd/' + name],
                   env, 'sync-http-' + name + '-build')
         with Database(commands, image, platform) as db:
-            db.sql(migration_sql(18 if account_sync else 17 if read_sync else 15 if read_suite else 14))
+            db.sql(migration_sql(18 if account_sync or sdk_bridge else 17 if read_sync else 15 if read_suite else 14))
             for name in paths:
                 commands.run(['docker', 'cp', str(directory / name), db.name + ':/tmp/' + name],
                              label='copy-owned-' + name)
             commands.run(['docker', 'exec', db.name, 'chmod', '0755', *('/tmp/' + name for name in paths)],
                          label='make-sync-http-executable')
             if sdk_bridge:
-                run_account_sdk(db)
+                label = 'conversation-account-sdk-bridge' if account_sync else args.suite + '-bridge'
+                run_sdk_bridge(db, sdk_bridge, label)
             elif args.suite.endswith('recovery'):
                 run_test(db, TESTS[args.suite], 'prepare')
                 restart_database(db)
