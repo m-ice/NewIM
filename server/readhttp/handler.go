@@ -1,4 +1,4 @@
-// Package readhttp exposes the account's conversation read watermark over TLS.
+// Package readhttp serves conversation read state over TLS.
 package readhttp
 
 import (
@@ -19,9 +19,10 @@ import (
 )
 
 const (
-	routePrefix = "/api/v1/conversations/"
-	routeSuffix = "/read"
-	bodyLimit   = 4096
+	routePrefix     = "/api/v1/conversations/"
+	watermarkSuffix = "/read"
+	receiptSuffix   = "/read-receipt"
+	bodyLimit       = 4096
 )
 
 type Handler struct {
@@ -38,32 +39,49 @@ func New(service *read.Service, auth bearerhttp.Authenticator, budget userhttp.B
 }
 
 func ContainsRoute(path string) bool {
-	_, ok := routeConversation(path)
+	_, _, ok := parseRoute(path)
 	return ok
 }
 
-func routeConversation(path string) (string, bool) {
+func parseRoute(path string) (conversationID, serverMsgID string, ok bool) {
 	remainder, ok := strings.CutPrefix(path, routePrefix)
 	if !ok {
-		return "", false
+		return "", "", false
 	}
-	id, ok := strings.CutSuffix(remainder, routeSuffix)
-	return id, ok && id != "" && !strings.Contains(id, "/")
+	if id, watermark := strings.CutSuffix(remainder, watermarkSuffix); watermark && pathSegment(id) {
+		return id, "", true
+	}
+	path, ok = strings.CutSuffix(remainder, receiptSuffix)
+	if !ok {
+		return "", "", false
+	}
+	conversationID, serverMsgID, ok = strings.Cut(path, "/messages/")
+	return conversationID, serverMsgID, ok && pathSegment(conversationID) && pathSegment(serverMsgID)
+}
+
+func pathSegment(value string) bool {
+	return value != "" && !strings.Contains(value, "/")
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	w.Header().Set("Cache-Control", "no-store")
 	w.Header().Set("X-Content-Type-Options", "nosniff")
-	id, routed := routeConversation(r.URL.EscapedPath())
+	id, msgID, routed := parseRoute(r.URL.EscapedPath())
+	isReceipt := msgID != ""
 	switch {
 	case !routed:
 		writeError(w, http.StatusNotFound, "HTTP_ROUTE_NOT_FOUND")
 		return
-	case r.Method != http.MethodGet && r.Method != http.MethodPost:
-		w.Header().Set("Allow", "GET, POST")
+	case r.Method != http.MethodGet && (isReceipt || r.Method != http.MethodPost):
+		allow := "GET, POST"
+		if isReceipt {
+			allow = http.MethodGet
+		}
+		w.Header().Set("Allow", allow)
 		writeError(w, http.StatusMethodNotAllowed, "HTTP_METHOD_NOT_ALLOWED")
 		return
-	case r.TLS == nil || r.URL.RawQuery != "" || r.URL.ForceQuery || !read.ValidConversationID(id):
+	case r.TLS == nil || r.URL.RawQuery != "" || r.URL.ForceQuery || !read.ValidConversationID(id) ||
+		(isReceipt && !read.ValidMessageID(msgID)):
 		writeError(w, http.StatusBadRequest, string(read.InvalidInput))
 		return
 	}
@@ -91,13 +109,23 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusTooManyRequests, "READ_RATE_LIMITED")
 		return
 	}
+	if r.Method == http.MethodGet && (r.ContentLength != 0 || len(r.TransferEncoding) != 0) {
+		writeError(w, http.StatusBadRequest, string(read.InvalidInput))
+		return
+	}
+
+	if isReceipt {
+		receipt, err := h.service.GetReceipt(r.Context(), bearer, id, msgID)
+		if err != nil {
+			writeServiceError(w, err)
+			return
+		}
+		writeJSON(w, http.StatusOK, receiptResponse{ServerMsgID: receipt.ServerMsgID, Read: receipt.Read})
+		return
+	}
 
 	var state read.State
 	if r.Method == http.MethodGet {
-		if r.ContentLength != 0 || len(r.TransferEncoding) != 0 {
-			writeError(w, http.StatusBadRequest, string(read.InvalidInput))
-			return
-		}
 		state, err = h.service.Get(r.Context(), bearer, id)
 	} else {
 		seq, ok := readSequence(w, r)
@@ -114,6 +142,11 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		ConversationID: state.ConversationID, LastReadSeq: state.LastReadSeq,
 		HistoryAfterSeq: state.HistoryAfterSeq, LatestSeq: state.LatestSeq, UpdatedAt: state.UpdatedAt,
 	})
+}
+
+type receiptResponse struct {
+	ServerMsgID string `json:"serverMsgId"`
+	Read        bool   `json:"read"`
 }
 
 type stateResponse struct {

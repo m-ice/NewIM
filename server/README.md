@@ -141,6 +141,10 @@ and the [lifecycle specification](../specs/observability/server-message-lifecycl
 运行 `make read-watermark-check read-watermark-security read-watermark-recovery` 验证。
 [会话已读位点](../specs/read/watermark.md)
 
+在同一个开关下，发送者可查询自己已提交的私聊消息是否已读。
+运行 `make read-receipt-check read-receipt-security read-receipt-recovery` 验证。
+[私聊已读回执](../specs/read/receipt.md)
+
 TLS 消息网关设置 `NEWIM_MEDIA_HTTP=1` 和绝对路径 `NEWIM_MEDIA_LOCAL_ROOT` 后，
 可处理媒体上传、私有下载和媒体消息发送。媒体网关实例使用同一私有持久目录。
 [媒体传输接口](../specs/media/tls-transfer.md)。

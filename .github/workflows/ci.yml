@@ -98,6 +98,9 @@ jobs:
       - name: Exercise cross-device conversation read watermarks
         timeout-minutes: 12
         run: make read-watermark-check read-watermark-security read-watermark-recovery
+      - name: Exercise direct message read receipts
+        timeout-minutes: 12
+        run: make read-receipt-check read-receipt-security read-receipt-recovery
       - name: Exercise idempotent current-token revocation
         timeout-minutes: 12
         run: make auth-logout-check

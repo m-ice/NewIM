@@ -1,4 +1,4 @@
-// Package read provides the account-scoped conversation read watermark.
+// Package read provides account-scoped read watermarks and direct-message receipts.
 package read
 
 import (
@@ -46,9 +46,15 @@ type State struct {
 	UpdatedAt       *time.Time
 }
 
+type Receipt struct {
+	ServerMsgID string
+	Read        bool
+}
+
 type Store interface {
 	Get(context.Context, session.BearerSession, string) (State, error)
 	Advance(context.Context, session.BearerSession, string, int64) (State, error)
+	GetReceipt(context.Context, session.BearerSession, string, string) (Receipt, error)
 }
 
 type Service struct {
@@ -63,6 +69,8 @@ func NewService(store Store) (*Service, error) {
 }
 
 func ValidConversationID(id string) bool { return user.ValidID(id) }
+
+func ValidMessageID(id string) bool { return user.ValidID(id) }
 
 func (s *Service) Get(ctx context.Context, bearer session.BearerSession, conversationID string) (State, error) {
 	if !ValidConversationID(conversationID) {
@@ -90,6 +98,20 @@ func (s *Service) Advance(ctx context.Context, bearer session.BearerSession, con
 		return State{}, Fail(ErrorCode(err))
 	}
 	return state, nil
+}
+
+func (s *Service) GetReceipt(ctx context.Context, bearer session.BearerSession, conversationID, serverMsgID string) (Receipt, error) {
+	if !ValidConversationID(conversationID) || !ValidMessageID(serverMsgID) {
+		return Receipt{}, Fail(InvalidInput)
+	}
+	if err := s.validate(ctx, bearer); err != nil {
+		return Receipt{}, err
+	}
+	receipt, err := s.store.GetReceipt(ctx, bearer, conversationID, serverMsgID)
+	if err != nil {
+		return Receipt{}, Fail(ErrorCode(err))
+	}
+	return receipt, nil
 }
 
 func (s *Service) validate(ctx context.Context, bearer session.BearerSession) error {

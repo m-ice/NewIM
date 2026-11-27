@@ -362,6 +362,16 @@ read-watermark-security: toolchain
 read-watermark-recovery: toolchain
 	python3 -B infra/db/sync_http_suite.py read-watermark-recovery
 
+.PHONY: read-receipt-check read-receipt-security read-receipt-recovery
+read-receipt-check: toolchain
+	python3 -B infra/db/sync_http_suite.py read-receipt-check
+
+read-receipt-security: toolchain
+	python3 -B infra/db/sync_http_suite.py read-receipt-security
+
+read-receipt-recovery: toolchain
+	python3 -B infra/db/sync_http_suite.py read-receipt-recovery
+
 .PHONY: message-delta-http-check message-delta-http-security message-delta-http-recovery
 message-delta-http-check: toolchain
 	python3 -B infra/db/message_delta_http_suite.py check

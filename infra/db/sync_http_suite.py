@@ -17,6 +17,9 @@ TESTS = {
     'read-watermark-check': 'TestReadWatermarkHTTPCheck',
     'read-watermark-security': 'TestReadWatermarkHTTPSecurity',
     'read-watermark-recovery': 'TestReadWatermarkHTTPRecovery',
+    'read-receipt-check': 'TestReadReceiptHTTPCheck',
+    'read-receipt-security': 'TestReadReceiptHTTPSecurity',
+    'read-receipt-recovery': 'TestReadReceiptHTTPRecovery',
 }
 
 
@@ -48,9 +51,9 @@ def main():
         env = os.environ.copy()
         env.update(CGO_ENABLED='0', GOOS='linux', GOARCH=platform.split('/')[1], GOTOOLCHAIN='local')
         binary = directory / 'conversationsynchttp.test'
-        read_watermark = args.suite.startswith('read-watermark-')
+        read_suite = args.suite.startswith('read-')
         servers = ('newim-gateway', 'newim-server')
-        if not read_watermark:
+        if not read_suite:
             servers += ('newim-sync-backfill',)
         build(commands, ['go', 'test', '-c', '-tags=integration', '-o', str(binary),
                          './tests/integration/conversationsynchttp'], env, 'sync-http-cross-compile')
@@ -58,7 +61,7 @@ def main():
             build(commands, ['go', 'build', '-o', str(directory / name), './server/cmd/' + name],
                   env, 'sync-http-' + name + '-build')
         with Database(commands, image, platform) as db:
-            db.sql(migration_sql(15 if read_watermark else 14))
+            db.sql(migration_sql(15 if read_suite else 14))
             paths = (binary.name, *servers)
             for name in paths:
                 commands.run(['docker', 'cp', str(directory / name), db.name + ':/tmp/' + name],

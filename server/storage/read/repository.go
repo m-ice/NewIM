@@ -1,4 +1,4 @@
-// Package read stores account read watermarks in PostgreSQL.
+// Package read stores account read watermarks and resolves receipts in PostgreSQL.
 package read
 
 import (
@@ -159,33 +159,40 @@ func (r *Repository) watermark(ctx context.Context, bearer session.BearerSession
 	if !app.ValidConversationID(id) {
 		return app.State{}, app.Fail(app.InvalidInput)
 	}
+	return withVerifiedBearer(ctx, r, bearer, func(ctx context.Context, tx pgx.Tx) (app.State, error) {
+		return applyWatermark(ctx, tx, id, bearer.UserID(), seq)
+	})
+}
+
+func withVerifiedBearer[T any](ctx context.Context, r *Repository, bearer session.BearerSession, operation func(context.Context, pgx.Tx) (T, error)) (T, error) {
+	var zero T
 	if ctx == nil || r == nil || r.pool == nil {
-		return app.State{}, app.Fail(app.StorageUnavailable)
+		return zero, app.Fail(app.StorageUnavailable)
 	}
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	tx, err := r.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
-		return app.State{}, app.Fail(app.StorageUnavailable)
+		return zero, app.Fail(app.StorageUnavailable)
 	}
 	defer rollback(tx)
 	expiry, err := authsession.LockVerifiedBearer(ctx, tx, bearer)
 	if err != nil {
-		return app.State{}, authError(err)
+		return zero, authError(err)
 	}
 
-	state, operationErr := applyWatermark(ctx, tx, id, bearer.UserID(), seq)
+	result, operationErr := operation(ctx, tx)
 	// Only a live bearer may receive a protected operation result.
 	if expiryErr := authsession.CheckLockedBearerExpiry(ctx, tx, expiry); expiryErr != nil {
-		return app.State{}, authError(expiryErr)
+		return zero, authError(expiryErr)
 	}
 	if operationErr != nil {
-		return app.State{}, operationErr
+		return zero, operationErr
 	}
 	if err = tx.Commit(ctx); err != nil {
-		return app.State{}, app.Fail(app.StorageUnavailable)
+		return zero, app.Fail(app.StorageUnavailable)
 	}
-	return state, nil
+	return result, nil
 }
 
 func applyWatermark(ctx context.Context, tx pgx.Tx, id, userID string, seq *int64) (app.State, error) {
