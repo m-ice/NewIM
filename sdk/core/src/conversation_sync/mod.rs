@@ -125,23 +125,33 @@ impl InFlightPage {
         let mut ordered: Vec<_> = page.items.iter().collect();
         ordered.sort_by_key(|item| item.revision);
         let mut folded = BTreeMap::new();
+        let mut removed_keys = BTreeSet::new();
         for incoming in ordered {
             let id = incoming.conversation_id.as_str();
             let current = folded.get(id).or_else(|| previous.get(id).copied());
             let mut item = merge_revision(current, incoming)?;
+            if incoming.change == ConversationSyncChange::Remove
+                && current.is_none_or(|known| known.revision < incoming.revision)
+            {
+                removed_keys.insert(id);
+            }
             if let Some(&floor) = snapshot.history_floors.get(id) {
                 item.known_clear_through_seq = item.known_clear_through_seq.max(floor);
             }
             folded.insert(id, item);
         }
         let mut items = Vec::with_capacity(folded.len());
+        let mut removed = Vec::new();
         for (id, item) in folded {
             // An unchanged published row still has to be recorded in the new directory.
             if self.position.is_bootstrap() || previous.get(id).copied() != Some(&item) {
+                if removed_keys.contains(id) && item.change != ConversationSyncChange::Remove {
+                    removed.push(item.conversation_id.clone());
+                }
                 items.push(item);
             }
         }
-        Ok(Action::ApplyConversationSync(ConversationSyncBatch {
+        let batch = ConversationSyncBatch {
             expected_revision: snapshot.revision,
             expected_position: self.position.clone(),
             mutation: ConversationSyncMutation::CommitPage {
@@ -149,7 +159,12 @@ impl InFlightPage {
                 has_more: page.has_more,
                 items,
             },
-        }))
+        };
+        if removed.is_empty() {
+            Ok(Action::ApplyConversationSync(batch))
+        } else {
+            Ok(Action::ApplyConversationSyncWithRemovals { batch, removed })
+        }
     }
 
     /// Rebootstrap only for the current request's explicit cursor-expiry response.

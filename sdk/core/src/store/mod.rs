@@ -175,6 +175,10 @@ pub enum Action {
     ApplyConversationSync(ConversationSyncBatch),
     MessageSyncSnapshot(MessageSyncQuery),
     ApplyMessageSync(MessageSyncBatch),
+    ApplyConversationSyncWithRemovals {
+        batch: ConversationSyncBatch,
+        removed: Vec<String>,
+    },
     AdvanceGeneration,
     Trim {
         conversation: String,

@@ -371,12 +371,16 @@ pub(crate) fn apply(
         } => {
             write_page(tx, &state, items)?;
             if !state.position.is_bootstrap() {
-                message_sync::removed(tx, items)?;
+                let removed = items
+                    .iter()
+                    .filter(|item| item.change == ConversationSyncChange::Remove)
+                    .map(|item| item.conversation_id.as_str());
+                message_sync::invalidate(tx, removed)?;
                 prune_delta_history(tx, items)?;
             } else if !has_more {
                 if let Some(previous) = published_round {
                     archive_missing_history(tx, previous, state.position.round)?;
-                    message_sync::missing(tx, previous, state.position.round)?;
+                    message_sync::directory_replaced(tx, previous, state.position.round)?;
                     delete_round(tx, previous)?;
                 }
                 prune_round_history(tx, state.position.round)?;

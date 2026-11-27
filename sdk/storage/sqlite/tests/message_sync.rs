@@ -1,6 +1,7 @@
 mod common;
 
 use common::*;
+use newim_sdk_core::conversation_sync::{InFlightPage, Page};
 use newim_sdk_core::store::*;
 use newim_store_sqlite::{Limits, SqliteStore};
 
@@ -84,6 +85,201 @@ fn attempt(store: &mut SqliteStore) -> GapAttempt {
 
 fn observe(n: i64) -> MessageSyncMutation {
     MessageSyncMutation::Observe(MessageWrite::Insert(msg(n)))
+}
+
+fn directory_state(
+    store: &mut SqliteStore,
+    query: ConversationSyncQuery,
+) -> ConversationSyncSnapshot {
+    let Response::ConversationSyncSnapshot(value) =
+        run(store, 1, Action::ConversationSyncSnapshot(query)).unwrap()
+    else {
+        panic!("expected directory state");
+    };
+    value
+}
+
+fn upsert_at(revision: u64, floor: u64) -> ConversationSyncItem {
+    ConversationSyncItem {
+        conversation_id: "room".into(),
+        revision,
+        known_clear_through_seq: floor,
+        change: ConversationSyncChange::Upsert(ConversationSyncSummary {
+            latest_conversation_seq: 8,
+            latest_server_msg_id: Some("s8".into()),
+            last_read_seq: None,
+            settings: Some(ConversationSyncSettings {
+                version: revision,
+                pinned: false,
+                muted: false,
+                draft: String::new(),
+                clear_through_seq: floor,
+            }),
+        }),
+    }
+}
+
+fn directory_page(store: &mut SqliteStore, operation: u64, items: Vec<ConversationSyncItem>) {
+    let current = directory_state(store, ConversationSyncQuery::State);
+    let flight = InFlightPage::new(store.fence(), &current);
+    let page = Page {
+        items,
+        next_cursor: Blob(operation.to_be_bytes().to_vec()),
+        has_more: false,
+    };
+    let merge = directory_state(store, flight.snapshot_query(&page).unwrap());
+    let action = flight.apply(store.fence(), &merge, &page).unwrap();
+    assert!(matches!(
+        run(store, operation, action),
+        Ok(Response::Committed(_))
+    ));
+}
+
+#[test]
+fn directory_advance_resets_retry_budget() {
+    let dir = Directory::new();
+    let mut store = dir.open();
+    publish(&mut store, 1);
+    let mut now = 100;
+    let mut operation = 2;
+    commit(&mut store, operation, now, observe(8));
+    operation += 1;
+    for failures in 1..8 {
+        commit(
+            &mut store,
+            operation,
+            now,
+            MessageSyncMutation::StartAttempt,
+        );
+        operation += 1;
+        let current = attempt(&mut store);
+        assert_eq!(current.after_seq, 0);
+        commit(
+            &mut store,
+            operation,
+            now,
+            MessageSyncMutation::FailAttempt {
+                attempt: current,
+                failure: GapFailure::Temporary,
+            },
+        );
+        operation += 1;
+        let job = state(&mut store).state.job.unwrap();
+        assert_eq!(job.failures, failures);
+        let GapStatus::Waiting { until_ms } = job.status else {
+            panic!("expected retry delay");
+        };
+        now = until_ms;
+    }
+    directory_page(&mut store, operation, vec![upsert_at(2, 1)]);
+    operation += 1;
+    commit(
+        &mut store,
+        operation,
+        now,
+        MessageSyncMutation::StartAttempt,
+    );
+    operation += 1;
+    let current = attempt(&mut store);
+    assert_eq!(current.after_seq, 1);
+    commit(
+        &mut store,
+        operation,
+        now + 1,
+        MessageSyncMutation::FailAttempt {
+            attempt: current,
+            failure: GapFailure::Temporary,
+        },
+    );
+    operation += 1;
+    let job = state(&mut store).state.job.unwrap();
+    assert_eq!(job.failures, 1);
+    let GapStatus::Waiting { until_ms } = job.status else {
+        panic!("new position must still have retry budget");
+    };
+    commit(
+        &mut store,
+        operation,
+        until_ms,
+        MessageSyncMutation::StartAttempt,
+    );
+    operation += 1;
+    let current = attempt(&mut store);
+    directory_page(&mut store, operation, vec![upsert_at(3, 2)]);
+    operation += 1;
+    commit(
+        &mut store,
+        operation,
+        until_ms + 1,
+        MessageSyncMutation::FailAttempt {
+            attempt: current,
+            failure: GapFailure::Authentication,
+        },
+    );
+    let job = state(&mut store).state.job.unwrap();
+    assert_eq!(job.failures, 0);
+    assert_eq!(job.status, GapStatus::AuthRecovery);
+}
+
+#[test]
+fn directory_rejoin_and_rebootstrap_discard_prior_attempts() {
+    let dir = Directory::new();
+    let mut store = dir.open();
+    publish(&mut store, 1);
+    commit(&mut store, 2, 100, observe(8));
+    commit(&mut store, 3, 101, MessageSyncMutation::StartAttempt);
+    let previous = attempt(&mut store);
+    let remove = ConversationSyncItem {
+        conversation_id: "room".into(),
+        revision: 2,
+        known_clear_through_seq: 0,
+        change: ConversationSyncChange::Remove,
+    };
+    directory_page(&mut store, 4, vec![remove.clone(), upsert_at(3, 1)]);
+    let snapshot = state(&mut store);
+    assert!(snapshot.visible && snapshot.state.job.is_none());
+    let stale = action(
+        &mut store,
+        102,
+        MessageSyncMutation::FailAttempt {
+            attempt: previous,
+            failure: GapFailure::Temporary,
+        },
+    );
+    assert_eq!(run(&mut store, 5, stale), Err(StoreError::StaleRevision));
+    commit(&mut store, 5, 103, MessageSyncMutation::StartAttempt);
+    let current = attempt(&mut store);
+    assert_eq!(current.after_seq, 1);
+    directory_page(&mut store, 6, vec![remove, upsert_at(4, 1)]);
+    assert_eq!(attempt(&mut store), current);
+
+    let snapshot = directory_state(&mut store, ConversationSyncQuery::State);
+    let restart = InFlightPage::new(store.fence(), &snapshot)
+        .restart(store.fence(), &snapshot, 409, "SYNC_CURSOR_EXPIRED")
+        .unwrap();
+    assert!(matches!(
+        run(&mut store, 7, restart),
+        Ok(Response::Committed(_))
+    ));
+    assert_eq!(attempt(&mut store), current);
+    directory_page(&mut store, 8, vec![upsert_at(5, 2)]);
+    let snapshot = state(&mut store);
+    assert!(snapshot.visible);
+    assert!(matches!(
+        snapshot.state.job.unwrap().status,
+        GapStatus::Waiting { .. }
+    ));
+    let stale = action(
+        &mut store,
+        104,
+        MessageSyncMutation::FailAttempt {
+            attempt: current,
+            failure: GapFailure::Temporary,
+        },
+    );
+    assert_eq!(run(&mut store, 9, stale), Err(StoreError::StaleRevision));
+    commit(&mut store, 9, 105, MessageSyncMutation::StartAttempt);
+    assert_eq!(attempt(&mut store).after_seq, 2);
 }
 
 #[test]

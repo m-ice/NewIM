@@ -271,7 +271,13 @@ fn same_page_removal_discards_settings_and_keeps_the_history_floor() {
         has_more: false,
     };
     let flight = InFlightPage::new(&current, &state);
-    let items = expect_items(flight.apply(&current, &state, &page).unwrap());
+    let Action::ApplyConversationSyncWithRemovals { batch, removed } =
+        flight.apply(&current, &state, &page).unwrap()
+    else {
+        panic!("same-page restoration must retain the removal");
+    };
+    assert_eq!(removed, vec!["room"]);
+    let items = expect_items(Action::ApplyConversationSync(batch));
     for (item, floor) in items.iter().zip([5, 7]) {
         assert_eq!(item.known_clear_through_seq, floor);
         assert!(!item.allows_message(floor));

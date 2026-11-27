@@ -73,9 +73,18 @@ fn state(tx: &Transaction<'_>, id: &str) -> Result<(MessageSyncState, bool), Sto
             |row| row.get(0),
         )
         .map_err(db)?;
+    let prior_after = state.after_seq();
     state.history_after_seq = state
         .history_after_seq
         .max(conversation_sync::published_history_floor(tx, id)?.unwrap_or(0));
+    if state.after_seq() > prior_after
+        && let Some(job) = &mut state.job
+    {
+        job.failures = 0;
+        if let GapStatus::Waiting { until_ms } = &mut job.status {
+            *until_ms = job.started_at_ms;
+        }
+    }
     if visible {
         observe_cached_high(tx, id, &mut state)?;
     }
@@ -429,8 +438,10 @@ fn resume_job(job: &mut GapJob, now: u64) {
 }
 
 fn fail_at_position(job: &mut GapJob, failure: GapFailure, now: u64, progressed: bool) {
-    if progressed && failure != GapFailure::Authentication {
+    if progressed {
         job.failures = 0;
+    }
+    if progressed && failure != GapFailure::Authentication {
         resume_job(job, now);
     } else {
         fail(job, failure, now);
@@ -498,25 +509,22 @@ fn save(tx: &Transaction<'_>, id: &str, state: &MessageSyncState) -> Result<(), 
     Ok(())
 }
 
-pub(crate) fn removed(
+pub(crate) fn invalidate<'a>(
     tx: &Transaction<'_>,
-    items: &[ConversationSyncItem],
+    ids: impl IntoIterator<Item = &'a str>,
 ) -> Result<(), StoreError> {
     let mut clear = tx
         .prepare(&format!(
             "UPDATE message_sync SET {CLEAR_JOB} WHERE conversation_id=? AND phase<>0"
         ))
         .map_err(db)?;
-    for item in items
-        .iter()
-        .filter(|item| item.change == ConversationSyncChange::Remove)
-    {
-        clear.execute([&item.conversation_id]).map_err(db)?;
+    for id in ids {
+        clear.execute([id]).map_err(db)?;
     }
     Ok(())
 }
 
-pub(crate) fn missing(
+pub(crate) fn directory_replaced(
     tx: &Transaction<'_>,
     previous: u64,
     replacement: u64,
@@ -533,6 +541,17 @@ pub(crate) fn missing(
          )"
         ),
         [previous as i64, replacement as i64],
+    )
+    .map_err(db)?;
+    // A rebootstrap may contain the same ID after an unseen membership change.
+    // 重新引导可能跨过未看到的成员变更，即使同一会话仍在目录。
+    tx.execute(
+        "UPDATE message_sync SET phase=1,wake_at_ms=started_at_ms,attempt_id=NULL,generation=NULL,
+          attempt_after_seq=NULL,expires_at_ms=NULL
+         WHERE phase=2 AND conversation_id IN (
+           SELECT conversation_id FROM conversation_sync_items WHERE round=? AND latest_seq IS NOT NULL
+         )",
+        [replacement as i64],
     )
     .map_err(db)?;
     Ok(())

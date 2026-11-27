@@ -210,6 +210,15 @@ pub fn validate_request(r: &Request) -> Result<(), StoreError> {
             Action::ApplyConversationSync(batch) => sync_batch(batch),
             Action::MessageSyncSnapshot(query) => message_lookup(query),
             Action::ApplyMessageSync(batch) => message_sync_batch(batch),
+            Action::ApplyConversationSyncWithRemovals { batch, removed } => {
+                sync_batch(batch)
+                    && !batch.expected_position.is_bootstrap()
+                    && limit(removed.len())
+                    && removed.windows(2).all(|pair| pair[0] < pair[1])
+                    && matches!(&batch.mutation, ConversationSyncMutation::CommitPage { items, .. }
+                        if removed.iter().all(|id| items.iter().any(|item|
+                            &item.conversation_id == id && item.change != ConversationSyncChange::Remove)))
+            }
         };
     if !valid {
         return Err(StoreError::InvalidInput);
@@ -227,6 +236,27 @@ struct Writer {
     count_only: bool,
 }
 impl Writer {
+    fn conversation_sync_batch(&mut self, batch: &ConversationSyncBatch) {
+        self.number(batch.expected_revision);
+        self.sync_position(&batch.expected_position);
+        match &batch.mutation {
+            ConversationSyncMutation::BeginBootstrap => self.number(0),
+            ConversationSyncMutation::CommitPage {
+                next_cursor,
+                has_more,
+                items,
+            } => {
+                self.number(1);
+                self.data(&next_cursor.0);
+                self.number(u64::from(*has_more));
+                self.number(items.len() as u64);
+                for item in items {
+                    self.sync_item(item);
+                }
+            }
+        }
+    }
+
     fn message_sync_attempt(&mut self, attempt: &GapAttempt) {
         self.number(attempt.operation_id);
         self.number(attempt.generation);
@@ -433,24 +463,7 @@ impl Writer {
             }
             Action::ApplyConversationSync(batch) => {
                 self.number(11);
-                self.number(batch.expected_revision);
-                self.sync_position(&batch.expected_position);
-                match &batch.mutation {
-                    ConversationSyncMutation::BeginBootstrap => self.number(0),
-                    ConversationSyncMutation::CommitPage {
-                        next_cursor,
-                        has_more,
-                        items,
-                    } => {
-                        self.number(1);
-                        self.data(&next_cursor.0);
-                        self.number(u64::from(*has_more));
-                        self.number(items.len() as u64);
-                        for item in items {
-                            self.sync_item(item);
-                        }
-                    }
-                }
+                self.conversation_sync_batch(batch);
             }
             Action::MessageSyncSnapshot(query) => {
                 self.number(12);
@@ -497,6 +510,14 @@ impl Writer {
                         });
                     }
                     MessageSyncMutation::Resume => self.number(4),
+                }
+            }
+            Action::ApplyConversationSyncWithRemovals { batch, removed } => {
+                self.number(14);
+                self.conversation_sync_batch(batch);
+                self.number(removed.len() as u64);
+                for id in removed {
+                    self.text(id);
                 }
             }
         }

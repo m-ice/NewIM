@@ -477,11 +477,15 @@ impl SqliteStore {
                     .map_err(db)?;
                 }
             }
-            Action::ApplyConversationSync(batch) => {
+            Action::ApplyConversationSync(batch)
+            | Action::ApplyConversationSyncWithRemovals { batch, .. } => {
                 if batch.expected_revision != rev {
                     return Err(StoreError::StaleRevision);
                 }
                 affected = conversation_sync::apply(&tx, batch)?;
+                if let Action::ApplyConversationSyncWithRemovals { removed, .. } = &r.action {
+                    message_sync::invalidate(&tx, removed.iter().map(String::as_str))?;
+                }
             }
             Action::ApplyMessageSync(batch) => {
                 if batch.expected_revision != rev {
