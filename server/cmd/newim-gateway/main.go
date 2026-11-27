@@ -176,6 +176,7 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 			DSN: cfg.dsn, AllowLocalSocket: cfg.allowLocalSocket,
 			ApplicationName: "newim-gateway-send", Guard: guard,
 			PrivatePolicy: true, DirectOnly: cfg.groups == nil, ManagedGroups: cfg.groups != nil,
+			StrangerPolicy:       cfg.strangerPolicy,
 			ProjectConversations: cfg.projectConversations,
 		})
 		if err != nil {
@@ -194,7 +195,7 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 		if mediaRoutes != nil {
 			newMessageRoutes = gateway.NewMessageRoutesWithMedia
 		}
-		messageRoutes, err = newMessageRoutes(auth, sender, sendRepo, gateway.NewProfileBudget(limits.ip, limits.account))
+		messageRoutes, err = newMessageRoutes(auth, sender, sendRepo, gateway.NewMessageBudget(limits.ip, limits.account, cfg.messageDeviceLimit))
 		if err != nil {
 			return errConfig
 		}

@@ -83,6 +83,9 @@ jobs:
       - name: Exercise client TLS message send, WSS delivery and recovery
         timeout-minutes: 12
         run: make tls-message-check tls-message-security tls-message-recovery
+      - name: Exercise private first-message policy and device quotas
+        timeout-minutes: 12
+        run: make stranger-send-check stranger-send-security stranger-send-recovery
       - name: Exercise small-group membership, history and recovery
         timeout-minutes: 12
         run: make group-check group-security group-recovery

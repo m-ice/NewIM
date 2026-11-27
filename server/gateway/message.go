@@ -34,7 +34,8 @@ func newMessageRoutes(auth messagehttp.Authenticator, sender messagehttp.Sender,
 		return nil, errors.New("invalid message route configuration")
 	}
 	authenticator := messageAuthenticator{auth: auth, budget: budget}
-	send, err := newSend(authenticator, sender, protocol.MaxFrameBytes)
+	sendAuth := messageAuthenticator{auth: auth, budget: budget, send: true}
+	send, err := newSend(sendAuth, sender, protocol.MaxFrameBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -74,6 +75,7 @@ func (m *MessageRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 type messageAuthenticator struct {
 	auth   messagehttp.Authenticator
 	budget *ProfileBudget
+	send   bool
 }
 
 func (a messageAuthenticator) AuthenticateBearer(ctx context.Context, token string) (session.BearerSession, error) {
@@ -81,7 +83,13 @@ func (a messageAuthenticator) AuthenticateBearer(ctx context.Context, token stri
 	if err != nil {
 		return session.BearerSession{}, err
 	}
-	if !a.budget.AllowAccount(identity.UserID()) {
+	var allowed bool
+	if a.send {
+		allowed = a.budget.allowSend(identity.UserID(), identity.DeviceID())
+	} else {
+		allowed = a.budget.AllowAccount(identity.UserID())
+	}
+	if !allowed {
 		return session.BearerSession{}, messagehttp.ErrRateLimited
 	}
 	return identity, nil

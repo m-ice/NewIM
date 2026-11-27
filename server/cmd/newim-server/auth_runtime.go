@@ -35,6 +35,7 @@ var errInvalidMessageConfig error = &messageConfigError{}
 const (
 	messageHTTPEnv             = "NEWIM_MESSAGE_HTTP"
 	privateMessagePolicyEnv    = "NEWIM_PRIVATE_MESSAGE_POLICY"
+	strangerMessagePolicyEnv   = "NEWIM_STRANGER_MESSAGE_POLICY"
 	authDSNEnv                 = "NEWIM_AUTH_DSN"
 	authAllowLocalSocketEnv    = "NEWIM_AUTH_ALLOW_LOCAL_SOCKET"
 	authIssuerTokenFileEnv     = "NEWIM_AUTH_ISSUER_TOKEN_FILE"
@@ -191,6 +192,12 @@ func newAuthAndMessageRuntime(ctx context.Context, cfg api.Config, admission, pr
 		(privatePolicyValue != "" && privatePolicyValue != "0" && !privatePolicy) {
 		return nil, nil, errInvalidMessageConfig
 	}
+	strangerPolicyValue := os.Getenv(strangerMessagePolicyEnv)
+	strangerPolicy := strangerPolicyValue == "1"
+	if (strangerPolicy && !privatePolicy) ||
+		(strangerPolicyValue != "" && strangerPolicyValue != "0" && !strangerPolicy) {
+		return nil, nil, errInvalidMessageConfig
+	}
 
 	if !messageEnabled && !profileEnabled {
 		if dsn == "" {
@@ -245,6 +252,7 @@ func newAuthAndMessageRuntime(ctx context.Context, cfg api.Config, admission, pr
 		ApplicationName:      messageHTTPApplicationName,
 		Guard:                guard,
 		PrivatePolicy:        privatePolicy,
+		StrangerPolicy:       strangerPolicy,
 		ProjectConversations: projectConversations,
 	})
 	if err != nil {

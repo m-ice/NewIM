@@ -34,6 +34,7 @@ const (
 	CodeInvalidToken         Code = "AUTH_INVALID_TOKEN"
 	CodeUnauthorized         Code = "SEND_UNAUTHORIZED"
 	CodeBlockedByRecipient   Code = "BLOCKED_BY_RECIPIENT"
+	CodeStrangerMessageLimit Code = "STRANGER_MESSAGE_LIMIT"
 	CodeConversationNotFound Code = "SEND_CONVERSATION_NOT_FOUND"
 	CodeMethodNotAllowed     Code = "HTTP_METHOD_NOT_ALLOWED"
 	CodeRouteNotFound        Code = "HTTP_ROUTE_NOT_FOUND"
@@ -285,6 +286,8 @@ func mapSendError(err error) (int, Code, bool) {
 		return http.StatusForbidden, CodeUnauthorized, false
 	case messageservice.BlockedByRecipient:
 		return http.StatusForbidden, CodeBlockedByRecipient, false
+	case messageservice.StrangerMessageLimit:
+		return http.StatusForbidden, CodeStrangerMessageLimit, false
 	case messageservice.SendConversationMissing:
 		return http.StatusNotFound, CodeConversationNotFound, false
 	case messageservice.SendIDConflict:

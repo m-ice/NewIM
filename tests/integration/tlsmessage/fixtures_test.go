@@ -168,12 +168,12 @@ type process struct {
 	url     string
 }
 
-func startProcess(t *testing.T, binary, enabled string, settings map[string]string) *process {
+func startProcess(t *testing.T, binary, enabled string, settings map[string]string, args ...string) *process {
 	t.Helper()
 	if !filepath.IsAbs(binary) {
 		t.Fatal("absolute fixture binary path required")
 	}
-	p := &process{cmd: exec.Command(binary), done: make(chan struct{})}
+	p := &process{cmd: exec.Command(binary, args...), done: make(chan struct{})}
 	p.cmd.Env = append(os.Environ(), "NEWIM_AUTH_DSN="+testDSN,
 		"NEWIM_AUTH_ALLOW_LOCAL_SOCKET=1", "NEWIM_AUTH_DEVICE_ADMISSION=1",
 		"NEWIM_TLS_PRIVATE_MESSAGES="+enabled)

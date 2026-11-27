@@ -126,6 +126,14 @@ def check_catalog(db, target=None):
                           "AND table_name='im_read_states' AND column_name='updated_at';").splitlines()
     equal(read_columns, ['updated_at|timestamp with time zone|YES|'] if target >= 15 else [],
           'read watermark timestamp is nullable and has no default')
+    sender_indexes = db.sql("SELECT pg_get_indexdef(indexrelid)||'|'||indisvalid::text||'|'||"
+                            "indisready::text||'|'||indislive::text FROM pg_index "
+                            "WHERE indexrelid=to_regclass('newim.im_messages_conversation_sender_idx');").splitlines()
+    expected_sender = [
+        'CREATE INDEX im_messages_conversation_sender_idx ON newim.im_messages '
+        'USING btree (conversation_id, sender_id)|true|true|true',
+    ]
+    equal(sender_indexes, expected_sender if target >= 16 else [], 'conversation and sender history index')
     check_ledger(db, target)
 
 
@@ -337,6 +345,8 @@ def schema(db, commands):
     # Selective populated plans, with planner defaults and real indexes.
     db.sql("INSERT INTO newim.im_messages SELECT 's_'||g,'alice','c_'||g,'room',g,1,1,'text',g,convert_to('{}','UTF8') FROM generate_series(1,10000) g; "
            "INSERT INTO newim.im_conversations(conversation_id) SELECT 'r_'||g FROM generate_series(1,10000) g; "
+           "INSERT INTO newim.im_conversations(conversation_id) VALUES ('stranger_sibling'); "
+           "INSERT INTO newim.im_messages SELECT 'bob_s_'||g,'bob','bob_c_'||g,'stranger_sibling',g,1,1,'text',g,convert_to('{}','UTF8') FROM generate_series(1,10000) g; "
            "INSERT INTO newim.im_conversation_members SELECT 'r_'||g,'alice' FROM generate_series(1,10000) g; "
            "INSERT INTO newim.im_outbox_events(event_id,server_msg_id,completed_at) SELECT 'e_'||g,'s_'||g,CASE WHEN g<=9900 THEN now() ELSE NULL END FROM generate_series(1,10000) g; "
            "INSERT INTO newim.im_webhook_deliveries(delivery_id,event_id,destination_id,endpoint_revision,status,next_attempt_at,lease_owner,lease_token,lease_expires_at) "
@@ -361,9 +371,46 @@ def schema(db, commands):
         if index not in json.dumps(plan):
             raise Failure('populated query did not use expected index: '+index)
         plans.append({'index':index,'plan':plan})
+    plans.append(stranger_message_index_plan(db))
     (commands.directory/'query-plans.json').write_text(json.dumps(plans,indent=2)+'\n')
     scalar(db, "SELECT string_agg(conversation_seq::text,',' ORDER BY conversation_seq) FROM (SELECT conversation_seq FROM newim.im_messages WHERE conversation_id='room' AND conversation_seq>9990 ORDER BY conversation_seq LIMIT 5) p;", '9991,9992,9993,9994,9995', 'numeric keyset order/limit')
-    print('PASS six populated index plans, numeric bounded history', flush=True)
+    print(f'PASS {len(plans)} populated index plans, numeric bounded history', flush=True)
+
+
+def stranger_message_index_plan(db):
+    # A default first execution must stay bounded even when only two chats have long histories.
+    prepare = """PREPARE stranger_history AS
+        SELECT COALESCE((
+            SELECT ROW(m.conversation_id,m.sender_id)=ROW($1,$2)
+            FROM newim.im_messages AS m
+            WHERE ROW(m.conversation_id,m.sender_id)>=ROW($1,$2)
+            ORDER BY m.conversation_id,m.sender_id LIMIT 1
+        ),false) AND NOT COALESCE((
+            SELECT ROW(m.conversation_id,m.sender_id)=ROW($1,$3)
+            FROM newim.im_messages AS m
+            WHERE ROW(m.conversation_id,m.sender_id)>=ROW($1,$3)
+            ORDER BY m.conversation_id,m.sender_id LIMIT 1
+        ),false) AND NOT (
+            EXISTS (SELECT 1 FROM newim.im_friend_edges WHERE owner_id=$2 AND peer_id=$3)
+            AND EXISTS (SELECT 1 FROM newim.im_friend_edges WHERE owner_id=$3 AND peer_id=$2)
+        ); """
+    execution = "EXECUTE stranger_history('room','alice','bob');"
+    scalar(db, prepare + execution, 't', 'peer history in the next conversation does not release the waiting sender')
+    scalar(db, prepare + "EXECUTE stranger_history('stranger_sibling','bob','alice');",
+           't', 'a later-sorting sender does not stand in for an absent peer')
+    scalar(db, prepare + "EXECUTE stranger_history('other','alice','bob');",
+           'f', 'the first row in the next conversation does not constrain an empty conversation')
+    plan = json.loads(db.sql(prepare + 'EXPLAIN (ANALYZE,BUFFERS,FORMAT JSON) ' + execution))
+    index = 'im_messages_conversation_sender_idx'
+    scans = [scan for node in plan[0]['Plan'].get('Plans', []) if node['Node Type'] == 'Limit'
+             for scan in node.get('Plans', []) if scan.get('Relation Name') == 'im_messages']
+    if len(scans) != 2 or any(node.get('Index Name') != index or
+                              not all(key in node.get('Index Cond', '') for key in ('conversation_id', 'sender_id')) or
+                              node.get('Rows Removed by Filter', 0) for node in scans):
+        raise Failure('stranger history probes must constrain both sender and conversation on the composite index')
+    equal(sorted((node['Actual Loops'], node['Actual Rows']) for node in scans),
+          [(1, 1), (1, 1)], 'sender history index lookups read one candidate per direction')
+    return {'index': index, 'plan': plan}
 
 
 def sync_migration_faults(db, commands):
@@ -1100,6 +1147,37 @@ def read_watermark_migration(db, commands):
     print('PASS populated 015 failure/termination rollback and existing read watermarks, timestamps and keys', flush=True)
 
 
+def stranger_message_index_migration(db, commands):
+    db.sql(persist('stranger_legacy_reply', sender='bob'))
+    historical = snapshot(db)
+    with tempfile.TemporaryDirectory(prefix='stranger-message-migration-copy-', dir=commands.directory) as owned:
+        directory = Path(owned)
+        for path in source_migrations():
+            (directory/path.name).write_bytes(path.read_bytes())
+        candidate = directory/'016_stranger_message_index.sql'
+        original = candidate.read_text()
+        candidate.write_text(original + "\nSELECT 1/0;\n")
+        db.sql(migration_sql(16, directory=directory), error='22012')
+        check_catalog(db, 15)
+        equal(snapshot(db), historical, 'failed 016 preserves exact populated 015 rows')
+        candidate.write_text(original + "\nSELECT pg_sleep(30);\n")
+        held = db.session("SET application_name='newim_stranger_message_migration_interrupt'; " +
+                          migration_sql(16, directory=directory))
+        db.wait_sql("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name="
+                    "'newim_stranger_message_migration_interrupt' AND wait_event='PgSleep');")
+        db.sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+               "WHERE application_name='newim_stranger_message_migration_interrupt';")
+        held.finish(error='57P01')
+        check_catalog(db, 15)
+        equal(snapshot(db), historical, 'terminated 016 preserves exact populated 015 rows')
+    db.sql(migration_sql(16))
+    check_catalog(db, 16)
+    upgraded = snapshot(db)
+    equal({k: v for k, v in upgraded.items() if k != 'migrations'},
+          {k: v for k, v in historical.items() if k != 'migrations'}, '016 preserves every application row')
+    print('PASS populated 016 failure/termination rollback, exact sender index and original rows', flush=True)
+
+
 def migrations(db, commands):
     head = len(source_migrations())
     db.sql(migration_sql(1))
@@ -1128,6 +1206,7 @@ def migrations(db, commands):
     account_revocation_migration(db, commands)
     source_projection_migration(db, commands)
     read_watermark_migration(db, commands)
+    stranger_message_index_migration(db, commands)
     after = snapshot(db)
     db.sql(migration_sql())
     equal(snapshot(db), after, 'head replay stable')

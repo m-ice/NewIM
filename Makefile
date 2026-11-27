@@ -320,6 +320,17 @@ tls-message-security: toolchain
 tls-message-recovery: toolchain
 	python3 -B infra/db/tls_message_suite.py recovery
 
+.PHONY: stranger-send-check stranger-send-security stranger-send-recovery
+stranger-send-check: toolchain
+	python3 -B infra/db/tls_message_suite.py stranger-send-check
+
+stranger-send-security: toolchain
+	go test -race -shuffle=on -count=1 ./server/gateway ./server/messagehttp ./server/cmd/newim-server ./server/cmd/newim-gateway
+	python3 -B infra/db/tls_message_suite.py stranger-send-security
+
+stranger-send-recovery: toolchain
+	python3 -B infra/db/tls_message_suite.py stranger-send-recovery
+
 .PHONY: group-check group-security group-recovery
 group-check: toolchain
 	python3 -B infra/db/group_suite.py check

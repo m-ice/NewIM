@@ -14,11 +14,15 @@ TESTS = {
     'check': 'TestTLSMessageCheck',
     'security': 'TestTLSMessageSecurity',
     'recovery': 'TestTLSMessageRecovery',
+    'stranger-send-check': 'TestStrangerSendCheck',
+    'stranger-send-security': 'TestStrangerSendSecurity',
+    'stranger-send-recovery': 'TestStrangerSendRecovery',
 }
 
 
 def run_test(db, name, phase='single'):
     argv = ['docker', 'exec', '-e', 'NEWIM_GATEWAY_BINARY=/tmp/newim-gateway',
+            '-e', 'NEWIM_SERVER_BINARY=/tmp/newim-server',
             '-e', 'NEWIM_TLS_MESSAGE_PHASE=' + phase, db.name, '/tmp/tlsmessage.test']
     listing = db.commands.run(argv + ['-test.list', '^' + name + '$'], label='list-' + phase)
     result = db.commands.run(argv + ['-test.v', '-test.count=1', '-test.timeout=120s',
@@ -43,19 +47,22 @@ def main():
         env = os.environ.copy()
         env.update(CGO_ENABLED='0', GOOS='linux', GOARCH=platform.split('/')[1], GOTOOLCHAIN='local')
         binary = directory / 'tlsmessage.test'
-        gateway = directory / 'newim-gateway'
+        stranger = args.suite.startswith('stranger-send-')
+        servers = ('newim-gateway', 'newim-server') if stranger else ('newim-gateway',)
         build(commands, ['go', 'test', '-c', '-tags=integration', '-o', str(binary),
                          './tests/integration/tlsmessage'], env, 'tls-message-cross-compile')
-        build(commands, ['go', 'build', '-o', str(gateway), './server/cmd/newim-gateway'],
-              env, 'tls-message-gateway-build')
+        for name in servers:
+            build(commands, ['go', 'build', '-o', str(directory / name), './server/cmd/' + name],
+                  env, 'tls-message-' + name + '-build')
         with Database(commands, image, platform) as db:
-            db.sql(migration_sql(11))
-            for path in (binary, gateway):
-                commands.run(['docker', 'cp', str(path), db.name + ':/tmp/' + path.name],
-                             label='copy-owned-' + path.name)
-            commands.run(['docker', 'exec', db.name, 'chmod', '0755',
-                          '/tmp/tlsmessage.test', '/tmp/newim-gateway'], label='make-tls-message-executable')
-            if args.suite == 'recovery':
+            db.sql(migration_sql(16 if stranger else 11))
+            paths = (binary.name, *servers)
+            for name in paths:
+                commands.run(['docker', 'cp', str(directory / name), db.name + ':/tmp/' + name],
+                             label='copy-owned-' + name)
+            commands.run(['docker', 'exec', db.name, 'chmod', '0755', *('/tmp/' + name for name in paths)],
+                         label='make-tls-message-executable')
+            if args.suite.endswith('recovery'):
                 run_test(db, TESTS[args.suite], 'prepare')
                 restart_database(db)
                 run_test(db, TESTS[args.suite], 'restart')

@@ -32,6 +32,8 @@ type Config struct {
 	// PrivatePolicy requires trusted conversation classification and enables
 	// private-message policy in the send transaction.
 	PrivatePolicy bool
+	// StrangerPolicy limits an unanswered private conversation to its first send.
+	StrangerPolicy bool
 	// DirectOnly limits sends and receipt replay to verified direct conversations.
 	// DirectOnly 仅允许在已核验的私聊中发送和重放回执。
 	DirectOnly bool
@@ -50,6 +52,7 @@ type Repository struct {
 	pool                 *pgxpool.Pool
 	authorizer           conversation.Authorizer
 	privatePolicy        bool
+	strangerPolicy       bool
 	directOnly           bool
 	managedGroups        bool
 	projectConversations bool
@@ -65,6 +68,9 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 		return nil, app.Fail(app.SendStorageUnavailable)
 	}
 	if (config.DirectOnly || config.ManagedGroups) && (!config.PrivatePolicy || config.Guard == nil) {
+		return nil, app.Fail(app.SendStorageUnavailable)
+	}
+	if config.StrangerPolicy && !config.PrivatePolicy {
 		return nil, app.Fail(app.SendStorageUnavailable)
 	}
 	if config.ApplicationName != "" && !identifier(config.ApplicationName) {
@@ -127,11 +133,18 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 	}
 	repository := &Repository{
 		pool: pool, authorizer: conversationAuthorizer{},
-		privatePolicy: config.PrivatePolicy, directOnly: config.DirectOnly, managedGroups: config.ManagedGroups,
+		privatePolicy: config.PrivatePolicy, strangerPolicy: config.StrangerPolicy,
+		directOnly: config.DirectOnly, managedGroups: config.ManagedGroups,
 		projectConversations: config.ProjectConversations,
 	}
 	if repository.managedGroups {
 		if err = repository.checkManagedGroupSchema(ctx); err != nil {
+			pool.Close()
+			return nil, err
+		}
+	}
+	if config.StrangerPolicy {
+		if err = checkStrangerPolicySchema(ctx, pool); err != nil {
 			pool.Close()
 			return nil, err
 		}

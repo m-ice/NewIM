@@ -6,6 +6,52 @@ import (
 	"testing"
 )
 
+func TestStrangerMessageConfig(t *testing.T) {
+	root := t.TempDir()
+	for _, test := range []struct {
+		name, routes, private, stranger, device string
+		wantPolicy                              bool
+		wantDevice                              int
+		invalid                                 bool
+	}{
+		{name: "disabled"},
+		{name: "inherits account quota", routes: "1", private: "1", wantDevice: 93},
+		{name: "explicit quota", routes: "1", private: "1", stranger: "1", device: "8", wantPolicy: true, wantDevice: 8},
+		{name: "requires message routes", private: "1", stranger: "1", invalid: true},
+		{name: "requires private policy", routes: "1", stranger: "1", invalid: true},
+		{name: "invalid toggle", routes: "1", private: "1", stranger: "true", invalid: true},
+		{name: "invalid quota", routes: "1", private: "1", device: "0", invalid: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			env := map[string]string{
+				"NEWIM_GATEWAY_ADDR":                            "127.0.0.1:0",
+				"NEWIM_GATEWAY_TLS_CERT_FILE":                   filepath.Join(root, "cert.pem"),
+				"NEWIM_GATEWAY_TLS_KEY_FILE":                    filepath.Join(root, "key.pem"),
+				"NEWIM_AUTH_DSN":                                "postgresql://test@localhost/newim",
+				"NEWIM_AUTH_DEVICE_ADMISSION":                   "1",
+				"NEWIM_TLS_PRIVATE_MESSAGES":                    test.routes,
+				"NEWIM_PRIVATE_MESSAGE_POLICY":                  test.private,
+				"NEWIM_STRANGER_MESSAGE_POLICY":                 test.stranger,
+				"NEWIM_TLS_MESSAGE_ACCOUNT_ATTEMPTS_PER_MINUTE": "93",
+				"NEWIM_TLS_MESSAGE_DEVICE_ATTEMPTS_PER_MINUTE":  test.device,
+			}
+			got, err := readConfig(func(name string) string { return env[name] })
+			if test.invalid {
+				if err == nil {
+					t.Fatal("accepted invalid stranger message configuration")
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got.strangerPolicy != test.wantPolicy || got.messageDeviceLimit != test.wantDevice {
+				t.Fatalf("got stranger policy=%t and device limit=%d", got.strangerPolicy, got.messageDeviceLimit)
+			}
+		})
+	}
+}
+
 func TestMediaStorageConfig(t *testing.T) {
 	root := t.TempDir()
 	localRoot := filepath.Join(root, "objects")

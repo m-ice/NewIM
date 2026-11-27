@@ -528,6 +528,7 @@ func TestHandlerSendErrorMapping(t *testing.T) {
 	}{
 		{name: "invalid-input", err: messageservice.Fail(messageservice.SendInvalidInput), status: http.StatusBadRequest, code: CodeInvalidInput},
 		{name: "unauthorized", err: messageservice.Fail(messageservice.SendUnauthorized), status: http.StatusForbidden, code: CodeUnauthorized},
+		{name: "stranger waiting", err: messageservice.Fail(messageservice.StrangerMessageLimit), status: http.StatusForbidden, code: CodeStrangerMessageLimit},
 		{name: "missing", err: messageservice.Fail(messageservice.SendConversationMissing), status: http.StatusNotFound, code: CodeConversationNotFound},
 		{name: "conflict", err: messageservice.Fail(messageservice.SendIDConflict), status: http.StatusConflict, code: CodeIDConflict},
 		{name: "sequence", err: messageservice.Fail(messageservice.SendSequenceExhausted), status: http.StatusConflict, code: CodeSequenceExhausted},

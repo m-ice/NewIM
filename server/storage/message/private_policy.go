@@ -134,7 +134,7 @@ func (r *Repository) checkSendPolicy(ctx context.Context, tx pgx.Tx, senderID st
 		}
 	}
 	if r.privatePolicy {
-		return checkPrivateSend(ctx, tx, senderID, request, strictDirect)
+		return r.checkPrivateSend(ctx, tx, senderID, request, strictDirect)
 	}
 	return app.PersistedMessage{}, false, nil
 }
@@ -173,7 +173,7 @@ func groupSendPermission(ctx context.Context, tx pgx.Tx, senderID, conversationI
 	}
 }
 
-func checkPrivateSend(ctx context.Context, tx pgx.Tx, senderID string, request protocol.Send, strictDirect bool) (app.PersistedMessage, bool, error) {
+func (r *Repository) checkPrivateSend(ctx context.Context, tx pgx.Tx, senderID string, request protocol.Send, strictDirect bool) (app.PersistedMessage, bool, error) {
 	pair, err := directPair(ctx, tx, request.ConversationID)
 	if err != nil {
 		return app.PersistedMessage{}, false, err
@@ -207,7 +207,10 @@ func checkPrivateSend(ctx context.Context, tx pgx.Tx, senderID string, request p
 			return receipt, found, err
 		}
 	}
-	return app.PersistedMessage{}, false, checkRecipientBlock(ctx, tx, senderID, peerID)
+	if err = checkRecipientBlock(ctx, tx, senderID, peerID); err != nil || !r.strangerPolicy {
+		return app.PersistedMessage{}, false, err
+	}
+	return app.PersistedMessage{}, false, checkStrangerSend(ctx, tx, request.ConversationID, senderID, peerID)
 }
 
 func checkRecipientBlock(ctx context.Context, tx pgx.Tx, senderID, recipientID string) error {

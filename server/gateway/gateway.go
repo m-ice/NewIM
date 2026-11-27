@@ -143,12 +143,16 @@ func newRateWindow(previous *time.Time) bool {
 }
 
 func countAttempt[K comparable](entries map[K]int, key K, limit int) bool {
-	count, exists := entries[key]
-	if count >= limit || (!exists && len(entries) >= maxRateKeys) {
+	if !canCountAttempt(entries, key, limit) {
 		return false
 	}
-	entries[key] = count + 1
+	entries[key]++
 	return true
+}
+
+func canCountAttempt[K comparable](entries map[K]int, key K, limit int) bool {
+	count, exists := entries[key]
+	return count < limit && (exists || len(entries) < maxRateKeys)
 }
 
 func (g *Gateway) leave(s *socket) {

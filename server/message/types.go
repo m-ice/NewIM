@@ -20,6 +20,7 @@ const (
 	SendInvalidInput        Code = "SEND_INVALID_INPUT"
 	SendUnauthorized        Code = "SEND_UNAUTHORIZED"
 	BlockedByRecipient      Code = "BLOCKED_BY_RECIPIENT"
+	StrangerMessageLimit    Code = "STRANGER_MESSAGE_LIMIT"
 	SendConversationMissing Code = "SEND_CONVERSATION_NOT_FOUND"
 	SendSequenceExhausted   Code = "SEND_SEQUENCE_EXHAUSTED"
 	SendIDConflict          Code = "SEND_ID_CONFLICT"

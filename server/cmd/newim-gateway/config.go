@@ -26,6 +26,8 @@ type config struct {
 	friends              *httpLimits
 	groups               *httpLimits
 	privateMessages      *httpLimits
+	strangerPolicy       bool
+	messageDeviceLimit   int
 	projectConversations bool
 	conversationSync     *httpLimits
 	readWatermark        *httpLimits
@@ -96,6 +98,19 @@ func readConfig(getenv func(string) string) (config, error) {
 	cfg.media = budget("NEWIM_MEDIA_HTTP", "NEWIM_MEDIA_IP_ATTEMPTS_PER_MINUTE", "NEWIM_MEDIA_ACCOUNT_ATTEMPTS_PER_MINUTE")
 	if cfg.privateMessages != nil && getenv("NEWIM_PRIVATE_MESSAGE_POLICY") != "1" {
 		return config{}, errConfig
+	}
+	switch getenv("NEWIM_STRANGER_MESSAGE_POLICY") {
+	case "", "0":
+	case "1":
+		if cfg.privateMessages == nil {
+			return config{}, errConfig
+		}
+		cfg.strangerPolicy = true
+	default:
+		return config{}, errConfig
+	}
+	if cfg.privateMessages != nil {
+		cfg.messageDeviceLimit = limit("NEWIM_TLS_MESSAGE_DEVICE_ATTEMPTS_PER_MINUTE", cfg.privateMessages.account, 1, 4096)
 	}
 	if invalidLimit || (cfg.groups != nil && cfg.privateMessages == nil) {
 		return config{}, errConfig

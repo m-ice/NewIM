@@ -59,6 +59,27 @@ func TestMessageRuntimeMissingDSNFailsClosed(t *testing.T) {
 	}
 }
 
+func TestMessageRuntimeRejectsStrangerPolicyWithoutPrivateSend(t *testing.T) {
+	for _, test := range []struct {
+		name, messages, privatePolicy, strangerPolicy string
+	}{
+		{name: "disabled messages", messages: "0", privatePolicy: "0", strangerPolicy: "1"},
+		{name: "disabled private policy", messages: "1", privatePolicy: "0", strangerPolicy: "1"},
+		{name: "invalid toggle", messages: "0", privatePolicy: "0", strangerPolicy: "on"},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv(messageHTTPEnv, test.messages)
+			t.Setenv(privateMessagePolicyEnv, test.privatePolicy)
+			t.Setenv(strangerMessagePolicyEnv, test.strangerPolicy)
+			t.Setenv(authDSNEnv, "")
+			runtime, routes, err := newAuthAndMessageRuntime(t.Context(), api.Config{APIAddr: "127.0.0.1:0"}, false, false, slog.Default())
+			if runtime != nil || len(routes) != 0 || errorCode(err) != string(api.CodeInvalidMessageConfig) {
+				t.Fatalf("runtime=%v routes=%v err=%v", runtime, routes, err)
+			}
+		})
+	}
+}
+
 func TestMessageRuntimeConfigValidation(t *testing.T) {
 	for name, test := range map[string]struct {
 		cfg        api.Config

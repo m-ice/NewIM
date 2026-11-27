@@ -112,6 +112,12 @@ and the [lifecycle specification](../specs/observability/server-message-lifecycl
 `NEWIM_TLS_MESSAGE_IP_ATTEMPTS_PER_MINUTE` 和 `NEWIM_TLS_MESSAGE_ACCOUNT_ATTEMPTS_PER_MINUTE` 调整。
 [私聊接入](../specs/http/tls-message-send.md)。运行 `make tls-message-check tls-message-security tls-message-recovery` 验证。
 
+应用迁移 016 后，可在已启用私聊策略的 TLS 网关与可信回环写入进程统一设置
+`NEWIM_STRANGER_MESSAGE_POLICY=1`。上线和回退时先排空全部用户消息写入，再统一重启。
+TLS 发送的设备预算可用 `NEWIM_TLS_MESSAGE_DEVICE_ATTEMPTS_PER_MINUTE` 调整，默认使用账号上限。
+[私聊发送策略](../specs/http/private-message-policy.md)。
+运行 `make stranger-send-check stranger-send-security stranger-send-recovery` 验证。
+
 应用迁移 012 并部署更新后的读写进程后，在已启用 TLS 消息发送的网关设置
 `NEWIM_GROUP_HTTP=1`，可开放受管小群的管理、消息发送和群变更读取。
 每进程每分钟的地址与账号预算默认分别为 120 和 60，可用
