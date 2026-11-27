@@ -137,6 +137,11 @@ and the [lifecycle specification](../specs/observability/server-message-lifecycl
 [消息补拉接口](../specs/sync/conversation-http.md#消息补拉)。
 运行 `make message-delta-http-check message-delta-http-security message-delta-http-recovery` 验证。
 
+TLS 消息网关设置 `NEWIM_MEDIA_HTTP=1` 和绝对路径 `NEWIM_MEDIA_LOCAL_ROOT` 后，
+可处理媒体上传、私有下载和媒体消息发送。媒体网关实例使用同一私有持久目录。
+[媒体传输接口](../specs/media/tls-transfer.md)。
+运行 `make media-http-check media-http-security media-http-recovery` 验证。
+
 Run the root `make build`, `make check`, `make docs-check`, `make api-check`,
 `make api-recovery`, `make api-security`, `make auth-http-check`,
 `make auth-http-security`, `make auth-route-check`, `make auth-logout-check`,

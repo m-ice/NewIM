@@ -104,6 +104,9 @@ jobs:
       - name: Exercise media protocol, grants, storage and authorization
         timeout-minutes: 20
         run: make media-check
+      - name: Exercise authenticated TLS media transfer and recovery
+        timeout-minutes: 15
+        run: make media-http-check media-http-security media-http-recovery
       - name: Exercise durable message send transaction
         timeout-minutes: 10
         run: make message-check

@@ -20,11 +20,21 @@ type MessageRoutes struct {
 }
 
 func NewMessageRoutes(auth messagehttp.Authenticator, sender messagehttp.Sender, store messagehttp.PrivatePolicyStore, budget *ProfileBudget) (*MessageRoutes, error) {
+	return newMessageRoutes(auth, sender, store, budget, messagehttp.NewHandler)
+}
+
+func NewMessageRoutesWithMedia(auth messagehttp.Authenticator, sender messagehttp.Sender, store messagehttp.PrivatePolicyStore, budget *ProfileBudget) (*MessageRoutes, error) {
+	return newMessageRoutes(auth, sender, store, budget, messagehttp.NewHandlerWithMedia)
+}
+
+func newMessageRoutes(auth messagehttp.Authenticator, sender messagehttp.Sender, store messagehttp.PrivatePolicyStore,
+	budget *ProfileBudget, newSend func(messagehttp.Authenticator, messagehttp.Sender, int64) (*messagehttp.Handler, error),
+) (*MessageRoutes, error) {
 	if auth == nil || budget == nil {
 		return nil, errors.New("invalid message route configuration")
 	}
 	authenticator := messageAuthenticator{auth: auth, budget: budget}
-	send, err := messagehttp.NewHandler(authenticator, sender, protocol.MaxFrameBytes)
+	send, err := newSend(authenticator, sender, protocol.MaxFrameBytes)
 	if err != nil {
 		return nil, err
 	}

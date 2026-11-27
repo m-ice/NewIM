@@ -47,22 +47,34 @@ func Open(path string) (*Store, error) {
 		if err = os.MkdirAll(absolute, 0o700); err != nil {
 			return nil, app.Fail(app.MediaStorageUnavailable)
 		}
-		if err = os.Chmod(absolute, 0o700); err != nil {
-			return nil, app.Fail(app.MediaStorageUnavailable)
-		}
 		info, statErr = os.Lstat(absolute)
 	}
-	if statErr != nil || info == nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 || info.Mode().Perm() != 0o700 {
-		return nil, app.Fail(app.MediaStorageUnavailable)
-	}
-	if err = checkRootOwner(info); err != nil {
+	if statErr != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
 		return nil, app.Fail(app.MediaStorageUnavailable)
 	}
 	root, err := os.OpenRoot(absolute)
 	if err != nil {
 		return nil, app.Fail(app.MediaStorageUnavailable)
 	}
+	if err := checkOpenedRoot(root, info); err != nil {
+		_ = root.Close()
+		return nil, err
+	}
 	return &Store{root: root, rootPath: absolute}, nil
+}
+
+func checkOpenedRoot(root *os.Root, before os.FileInfo) error {
+	dir, err := root.Open(".")
+	if err != nil {
+		return app.Fail(app.MediaStorageUnavailable)
+	}
+	defer dir.Close()
+	info, err := dir.Stat()
+	if err != nil || !info.IsDir() || info.Mode().Perm() != 0o700 ||
+		!os.SameFile(before, info) || checkRootOwner(info) != nil || !rootACLRestricted(dir) {
+		return app.Fail(app.MediaStorageUnavailable)
+	}
+	return nil
 }
 
 // Close releases the confined root descriptor.
@@ -91,7 +103,7 @@ func (s *Store) PutImmutable(ctx context.Context, key string, content io.Reader,
 		} else if incoming != expected {
 			return app.ObjectInfo{}, app.Fail(app.MediaConflict)
 		}
-		return s.verifyExistingDurable(key, expected)
+		return s.verifyExistingDurable(ctx, key, expected)
 	}
 	tempName, temp, err := s.createTemp()
 	if err != nil {
@@ -131,7 +143,7 @@ func (s *Store) PutImmutable(ctx context.Context, key string, content io.Reader,
 				return app.ObjectInfo{}, app.Fail(app.MediaStorageUnavailable)
 			}
 			cleanup = false
-			return s.verifyExistingDurable(key, expected)
+			return s.verifyExistingDurable(ctx, key, expected)
 		}
 		return app.ObjectInfo{}, app.Fail(app.MediaStorageUnavailable)
 	}
@@ -145,6 +157,22 @@ func (s *Store) PutImmutable(ctx context.Context, key string, content io.Reader,
 	return expected, nil
 }
 
+// OpenVerified 验证已提交的文件，并返回从文件开头读取的同一描述符。
+func (s *Store) OpenVerified(ctx context.Context, key string, expected app.ObjectInfo) (io.ReadCloser, error) {
+	if s == nil || s.root == nil || ctx == nil || !validObjectKey(key) || !app.ValidObjectInfo(expected) {
+		return nil, app.Fail(app.MediaInvalidInput)
+	}
+	file, err := s.openVerified(ctx, key, expected)
+	if err != nil {
+		return nil, app.Fail(app.MediaStorageUnavailable)
+	}
+	if _, err = file.Seek(0, io.SeekStart); err != nil {
+		_ = file.Close()
+		return nil, app.Fail(app.MediaStorageUnavailable)
+	}
+	return file, nil
+}
+
 func (s *Store) objectExists(key string) (bool, error) {
 	_, err := s.root.Lstat(key)
 	if err == nil {
@@ -156,36 +184,61 @@ func (s *Store) objectExists(key string) (bool, error) {
 	return false, err
 }
 
-func (s *Store) verifyExistingDurable(key string, expected app.ObjectInfo) (app.ObjectInfo, error) {
-	actual, err := s.verifyExisting(key, expected)
+func (s *Store) verifyExistingDurable(ctx context.Context, key string, expected app.ObjectInfo) (app.ObjectInfo, error) {
+	file, err := s.openVerified(ctx, key, expected)
 	if err != nil {
 		return app.ObjectInfo{}, err
 	}
+	_ = file.Close()
 	// A loser may observe the winner's directory entry before the winner's
 	// syncRoot completes. Sync before any caller can commit ready metadata.
 	// 竞争失败方可能先观察到胜出者的目录项；在允许提交 ready 元数据前必须同步父目录。
 	if err = s.syncRoot(); err != nil {
 		return app.ObjectInfo{}, app.Fail(app.MediaStorageUnavailable)
 	}
-	return actual, nil
+	return expected, nil
 }
 
-func (s *Store) verifyExisting(key string, expected app.ObjectInfo) (app.ObjectInfo, error) {
-	info, err := s.root.Lstat(key)
-	if err != nil || info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Size() != expected.Size {
-		return app.ObjectInfo{}, app.Fail(app.MediaConflict)
+func (s *Store) openVerified(ctx context.Context, key string, expected app.ObjectInfo) (*os.File, error) {
+	if ctx.Err() != nil {
+		return nil, app.Fail(app.MediaStorageUnavailable)
 	}
-	file, err := s.root.OpenFile(key, os.O_RDONLY, 0)
+	before, err := s.root.Lstat(key)
+	if err != nil || !before.Mode().IsRegular() || before.Size() != expected.Size {
+		return nil, app.Fail(app.MediaConflict)
+	}
+	file, err := s.root.OpenFile(key, objectReadFlags, 0)
 	if err != nil {
-		return app.ObjectInfo{}, app.Fail(app.MediaStorageUnavailable)
+		return nil, app.Fail(app.MediaStorageUnavailable)
 	}
-	defer file.Close()
-	hasher := sha256.New()
-	size, err := copyBounded(context.Background(), hasher, file)
-	if err != nil || size != expected.Size || finishDigest(hasher) != expected.SHA256 {
-		return app.ObjectInfo{}, app.Fail(app.MediaConflict)
+	if err = s.verifyOpened(ctx, key, before, file, expected); err != nil {
+		_ = file.Close()
+		return nil, err
 	}
-	return expected, nil
+	return file, nil
+}
+
+func (s *Store) verifyOpened(ctx context.Context, key string, before os.FileInfo, file *os.File, expected app.ObjectInfo) error {
+	opened, err := file.Stat()
+	if err != nil {
+		return app.Fail(app.MediaStorageUnavailable)
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(before, opened) {
+		return app.Fail(app.MediaConflict)
+	}
+	actual, err := inspectBounded(ctx, file)
+	if ctx.Err() != nil {
+		return app.Fail(app.MediaStorageUnavailable)
+	}
+	if err != nil || actual != expected {
+		return app.Fail(app.MediaConflict)
+	}
+	after, err := s.root.Lstat(key)
+	if err != nil || !after.Mode().IsRegular() || !os.SameFile(opened, after) ||
+		after.Size() != expected.Size || !after.ModTime().Equal(before.ModTime()) {
+		return app.Fail(app.MediaConflict)
+	}
+	return nil
 }
 
 func inspectBounded(ctx context.Context, content io.Reader) (app.ObjectInfo, error) {

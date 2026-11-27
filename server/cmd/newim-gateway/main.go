@@ -18,11 +18,15 @@ import (
 	"github.com/m-ice/NewIM/server/gateway"
 	"github.com/m-ice/NewIM/server/group"
 	"github.com/m-ice/NewIM/server/grouphttp"
+	"github.com/m-ice/NewIM/server/media"
+	"github.com/m-ice/NewIM/server/media/localfs"
+	"github.com/m-ice/NewIM/server/mediahttp"
 	messageservice "github.com/m-ice/NewIM/server/message"
 	"github.com/m-ice/NewIM/server/storage/authsession"
 	"github.com/m-ice/NewIM/server/storage/conversationsync"
 	friendstore "github.com/m-ice/NewIM/server/storage/friend"
 	groupstore "github.com/m-ice/NewIM/server/storage/group"
+	mediastore "github.com/m-ice/NewIM/server/storage/media"
 	messagestore "github.com/m-ice/NewIM/server/storage/message"
 	"github.com/m-ice/NewIM/server/storage/messagesync"
 	"github.com/m-ice/NewIM/server/storage/postgresidentity"
@@ -94,6 +98,8 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 	var groups *grouphttp.Handler
 	var messageRoutes *gateway.MessageRoutes
 	var conversationRoutes *conversationhttp.Handler
+	var mediaRoutes *mediahttp.Handler
+	var mediaValidator messageservice.MediaValidator
 	if limits := cfg.profiles; limits != nil {
 		profileRepo, err := userstore.Open(startup, userstore.Config{
 			DSN: cfg.dsn, AllowLocalSocket: cfg.allowLocalSocket,
@@ -131,6 +137,35 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 			return errConfig
 		}
 	}
+	if limits := cfg.media; limits != nil {
+		objects, err := localfs.Open(cfg.mediaRoot)
+		if err != nil {
+			return errors.New("newim-gateway media object storage unavailable")
+		}
+		defer objects.Close()
+		repo, err := mediastore.Open(startup, mediastore.Config{
+			DSN: cfg.dsn, AllowLocalSocket: cfg.allowLocalSocket,
+			ApplicationName: "newim-gateway-media", Guard: guard,
+		})
+		if err != nil {
+			return errors.New("newim-gateway media metadata storage unavailable")
+		}
+		defer repo.Close()
+		if err = repo.CheckSchema(startup); err != nil {
+			return errors.New("newim-gateway media metadata schema unavailable")
+		}
+		service, err := media.NewService(repo, media.Config{
+			Objects: objects, ObjectReader: objects, ObjectTimeout: mediahttp.ObjectTimeout, Clock: media.ClockFunc(time.Now),
+		})
+		if err != nil {
+			return errConfig
+		}
+		mediaRoutes, err = mediahttp.New(service, auth, gateway.NewProfileBudget(limits.ip, limits.account))
+		if err != nil {
+			return errConfig
+		}
+		mediaValidator = service
+	}
 	if limits := cfg.privateMessages; limits != nil {
 		sendRepo, err := messagestore.Open(startup, messagestore.Config{
 			DSN: cfg.dsn, AllowLocalSocket: cfg.allowLocalSocket,
@@ -145,11 +180,16 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 		sender, err := messageservice.NewService(sendRepo, messageservice.Config{
 			IDs:   messageservice.NewCSPRNGIDGenerator(),
 			Clock: messageservice.ClockFunc(time.Now), Observer: sendObserver{},
+			MediaValidator: mediaValidator,
 		})
 		if err != nil {
 			return errConfig
 		}
-		messageRoutes, err = gateway.NewMessageRoutes(auth, sender, sendRepo, gateway.NewProfileBudget(limits.ip, limits.account))
+		newMessageRoutes := gateway.NewMessageRoutes
+		if mediaRoutes != nil {
+			newMessageRoutes = gateway.NewMessageRoutesWithMedia
+		}
+		messageRoutes, err = newMessageRoutes(auth, sender, sendRepo, gateway.NewProfileBudget(limits.ip, limits.account))
 		if err != nil {
 			return errConfig
 		}
@@ -209,6 +249,8 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 			friends.ServeHTTP(w, r)
 		case groups != nil && grouphttp.ContainsRoute(path):
 			groups.ServeHTTP(w, r)
+		case mediaRoutes != nil && mediahttp.ContainsRoute(path):
+			mediaRoutes.ServeHTTP(w, r)
 		case conversationRoutes != nil && conversationhttp.ContainsRoute(path):
 			conversationRoutes.ServeHTTP(w, r)
 		case messageRoutes != nil && gateway.ContainsMessageRoute(path):

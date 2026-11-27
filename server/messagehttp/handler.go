@@ -1,5 +1,5 @@
-// Package messagehttp serves text messages and private conversation operations.
-// messagehttp 提供文本消息发送和私聊操作的 HTTP 入口。
+// Package messagehttp serves messages and private conversation operations.
+// messagehttp 提供消息发送和私聊操作的 HTTP 入口。
 package messagehttp
 
 import (
@@ -76,6 +76,7 @@ type Handler struct {
 	authenticator Authenticator
 	sender        Sender
 	maxBodyBytes  int64
+	allowMedia    bool
 }
 
 // NewHandler validates the trusted dependencies and positive decoded-body limit.
@@ -85,6 +86,16 @@ func NewHandler(authenticator Authenticator, sender Sender, maxBodyBytes int64) 
 		return nil, errInvalidConfiguration
 	}
 	return &Handler{authenticator: authenticator, sender: sender, maxBodyBytes: maxBodyBytes}, nil
+}
+
+// NewHandlerWithMedia admits media frames for a sender with media validation.
+func NewHandlerWithMedia(authenticator Authenticator, sender Sender, maxBodyBytes int64) (*Handler, error) {
+	handler, err := NewHandler(authenticator, sender, maxBodyBytes)
+	if err != nil {
+		return nil, err
+	}
+	handler.allowMedia = true
+	return handler, nil
 }
 
 // ServeHTTP applies the frozen route, transport, authentication, protocol and send order.
@@ -162,7 +173,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(recorder, status, code, false)
 		return
 	}
-	if request.ProtocolVersion != 1 || request.Version != 1 || request.Type != "text" {
+	if request.ProtocolVersion != 1 || request.Version != 1 ||
+		(request.Type != "text" && (!h.allowMedia || request.Type != "media")) {
 		writeError(recorder, http.StatusBadRequest, CodeInvalidInput, false)
 		return
 	}

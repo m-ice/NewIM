@@ -15,9 +15,14 @@ import (
 	"github.com/m-ice/NewIM/server/auth/session"
 	app "github.com/m-ice/NewIM/server/media"
 	"github.com/m-ice/NewIM/server/storage/membership"
+	"github.com/m-ice/NewIM/server/storage/postgresidentity"
 )
 
 const requestTimeout = 5 * time.Second
+
+const grantFields = `media_key,owner_user_id,device_id,session_id,connection_id,token_id,conversation_id,
+media_kind,content_type,declared_size_bytes,actual_size_bytes,sha256,upload_grant_id,upload_grant_digest,
+upload_expires_at,completed_at,state`
 
 // Config is trusted database configuration, never request input.
 // Config 仅接受可信数据库配置，不接受请求内容。
@@ -26,6 +31,7 @@ type Config struct {
 	AllowLocalSocket bool
 	MaxConnections   int
 	ApplicationName  string
+	Guard            *postgresidentity.Guard
 }
 
 // Repository owns a bounded pgx pool for media grants/assets.
@@ -79,6 +85,17 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 	} else {
 		poolConfig.ConnConfig.RuntimeParams["application_name"] = "newim-media"
 	}
+	if guard := config.Guard; guard != nil {
+		poolConfig.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+			return mapStorageError(guard.AfterConnect(ctx, conn))
+		}
+		poolConfig.PrepareConn = func(ctx context.Context, conn *pgx.Conn) (bool, error) {
+			if err := guard.Verify(ctx, conn); err != nil {
+				return false, mapStorageError(err)
+			}
+			return true, nil
+		}
+	}
 	openCtx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	pool, err := pgxpool.NewWithConfig(openCtx, poolConfig)
@@ -100,10 +117,39 @@ func (r *Repository) Close() {
 	}
 }
 
+// CheckSchema verifies that the gateway can use the migrated media columns.
+// CheckSchema 核对已迁移的媒体字段是否可读。
+func (r *Repository) CheckSchema(ctx context.Context) error {
+	if r == nil || r.pool == nil || ctx == nil {
+		return app.Fail(app.MediaStorageUnavailable)
+	}
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+	tx, err := r.beginReadOnly(ctx)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	if _, err = tx.Exec(ctx, "SELECT "+grantFields+" FROM newim.im_media_assets LIMIT 0"); err != nil {
+		return mapStorageError(err)
+	}
+	return mapStorageError(tx.Commit(ctx))
+}
+
 // BeginUpload authorizes the complete identity before invoking create.
 // BeginUpload 在调用 create 前授权完整身份。
 func (r *Repository) BeginUpload(ctx context.Context, now time.Time, identity session.ConnectionIdentity, conversationID string, create func() (app.Grant, error)) error {
-	if r == nil || r.pool == nil || ctx == nil || create == nil || now.IsZero() ||
+	if create == nil || now.IsZero() {
+		return app.Fail(app.MediaInvalidInput)
+	}
+	return r.BeginUploadWithClock(ctx, app.ClockFunc(func() time.Time { return now }), identity, conversationID,
+		func(time.Time) (app.Grant, error) { return create() })
+}
+
+// BeginUploadWithClock authorizes using the time after the membership and token locks.
+// BeginUploadWithClock 在锁定成员和令牌后用当前时间授权。
+func (r *Repository) BeginUploadWithClock(ctx context.Context, clock app.Clock, identity session.ConnectionIdentity, conversationID string, create func(time.Time) (app.Grant, error)) error {
+	if r == nil || r.pool == nil || ctx == nil || create == nil || clock == nil ||
 		!app.ValidateIdentity(identity) || !identifier(conversationID) {
 		return app.Fail(app.MediaInvalidInput)
 	}
@@ -112,10 +158,21 @@ func (r *Repository) BeginUpload(ctx context.Context, now time.Time, identity se
 		return err
 	}
 	defer rollback(tx)
-	if err = authorizeTx(ctx, tx, now, identity, conversationID, true); err != nil {
+	if err = lockMediaAuthorization(ctx, tx, identity, conversationID); err != nil {
 		return err
 	}
-	grant, err := create()
+	expiry, err := lockMediaToken(ctx, tx, identity)
+	if err != nil {
+		return err
+	}
+	now := clock.Now().UTC()
+	if now.IsZero() {
+		return app.Fail(app.MediaStorageUnavailable)
+	}
+	if !expiry.After(now) {
+		return app.Fail(app.MediaUnauthorized)
+	}
+	grant, err := create(now)
 	if err != nil {
 		return fixed(err)
 	}
@@ -157,10 +214,7 @@ func (r *Repository) LoadGrant(ctx context.Context, grantID string) (app.Grant, 
 		return app.Grant{}, err
 	}
 	defer rollback(tx)
-	grant, err := scanGrant(tx.QueryRow(ctx, `SELECT media_key,owner_user_id,device_id,session_id,connection_id,token_id,conversation_id,
-media_kind,content_type,declared_size_bytes,actual_size_bytes,sha256,upload_grant_id,upload_grant_digest,
-upload_expires_at,completed_at,state
-FROM newim.im_media_assets WHERE upload_grant_id=$1`, grantID))
+	grant, err := scanGrant(tx.QueryRow(ctx, "SELECT "+grantFields+" FROM newim.im_media_assets WHERE upload_grant_id=$1", grantID))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Grant{}, app.Fail(app.MediaNotFound)
 	}
@@ -176,48 +230,70 @@ FROM newim.im_media_assets WHERE upload_grant_id=$1`, grantID))
 // CompleteReady marks a pending grant ready after the object was published.
 // CompleteReady 在对象发布后原子地把 pending 凭据标记为 ready。
 func (r *Repository) CompleteReady(ctx context.Context, now time.Time, identity session.ConnectionIdentity, grant app.Grant) (app.Grant, error) {
-	if r == nil || r.pool == nil || ctx == nil || now.IsZero() || !app.ValidateIdentity(identity) || !app.ValidGrant(grant) {
+	if now.IsZero() {
 		return app.Grant{}, app.Fail(app.MediaInvalidInput)
 	}
+	return r.CompleteReadyWithClock(ctx, app.ClockFunc(func() time.Time { return now }), identity, grant)
+}
+
+// CompleteReadyWithClock evaluates the grant and token time under the finalization locks.
+func (r *Repository) CompleteReadyWithClock(ctx context.Context, clock app.Clock, identity session.ConnectionIdentity, grant app.Grant) (app.Grant, error) {
+	if r == nil || r.pool == nil || ctx == nil || clock == nil || !app.ValidateIdentity(identity) || !app.ValidGrant(grant) {
+		return app.Grant{}, app.Fail(app.MediaInvalidInput)
+	}
+	if grant.OwnerUserID != identity.UserID() || grant.DeviceID != identity.DeviceID() ||
+		grant.SessionID != identity.SessionID() || grant.ConnectionID != identity.ConnectionID() || grant.TokenID != identity.TokenID() {
+		return app.Grant{}, app.Fail(app.MediaUnauthorized)
+	}
+
 	tx, err := r.begin(ctx)
 	if err != nil {
 		return app.Grant{}, err
 	}
 	defer rollback(tx)
-	if err = authorizeTx(ctx, tx, now, identity, grant.ConversationID, true); err != nil {
+	if err = lockMediaAuthorization(ctx, tx, identity, grant.ConversationID); err != nil {
 		return app.Grant{}, err
 	}
-	ready, err := scanGrant(tx.QueryRow(ctx, `UPDATE newim.im_media_assets
-SET actual_size_bytes=declared_size_bytes,completed_at=$2,state='ready'
-WHERE media_key=$1 AND upload_grant_id=$3 AND upload_grant_digest=$4 AND state='pending'
-  AND owner_user_id=$5 AND device_id=$6 AND session_id=$7 AND connection_id=$8 AND token_id=$9
-RETURNING media_key,owner_user_id,device_id,session_id,connection_id,token_id,conversation_id,
-media_kind,content_type,declared_size_bytes,actual_size_bytes,sha256,upload_grant_id,upload_grant_digest,
-upload_expires_at,completed_at,state`,
-		grant.MediaKey, now, grant.GrantID, grant.GrantDigest[:], grant.OwnerUserID, grant.DeviceID,
-		grant.SessionID, grant.ConnectionID, grant.TokenID))
-	if errors.Is(err, pgx.ErrNoRows) {
-		existing, loadErr := scanGrant(tx.QueryRow(ctx, `SELECT media_key,owner_user_id,device_id,session_id,connection_id,token_id,conversation_id,
-media_kind,content_type,declared_size_bytes,actual_size_bytes,sha256,upload_grant_id,upload_grant_digest,
-upload_expires_at,completed_at,state FROM newim.im_media_assets WHERE media_key=$1`, grant.MediaKey))
-		if loadErr != nil {
-			return app.Grant{}, mapStorageError(loadErr)
-		}
-		if existing.State == app.StateReady && sameGrantIntent(existing, grant) {
-			return existing, nil
-		}
-		return app.Grant{}, app.Fail(app.MediaConflict)
-	}
+	asset, err := scanGrant(tx.QueryRow(ctx, "SELECT "+grantFields+" FROM newim.im_media_assets WHERE media_key=$1 FOR UPDATE", grant.MediaKey))
 	if err != nil {
 		return app.Grant{}, mapStorageError(err)
 	}
-	if !app.ValidGrant(ready) || ready.State != app.StateReady {
+	if !app.ValidGrant(asset) {
 		return app.Grant{}, app.Fail(app.MediaStorageUnavailable)
+	}
+	if !sameGrantIntent(asset, grant) {
+		return app.Grant{}, app.Fail(app.MediaConflict)
+	}
+	tokenExpiry, err := lockMediaToken(ctx, tx, identity)
+	if err != nil {
+		return app.Grant{}, err
+	}
+	now := clock.Now().UTC()
+	if now.IsZero() {
+		return app.Grant{}, app.Fail(app.MediaStorageUnavailable)
+	}
+	if !tokenExpiry.After(now) {
+		return app.Grant{}, app.Fail(app.MediaUnauthorized)
+	}
+	if asset.State == app.StatePending {
+		if !asset.ExpiresAt.After(now) {
+			return app.Grant{}, app.Fail(app.MediaExpired)
+		}
+		asset, err = scanGrant(tx.QueryRow(ctx, `UPDATE newim.im_media_assets
+			SET actual_size_bytes=declared_size_bytes,completed_at=$2,state='ready'
+			WHERE media_key=$1 AND state='pending' AND upload_expires_at>$2
+			RETURNING `+grantFields, asset.MediaKey, now))
+		if err != nil {
+			return app.Grant{}, mapStorageError(err)
+		}
+		if !app.ValidGrant(asset) || asset.State != app.StateReady {
+			return app.Grant{}, app.Fail(app.MediaStorageUnavailable)
+		}
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return app.Grant{}, mapStorageError(err)
 	}
-	return ready, nil
+	return asset, nil
 }
 
 // LoadReadyAsset returns a durable ready asset for private download resolution.
@@ -228,9 +304,7 @@ func (r *Repository) LoadReadyAsset(ctx context.Context, mediaKey string) (app.G
 	}
 	readCtx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	grant, err := scanGrant(r.pool.QueryRow(readCtx, `SELECT media_key,owner_user_id,device_id,session_id,connection_id,token_id,conversation_id,
-media_kind,content_type,declared_size_bytes,actual_size_bytes,sha256,upload_grant_id,upload_grant_digest,
-upload_expires_at,completed_at,state FROM newim.im_media_assets WHERE media_key=$1 AND state='ready'`, mediaKey))
+	grant, err := scanGrant(r.pool.QueryRow(readCtx, "SELECT "+grantFields+" FROM newim.im_media_assets WHERE media_key=$1 AND state='ready'", mediaKey))
 	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Grant{}, app.Fail(app.MediaNotFound)
 	}
@@ -254,7 +328,7 @@ func (r *Repository) Authorize(ctx context.Context, now time.Time, identity sess
 		return err
 	}
 	defer rollback(tx)
-	if err = authorizeTx(readCtx, tx, now, identity, conversationID, false); err != nil {
+	if err = authorizeTx(readCtx, tx, now, identity, conversationID); err != nil {
 		return err
 	}
 	return mapStorageError(tx.Commit(readCtx))
@@ -338,12 +412,12 @@ func configure(ctx context.Context, tx pgx.Tx) error {
 	return mapStorageError(err)
 }
 
-func authorizeTx(ctx context.Context, tx pgx.Tx, now time.Time, identity session.ConnectionIdentity, conversationID string, write bool) error {
+func authorizeTx(ctx context.Context, tx pgx.Tx, now time.Time, identity session.ConnectionIdentity, conversationID string) error {
 	advanced, err := membership.Advanced(ctx, tx)
 	if err != nil {
 		return mapStorageError(err)
 	}
-	query := `SELECT s.user_id,s.device_id
+	query := `SELECT 1
 FROM newim.im_conversation_members m
 JOIN newim.im_sessions s ON s.session_id=$3
 JOIN newim.im_auth_tokens t ON t.token_id=$5 AND t.session_id=s.session_id
@@ -352,26 +426,47 @@ WHERE m.conversation_id=$4 AND m.user_id=$1 AND s.user_id=$1 AND s.device_id=$2
 	if advanced {
 		query += " AND m.departed_at IS NULL"
 	}
-	if write {
-		query += " FOR UPDATE OF s"
-		if advanced {
-			query += " FOR SHARE OF m"
-		}
-	}
-	var userID, deviceID string
-	err = tx.QueryRow(ctx, query,
-		identity.UserID(), identity.DeviceID(), identity.SessionID(), conversationID,
-		identity.TokenID(), now).Scan(&userID, &deviceID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return app.Fail(app.MediaUnauthorized)
-	}
+	var found int
+	err = tx.QueryRow(ctx, query, identity.UserID(), identity.DeviceID(), identity.SessionID(),
+		conversationID, identity.TokenID(), now).Scan(&found)
+	return authorizationError(err)
+}
+
+func lockMediaAuthorization(ctx context.Context, tx pgx.Tx, identity session.ConnectionIdentity, conversationID string) error {
+	advanced, err := membership.Advanced(ctx, tx)
 	if err != nil {
 		return mapStorageError(err)
 	}
-	if userID != identity.UserID() || deviceID != identity.DeviceID() {
+	var found int
+	err = tx.QueryRow(ctx, `SELECT 1 FROM newim.im_sessions
+		WHERE session_id=$1 AND user_id=$2 AND device_id=$3 AND revoked_at IS NULL FOR UPDATE`,
+		identity.SessionID(), identity.UserID(), identity.DeviceID()).Scan(&found)
+	if err != nil {
+		return authorizationError(err)
+	}
+	query := "SELECT 1 FROM newim.im_conversation_members WHERE conversation_id=$1 AND user_id=$2"
+	if advanced {
+		query += " AND departed_at IS NULL"
+	}
+	err = tx.QueryRow(ctx, query+" FOR SHARE", conversationID, identity.UserID()).Scan(&found)
+	return authorizationError(err)
+}
+
+func lockMediaToken(ctx context.Context, tx pgx.Tx, identity session.ConnectionIdentity) (time.Time, error) {
+	// Use a fresh read after waiting for the session lock. The lock query's
+	// original snapshot may predate a committed token-only revocation.
+	var expiry time.Time
+	err := tx.QueryRow(ctx, `SELECT expires_at FROM newim.im_auth_tokens
+		WHERE token_id=$1 AND session_id=$2 AND revoked_at IS NULL FOR SHARE`,
+		identity.TokenID(), identity.SessionID()).Scan(&expiry)
+	return expiry, authorizationError(err)
+}
+
+func authorizationError(err error) error {
+	if errors.Is(err, pgx.ErrNoRows) {
 		return app.Fail(app.MediaUnauthorized)
 	}
-	return nil
+	return mapStorageError(err)
 }
 
 func scanGrant(row pgx.Row) (app.Grant, error) {

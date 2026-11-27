@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sync"
@@ -136,6 +137,33 @@ func TestRejectsNon0700Root(t *testing.T) {
 	}
 }
 
+func TestRejectsReplacedRoot(t *testing.T) {
+	parent := t.TempDir()
+	path := filepath.Join(parent, "objects")
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	before, err := os.Lstat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Rename(path, filepath.Join(parent, "original")); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	root, err := os.OpenRoot(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer root.Close()
+
+	if err = checkOpenedRoot(root, before); app.ErrorCode(err) != app.MediaStorageUnavailable {
+		t.Fatalf("replaced root error = %v", err)
+	}
+}
+
 func TestExistingObjectReplaySyncsParentDirectory(t *testing.T) {
 	root := filepath.Join(t.TempDir(), "objects")
 	store, err := Open(root)
@@ -169,4 +197,122 @@ func TestExistingObjectReplaySyncsParentDirectory(t *testing.T) {
 	if syncCalls != 2 {
 		t.Fatalf("sync failure calls got %d want 2", syncCalls)
 	}
+}
+
+func TestOpenVerifiedReturnsVerifiedDescriptorAtStart(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "objects")
+	store, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	value := []byte("immutable download")
+	if _, err = store.PutImmutable(ctx, "media_key", bytes.NewReader(value), info(value)); err != nil {
+		t.Fatal(err)
+	}
+	file, err := store.OpenVerified(ctx, "media_key", info(value))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer file.Close()
+
+	path := filepath.Join(root, "media_key")
+	if err = os.Rename(path, filepath.Join(root, "archived_key")); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.WriteFile(path, bytes.Repeat([]byte{'x'}, len(value)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(file)
+	if err != nil || !bytes.Equal(body, value) {
+		t.Fatalf("verified descriptor returned %q, %v", body, err)
+	}
+}
+
+func TestOpenVerifiedRejectsInvalidObjects(t *testing.T) {
+	parent := t.TempDir()
+	root := filepath.Join(parent, "objects")
+	store, err := Open(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	ctx := context.Background()
+	value := []byte("immutable download")
+	expected := info(value)
+	if _, err = store.PutImmutable(ctx, "media_key", bytes.NewReader(value), expected); err != nil {
+		t.Fatal(err)
+	}
+	outside := filepath.Join(parent, "outside")
+	if err = os.WriteFile(outside, value, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Symlink("media_key", filepath.Join(root, "inside_link")); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Symlink(outside, filepath.Join(root, "outside_link")); err != nil {
+		t.Fatal(err)
+	}
+	if err = os.Mkdir(filepath.Join(root, "directory"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	for _, test := range []struct {
+		name     string
+		key      string
+		expected app.ObjectInfo
+		code     app.Code
+	}{
+		{"same root link", "inside_link", expected, app.MediaStorageUnavailable},
+		{"outside link", "outside_link", expected, app.MediaStorageUnavailable},
+		{"directory", "directory", expected, app.MediaStorageUnavailable},
+		{"missing", "missing_file", expected, app.MediaStorageUnavailable},
+		{"size mismatch", "media_key", info(value[:len(value)-1]), app.MediaStorageUnavailable},
+		{"digest mismatch", "media_key", info(bytes.Repeat([]byte{'x'}, len(value))), app.MediaStorageUnavailable},
+		{"invalid key", "../outside", expected, app.MediaInvalidInput},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			file, err := store.OpenVerified(ctx, test.key, test.expected)
+			if file != nil {
+				_ = file.Close()
+				t.Fatal("returned a descriptor for an invalid object")
+			}
+			if code := app.ErrorCode(err); code != test.code {
+				t.Fatalf("error code = %v, want %v", code, test.code)
+			}
+		})
+	}
+}
+
+func TestReplayCancellationPreventsDurableSuccess(t *testing.T) {
+	store, err := Open(filepath.Join(t.TempDir(), "objects"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+
+	value := []byte("immutable media")
+	expected := info(value)
+	if _, err = store.PutImmutable(context.Background(), "media_key", bytes.NewReader(value), expected); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	reader := io.MultiReader(bytes.NewReader(value), cancelReader{cancel: cancel})
+	store.syncHook = func() error {
+		t.Fatal("synced replay after cancellation")
+		return nil
+	}
+	if _, err = store.PutImmutable(ctx, "media_key", reader, expected); app.ErrorCode(err) != app.MediaStorageUnavailable {
+		t.Fatalf("canceled replay error = %v", err)
+	}
+}
+
+type cancelReader struct{ cancel context.CancelFunc }
+
+func (r cancelReader) Read([]byte) (int, error) {
+	r.cancel()
+	return 0, io.EOF
 }

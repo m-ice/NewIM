@@ -8,6 +8,8 @@ import (
 	"syscall"
 )
 
+const objectReadFlags = os.O_RDONLY | syscall.O_NONBLOCK
+
 func checkRootOwner(info os.FileInfo) error {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok {

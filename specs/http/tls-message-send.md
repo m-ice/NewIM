@@ -13,4 +13,6 @@
 
 启用 `NEWIM_GROUP_HTTP=1` 后，受管群使用其群会话 ID。发送事务使用会话保存的类型执行 [小群权限](../group/membership.md)。新群消息要求当前成员权限并遵守禁言，仍在群内的发送者可重放已提交的同意图回执。旧群会话继续使用既有回环发送方式。
 
+启用 `NEWIM_MEDIA_HTTP=1` 后，`/api/v1/messages` 也接受 `type: "media"`、`version: 1`。将上传完成响应作为原发送帧的 `payload`，使用同一个会话 ID。发送服务核验已就绪媒体属于当前发送者和会话，且元数据完全一致。详见 [媒体传输](../media/tls-transfer.md)。
+
 消息接收沿用 [实时消息网关](../gateway/websocket.md)。客户端按会话保存已持久化的消息序号，从该位置续读。

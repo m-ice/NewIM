@@ -23,6 +23,8 @@ const (
 // Config 仅接受可信服务配置，不接受请求内容。
 type Config struct {
 	Objects        ObjectStore
+	ObjectReader   ObjectReader
+	ObjectTimeout  time.Duration
 	Signer         Signer
 	Clock          Clock
 	Entropy        io.Reader
@@ -36,6 +38,8 @@ type Config struct {
 type Service struct {
 	store          Store
 	objects        ObjectStore
+	objectReader   ObjectReader
+	objectTimeout  time.Duration
 	signer         Signer
 	clock          Clock
 	entropy        io.Reader
@@ -56,12 +60,20 @@ func NewService(store Store, config Config) (*Service, error) {
 	if timeout < time.Millisecond || timeout > defaultRequestTimeout {
 		return nil, Fail(MediaInvalidInput)
 	}
+	objectTimeout := config.ObjectTimeout
+	if objectTimeout == 0 {
+		objectTimeout = timeout
+	}
+	if objectTimeout < time.Millisecond {
+		return nil, Fail(MediaInvalidInput)
+	}
 	entropy := config.Entropy
 	if entropy == nil {
 		entropy = rand.Reader
 	}
 	return &Service{
-		store: store, objects: config.Objects, signer: config.Signer, clock: config.Clock,
+		store: store, objects: config.Objects, objectReader: config.ObjectReader, objectTimeout: objectTimeout,
+		signer: config.Signer, clock: config.Clock,
 		entropy: entropy, observer: config.Observer, requestTimeout: timeout,
 	}, nil
 }
@@ -105,20 +117,29 @@ func (s *Service) BeginUpload(ctx context.Context, identity session.ConnectionId
 	if now.IsZero() {
 		return UploadGrant{}, Fail(MediaStorageUnavailable)
 	}
-	expiresAt := now.Add(ttl).UTC()
+	var expiresAt time.Time
 	var rawToken, mediaKey string
-	create := func() (Grant, error) {
-		grant, raw, createErr := s.generateGrant(identity, request.ConversationID, intent, expiresAt)
+	create := func(authorizedAt time.Time) (Grant, error) {
+		grant, raw, createErr := s.generateGrant(identity, request.ConversationID, intent, authorizedAt.Add(ttl).UTC())
 		if createErr != nil {
 			return Grant{}, createErr
 		}
 		rawToken = raw
 		mediaKey = grant.MediaKey
+		expiresAt = grant.ExpiresAt
 		return grant, nil
 	}
+	grantStore, hasClock := s.store.(clockedGrantStore)
 	for attempt := 0; attempt < maxGrantAttempts; attempt++ {
 		attemptCtx, cancel := context.WithTimeout(ctx, s.requestTimeout)
-		storeErr := s.store.BeginUpload(attemptCtx, now, identity, request.ConversationID, create)
+		var storeErr error
+		if hasClock {
+			storeErr = grantStore.BeginUploadWithClock(attemptCtx, s.clock, identity, request.ConversationID, create)
+		} else {
+			storeErr = s.store.BeginUpload(attemptCtx, now, identity, request.ConversationID, func() (Grant, error) {
+				return create(now)
+			})
+		}
 		cancel()
 		if storeErr == nil {
 			if rawToken == "" {
@@ -136,6 +157,10 @@ func (s *Service) BeginUpload(ctx context.Context, identity session.ConnectionId
 		return UploadGrant{}, redactedError(storeErr)
 	}
 	return UploadGrant{}, Fail(MediaGrantCollision)
+}
+
+type clockedGrantStore interface {
+	BeginUploadWithClock(context.Context, Clock, session.ConnectionIdentity, string, func(time.Time) (Grant, error)) error
 }
 
 // CompleteUpload verifies the complete grant scope before expiry and supports
@@ -185,39 +210,53 @@ func (s *Service) completeUpload(ctx context.Context, identity session.Connectio
 		return Grant{}, Fail(MediaStorageUnavailable)
 	}
 	now := s.currentTime()
-	if now.IsZero() {
-		return Grant{}, Fail(MediaStorageUnavailable)
-	}
-	authCtx, cancel := context.WithTimeout(ctx, s.requestTimeout)
-	authErr := s.store.Authorize(authCtx, now, identity, grant.ConversationID)
-	cancel()
-	if authErr != nil {
-		return Grant{}, redactedError(authErr)
-	}
-	if grant.State != StatePending && grant.State != StateReady {
-		return Grant{}, Fail(MediaStorageUnavailable)
+	if err = s.authorize(ctx, now, identity, grant.ConversationID); err != nil {
+		return Grant{}, err
 	}
 	if grant.State == StatePending && !now.Before(grant.ExpiresAt) {
 		return Grant{}, Fail(MediaExpired)
 	}
 	expected := ObjectInfo{Size: grant.DeclaredSize, SHA256: grant.SHA256}
-	putCtx, cancel := context.WithTimeout(ctx, s.requestTimeout)
+	putCtx, cancel := context.WithTimeout(ctx, s.objectTimeout)
 	actual, putErr := s.objects.PutImmutable(putCtx, grant.MediaKey, content, expected)
+	transferErr := putCtx.Err()
 	cancel()
 	if putErr != nil {
 		return Grant{}, redactedError(putErr)
 	}
+	if transferErr != nil {
+		return Grant{}, Fail(MediaStorageUnavailable)
+	}
 	if actual != expected {
 		return Grant{}, Fail(MediaInvalidInput)
 	}
+
+	now = s.currentTime()
+	if now.IsZero() {
+		return Grant{}, Fail(MediaStorageUnavailable)
+	}
 	if grant.State == StateReady {
+		if err = s.authorize(ctx, now, identity, grant.ConversationID); err != nil {
+			return Grant{}, err
+		}
 		return grant, nil
 	}
 	completeCtx, cancel := context.WithTimeout(ctx, s.requestTimeout)
-	ready, completeErr := s.store.CompleteReady(completeCtx, now, identity, grant)
-	cancel()
-	if completeErr != nil {
-		return Grant{}, redactedError(completeErr)
+	defer cancel()
+	var ready Grant
+	if store, ok := s.store.(clockedCompletionStore); ok {
+		ready, err = store.CompleteReadyWithClock(completeCtx, s.clock, identity, grant)
+	} else {
+		if err = s.authorize(completeCtx, now, identity, grant.ConversationID); err != nil {
+			return Grant{}, err
+		}
+		if !now.Before(grant.ExpiresAt) {
+			return Grant{}, Fail(MediaExpired)
+		}
+		ready, err = s.store.CompleteReady(completeCtx, now, identity, grant)
+	}
+	if err != nil {
+		return Grant{}, redactedError(err)
 	}
 	if !ValidGrant(ready) || ready.State != StateReady {
 		return Grant{}, Fail(MediaStorageUnavailable)
@@ -225,13 +264,16 @@ func (s *Service) completeUpload(ctx context.Context, identity session.Connectio
 	return ready, nil
 }
 
+type clockedCompletionStore interface {
+	CompleteReadyWithClock(context.Context, Clock, session.ConnectionIdentity, Grant) (Grant, error)
+}
+
 // ResolvePrivateDownload authorizes before signing and never persists the URL.
 // ResolvePrivateDownload 在签名前授权，绝不持久化 URL。
 func (s *Service) ResolvePrivateDownload(ctx context.Context, identity session.ConnectionIdentity, mediaKey string, ttl time.Duration) (url string, err error) {
 	started := time.Now()
 	defer func() { s.observe("resolve_private_download", started, err) }()
-	if s == nil || s.store == nil || s.signer == nil || s.clock == nil || ctx == nil ||
-		!ValidateIdentity(identity) || !validMediaKey(mediaKey) {
+	if s == nil || s.signer == nil {
 		return "", Fail(MediaInvalidInput)
 	}
 	if ttl == 0 {
@@ -240,26 +282,9 @@ func (s *Service) ResolvePrivateDownload(ctx context.Context, identity session.C
 	if ttl <= 0 || ttl > time.Duration(MaxDownloadTTL)*time.Second {
 		return "", Fail(MediaInvalidInput)
 	}
-	loadCtx, cancel := context.WithTimeout(ctx, s.requestTimeout)
-	asset, loadErr := s.store.LoadReadyAsset(loadCtx, mediaKey)
-	cancel()
-	if loadErr != nil {
-		return "", redactedError(loadErr)
-	}
-	// Both the caller and the stored asset must carry all five trusted identity fields.
-	// 调用方与持久资产都必须携带全部五个可信身份字段。
-	if !ValidateIdentity(identity) || !ValidGrant(asset) || asset.State != StateReady {
-		return "", Fail(MediaNotFound)
-	}
-	now := s.currentTime()
-	if now.IsZero() {
-		return "", Fail(MediaStorageUnavailable)
-	}
-	authCtx, cancel := context.WithTimeout(ctx, s.requestTimeout)
-	authErr := s.store.Authorize(authCtx, now, identity, asset.ConversationID)
-	cancel()
-	if authErr != nil {
-		return "", redactedError(authErr)
+	asset, now, err := s.authorizePrivateAsset(ctx, identity, mediaKey)
+	if err != nil {
+		return "", err
 	}
 	signCtx, cancel := context.WithTimeout(ctx, s.requestTimeout)
 	url, signErr := s.signer.Sign(signCtx, asset.MediaKey, now.Add(ttl).UTC())
@@ -268,6 +293,83 @@ func (s *Service) ResolvePrivateDownload(ctx context.Context, identity session.C
 		return "", Fail(MediaStorageUnavailable)
 	}
 	return url, nil
+}
+
+// OpenPrivateDownload opens an authorized, verified local object stream.
+func (s *Service) OpenPrivateDownload(ctx context.Context, identity session.ConnectionIdentity, mediaKey string) (download Download, err error) {
+	started := time.Now()
+	defer func() { s.observe("open_private_download", started, err) }()
+	if s == nil || s.objectReader == nil {
+		return Download{}, Fail(MediaInvalidInput)
+	}
+	asset, _, err := s.authorizePrivateAsset(ctx, identity, mediaKey)
+	if err != nil {
+		return Download{}, err
+	}
+	objectCtx, cancel := context.WithTimeout(ctx, s.objectTimeout)
+	expected := ObjectInfo{Size: asset.DeclaredSize, SHA256: asset.SHA256}
+	body, err := s.objectReader.OpenVerified(objectCtx, asset.MediaKey, expected)
+	if err == nil && body != nil {
+		err = s.authorize(ctx, s.currentTime(), identity, asset.ConversationID)
+		if err == nil && objectCtx.Err() == nil {
+			return Download{Body: &downloadBody{ReadCloser: body, ctx: objectCtx, cancel: cancel}, Size: expected.Size}, nil
+		}
+	}
+	cancel()
+	if body != nil {
+		_ = body.Close()
+	}
+	if err != nil {
+		return Download{}, redactedError(err)
+	}
+	return Download{}, Fail(MediaStorageUnavailable)
+}
+
+type downloadBody struct {
+	io.ReadCloser
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+func (b *downloadBody) Read(p []byte) (int, error) {
+	if err := b.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return b.ReadCloser.Read(p)
+}
+
+func (b *downloadBody) Close() error {
+	b.cancel()
+	return b.ReadCloser.Close()
+}
+
+func (s *Service) authorizePrivateAsset(ctx context.Context, identity session.ConnectionIdentity, mediaKey string) (Grant, time.Time, error) {
+	if s.store == nil || s.clock == nil || ctx == nil || !ValidateIdentity(identity) || !validMediaKey(mediaKey) {
+		return Grant{}, time.Time{}, Fail(MediaInvalidInput)
+	}
+	loadCtx, cancel := context.WithTimeout(ctx, s.requestTimeout)
+	asset, err := s.store.LoadReadyAsset(loadCtx, mediaKey)
+	cancel()
+	if err != nil {
+		return Grant{}, time.Time{}, redactedError(err)
+	}
+	if !ValidGrant(asset) || asset.State != StateReady || asset.MediaKey != mediaKey {
+		return Grant{}, time.Time{}, Fail(MediaNotFound)
+	}
+	now := s.currentTime()
+	if err = s.authorize(ctx, now, identity, asset.ConversationID); err != nil {
+		return Grant{}, time.Time{}, err
+	}
+	return asset, now, nil
+}
+
+func (s *Service) authorize(ctx context.Context, now time.Time, identity session.ConnectionIdentity, conversationID string) error {
+	if now.IsZero() {
+		return Fail(MediaStorageUnavailable)
+	}
+	authCtx, cancel := context.WithTimeout(ctx, s.requestTimeout)
+	defer cancel()
+	return redactedError(s.store.Authorize(authCtx, now, identity, conversationID))
 }
 
 // ValidateForSend is the narrow message-service authorization seam.

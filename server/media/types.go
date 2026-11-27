@@ -130,6 +130,12 @@ type UploadGrant struct {
 	ExpiresAt time.Time
 }
 
+// Download is an authorized stream. The caller must close Body.
+type Download struct {
+	Body io.ReadCloser
+	Size int64
+}
+
 // ObjectInfo is the exact immutable object identity.
 // ObjectInfo 是精确的不可变对象身份。
 type ObjectInfo struct {
@@ -168,6 +174,11 @@ type ObjectStore interface {
 	// PutImmutable publishes only if absent; an existing object must match expected exactly.
 	// PutImmutable 仅在对象不存在时发布；已有对象必须与 expected 精确一致。
 	PutImmutable(context.Context, string, io.Reader, ObjectInfo) (ObjectInfo, error)
+}
+
+// ObjectReader verifies an immutable object before returning its open reader.
+type ObjectReader interface {
+	OpenVerified(context.Context, string, ObjectInfo) (io.ReadCloser, error)
 }
 
 // ValidateIdentity rejects incomplete trusted connection identity.

@@ -12,6 +12,20 @@ import (
 // ErrInvalidFile is returned without exposing paths, contents, or system errors.
 var ErrInvalidFile = errors.New("invalid credential file")
 
+// ACLIsRestricted reports whether access is bounded by the mode bits.
+// The caller also validates the mode and owner on the same open file.
+func ACLIsRestricted(file *os.File) bool {
+	conn, err := file.SyscallConn()
+	if err != nil {
+		return false
+	}
+	var restricted bool
+	err = conn.Control(func(fd uintptr) {
+		restricted = aclIsRestricted(int(fd))
+	})
+	return err == nil && restricted
+}
+
 // Read returns the original file bytes after verifying the opened descriptor.
 // The caller owns the returned buffer and can clear it after use.
 func Read(path string, minSize, maxSize int) ([]byte, error) {
@@ -33,7 +47,7 @@ func Read(path string, minSize, maxSize int) ([]byte, error) {
 	if !ok || stat.Uid != uint32(os.Geteuid()) || info.Size() < int64(minSize) || info.Size() > int64(maxSize) {
 		return nil, ErrInvalidFile
 	}
-	if !aclIsRestricted(fd) {
+	if !ACLIsRestricted(file) {
 		return nil, ErrInvalidFile
 	}
 

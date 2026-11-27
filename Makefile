@@ -106,6 +106,17 @@ media-authz: toolchain
 
 media-check: media-protocol media-db media-security media-authz
 
+.PHONY: media-http-check media-http-security media-http-recovery
+media-http-check: toolchain
+	python3 -B infra/db/media_http_suite.py check
+
+media-http-security: toolchain
+	go test -race -shuffle=on -count=1 ./server/credentialfile ./server/media/...
+	python3 -B infra/db/media_http_suite.py security
+
+media-http-recovery: toolchain
+	python3 -B infra/db/media_http_suite.py recovery
+
 
 .PHONY: db-prepare db-schema db-migrations db-sequence db-repair
 db-prepare:
