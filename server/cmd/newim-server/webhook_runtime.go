@@ -25,13 +25,18 @@ type webhookWorker interface {
 }
 
 type webhookRuntime struct {
-	repo      *store.Repository
-	lock      webhookLock
-	worker    webhookWorker
-	closeOnce sync.Once
+	repo        *store.Repository
+	lock        webhookLock
+	worker      webhookWorker
+	secretCodec *app.LocalSecretResolver
+	closeOnce   sync.Once
 }
 
-const webhookRuntimeCloseTimeout = time.Second
+const (
+	webhookRuntimeCloseTimeout = time.Second
+	webhookHighWater           = 10000
+	webhookDestinationQueue    = 5000
+)
 
 // newWebhookRuntimeFromEnv creates no runtime when the DSN is absent.
 // newWebhookRuntimeFromEnv 在 DSN 缺失时返回 nil runtime；配置不完整必须 fail-closed。
@@ -41,6 +46,7 @@ func newWebhookRuntimeFromEnv(ctx context.Context, logger *slog.Logger) (*webhoo
 		return nil, nil
 	}
 	masterKey, err := base64.StdEncoding.DecodeString(os.Getenv("NEWIM_WEBHOOK_MASTER_KEY_B64"))
+	defer clear(masterKey)
 	if err != nil || len(masterKey) != 32 {
 		return nil, app.Fail(app.CodeInvalidConfig)
 	}
@@ -81,9 +87,9 @@ func newWebhookRuntimeFromEnv(ctx context.Context, logger *slog.Logger) (*webhoo
 		RequestTimeout:      10 * time.Second,
 		BaseBackoff:         time.Second,
 		MaxBackoff:          time.Hour,
-		HighWater:           10000,
+		HighWater:           webhookHighWater,
 		LowWater:            5000,
-		MaxDestinationQueue: 5000,
+		MaxDestinationQueue: webhookDestinationQueue,
 		RatePerSecond:       20,
 		RateBurst:           40,
 		IdleDelay:           100 * time.Millisecond,
@@ -94,8 +100,7 @@ func newWebhookRuntimeFromEnv(ctx context.Context, logger *slog.Logger) (*webhoo
 		repo.Close()
 		return nil, err
 	}
-	clear(masterKey)
-	return &webhookRuntime{repo: repo, lock: lock, worker: worker}, nil
+	return &webhookRuntime{repo: repo, lock: lock, worker: worker, secretCodec: resolver}, nil
 }
 
 // Run runs the worker until the process context is cancelled.

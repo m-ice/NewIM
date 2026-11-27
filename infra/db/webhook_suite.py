@@ -27,6 +27,16 @@ SUITES = {
     'security': {'package': './tests/integration/webhook', 'tests': ('TestWebhookSecurity',)},
     'redaction': {'package': './tests/integration/webhook', 'tests': ('TestWebhookRedaction',)},
     'lifecycle': {'package': './server/cmd/newim-server', 'tests': ('TestWebhookRuntimeLifecycle',)},
+    'management': {
+        'package': './server/cmd/newim-server',
+        'tests': ('TestWebhookManagement',),
+        'auth_database': True,
+    },
+    'management-security': {
+        'package': './server/cmd/newim-server',
+        'tests': ('TestWebhookManagementSecurity',),
+        'auth_database': True,
+    },
 }
 
 
@@ -87,6 +97,10 @@ def main():
             raise Failure('webhook integration cross compilation failed')
         with Database(commands, image, platform) as db:
             db.sql(migration_sql())
+            if suite.get('auth_database'):
+                # Keep authenticated loopback routes mounted without sharing worker state.
+                db.sql('CREATE DATABASE newim_webhook_auth')
+                db.sql(migration_sql(), database='newim_webhook_auth')
             commands.run(['docker', 'cp', str(binary), db.name+':/tmp/webhook.test'],
                          label='copy-owned-webhook-test-binary')
             run_tests(db, suite['tests'])

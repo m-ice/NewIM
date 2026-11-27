@@ -76,6 +76,14 @@ webhook-redaction: toolchain
 	go test -race -shuffle=on -count=1 ./server/webhook -run '^(TestWorkerRedactsDoerError|TestLogObserverRedactsSensitiveFields)$$'
 	python3 -B infra/db/webhook_suite.py redaction
 
+.PHONY: webhook-api webhook-api-security
+webhook-api: toolchain
+	python3 -B infra/db/webhook_suite.py management
+
+webhook-api-security: toolchain
+	go test -race -shuffle=on -count=1 ./server/webhookhttp ./server/api ./server/cmd/newim-server
+	python3 -B infra/db/webhook_suite.py management-security
+
 .PHONY: send-protocol-golden send-protocol-errors send-protocol-limits
 
 send-protocol-golden: toolchain

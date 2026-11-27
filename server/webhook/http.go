@@ -56,21 +56,11 @@ func (c *SecureClient) Do(ctx context.Context, rawURL string, headers map[string
 	if c == nil || c.resolver == nil || ctx == nil || len(body) > int(c.maxBody) {
 		return Response{}, Fail(CodeInvalidConfig)
 	}
-	target, err := url.Parse(rawURL)
-	if err != nil || target.IsAbs() == false || target.Host == "" || target.User != nil || target.Fragment != "" || target.Opaque != "" {
-		return Response{}, Fail(CodeInvalidConfig)
+	target, err := parseEndpoint(rawURL, c.policy.AllowHTTP)
+	if err != nil {
+		return Response{}, err
 	}
 	host := target.Hostname()
-	if host == "" || strings.ContainsAny(host, "\r\n\t ") {
-		return Response{}, Fail(CodeInvalidConfig)
-	}
-	httpsRequired := !strings.EqualFold(target.Scheme, "https")
-	if httpsRequired && !c.policy.AllowHTTP {
-		return Response{}, Fail(CodeInvalidConfig)
-	}
-	if !strings.EqualFold(target.Scheme, "https") && !strings.EqualFold(target.Scheme, "http") {
-		return Response{}, Fail(CodeInvalidConfig)
-	}
 	port := target.Port()
 	if port == "" {
 		if strings.EqualFold(target.Scheme, "https") {
@@ -85,7 +75,7 @@ func (c *SecureClient) Do(ctx context.Context, rawURL string, headers map[string
 	}
 	approved := make([]string, 0, len(addresses))
 	for _, resolved := range addresses {
-		if !c.allowed(resolved.IP) {
+		if !c.policy.allowsAddress(resolved.IP) {
 			continue
 		}
 		approved = append(approved, resolved.IP.String())
@@ -154,6 +144,21 @@ func (c *SecureClient) Do(ctx context.Context, rawURL string, headers map[string
 	return Response{StatusCode: response.StatusCode, Body: responseBody, RetryAfter: parseRetryAfter(response.Header.Get("Retry-After"))}, nil
 }
 
+func parseEndpoint(rawURL string, allowHTTP bool) (*url.URL, error) {
+	target, err := url.Parse(rawURL)
+	if err != nil || !target.IsAbs() || target.Host == "" || target.User != nil || target.Fragment != "" || target.Opaque != "" {
+		return nil, Fail(CodeInvalidConfig)
+	}
+	host := target.Hostname()
+	if host == "" || strings.ContainsAny(host, "\r\n\t ") {
+		return nil, Fail(CodeInvalidConfig)
+	}
+	if !strings.EqualFold(target.Scheme, "https") && !(allowHTTP && strings.EqualFold(target.Scheme, "http")) {
+		return nil, Fail(CodeInvalidConfig)
+	}
+	return target, nil
+}
+
 func parseRetryAfter(value string) time.Duration {
 	if value == "" {
 		return 0
@@ -184,17 +189,17 @@ func classifyHTTPError(ctx context.Context, err error) error {
 	return Fail(CodeHTTPTemporary)
 }
 
-func (c *SecureClient) allowed(ip net.IP) bool {
+func (p Policy) allowsAddress(ip net.IP) bool {
 	addr, ok := netip.AddrFromSlice(ip)
 	if !ok {
 		return false
 	}
 	addr = addr.Unmap()
 	if addr.IsLoopback() {
-		return c.policy.AllowLoopback
+		return p.AllowLoopback
 	}
 	if addr.IsPrivate() {
-		return c.policy.AllowPrivate
+		return p.AllowPrivate
 	}
 	if !addr.IsGlobalUnicast() {
 		return false

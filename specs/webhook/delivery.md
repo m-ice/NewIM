@@ -1,12 +1,12 @@
 # Internal webhook delivery core
 
-本文定义 NIM-WHK-001 的内部 Webhook fan-out 与投递状态机。它复用 PRT-003 的
-`webhook-v1` envelope，不定义公开管理 API、Bot、Push、登录、retention 或消息事务。
+本文定义内部 Webhook fan-out 与投递状态机，复用 PRT-003 的 `webhook-v1` envelope。
+目标管理和手动回放见 [管理接口](management.md)。
 
 ## Inputs and boundaries
 
 - 输入是既有 `im_outbox_events` 和已提交消息，不新增消息业务规则。
-- endpoint 与 secret 只由受信任内部配置/数据库操作创建；本任务不提供 HTTP CRUD。
+- endpoint 与 secret 由受信任部署方创建。管理 API 默认关闭。
 - 生产只允许 HTTPS；secret 以加密封存材料保存，worker 通过 `SecretResolver` 解封。
 - 投递是 at-least-once、可乱序；消费者按 `deliveryId`/`eventId` 幂等。
 
@@ -48,7 +48,8 @@ pending/retry/leased -> cancelled (endpoint revoked)
   token 不匹配或 attempt 耗尽不得发请求。
 - `Finish` 必须校验 live token。成功 2xx 为 delivered；不可重试 4xx/3xx 为
   dead_letter；网络、408、429、5xx 在 attempt 未耗尽时进入 retry。退避有上限并
-  带稳定 jitter；429 的 `Retry-After` 只能在硬上限内采纳；终态不可重新领取。
+  带稳定 jitter；429 的 `Retry-After` 只能在硬上限内采纳。具备回放资格的死信通过
+  管理事务进入单次新重试轮次。
 - endpoint revoke 后新 claim、fan-out 被禁止，pending/retry/leased 可取消；历史
   delivery 不删除。既有已开始的单次请求只在 request deadline 内完成。
 

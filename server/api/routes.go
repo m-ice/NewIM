@@ -5,7 +5,7 @@ import (
 	"strings"
 )
 
-const maxTrustedAPIRoutes = 12
+const maxTrustedAPIRoutes = 18
 
 // APIRoute is a bounded exact route supplied by a trusted process composer.
 // AllowedMethods is omitted or nil for the backward-compatible GET default.

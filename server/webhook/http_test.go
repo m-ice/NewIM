@@ -142,7 +142,7 @@ func TestSecureClientAddressPolicy(t *testing.T) {
 		{"8.8.8.8", true},
 		{"2001:4860:4860::8888", true},
 	} {
-		if got := client.allowed(net.ParseIP(test.ip)); got != test.allowed {
+		if got := client.policy.allowsAddress(net.ParseIP(test.ip)); got != test.allowed {
 			t.Fatalf("allowed(%s)=%v want %v", test.ip, got, test.allowed)
 		}
 	}

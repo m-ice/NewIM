@@ -649,7 +649,11 @@ func TestImportBoundary(t *testing.T) {
 				value := strings.Trim(imported.Path.Value, `"`)
 				authComposer := dir == "../cmd/newim-server" && entry.Name() == "auth_runtime.go" &&
 					(value == "github.com/m-ice/NewIM/server/auth/login" || value == "github.com/m-ice/NewIM/server/storage/user")
-				if strings.Contains(value, ".") && !allowedModule[value] && !authComposer {
+				webhookComposer := dir == "../cmd/newim-server" && entry.Name() == "webhook_management.go" &&
+					value == "github.com/m-ice/NewIM/server/webhookhttp"
+				webhookIntegration := dir == "../cmd/newim-server" && entry.Name() == "webhook_management_integration_test.go" &&
+					value == "github.com/jackc/pgx/v5"
+				if strings.Contains(value, ".") && !allowedModule[value] && !authComposer && !webhookComposer && !webhookIntegration {
 					t.Fatalf("%s imports forbidden module %q", path, value)
 				}
 			}

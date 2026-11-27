@@ -158,3 +158,6 @@ jobs:
       - name: Exercise durable webhook fan-out, signing, security and redaction
         timeout-minutes: 20
         run: make webhook-protocol webhook-recovery webhook-security webhook-redaction
+      - name: Exercise webhook endpoint management and delivery replay
+        timeout-minutes: 15
+        run: make webhook-api webhook-api-security

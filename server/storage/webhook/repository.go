@@ -270,8 +270,8 @@ func (r *Repository) Fanout(ctx context.Context, now time.Time, limit, maxDestin
 		return 0, err
 	}
 	defer rollback(tx)
-	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('newim.webhook.fanout'))`); err != nil {
-		return 0, mapStorageError(err)
+	if err = lockFanout(ctx, tx); err != nil {
+		return 0, err
 	}
 	var globalPending int
 	if err = tx.QueryRow(ctx, `SELECT count(*)::int FROM newim.im_webhook_deliveries WHERE status IN ('pending','retry','leased')`).Scan(&globalPending); err != nil {
@@ -399,6 +399,11 @@ func (r *Repository) Claim(ctx context.Context, now time.Time, owner string, lea
 		return nil, err
 	}
 	defer rollback(tx)
+	// A claim and an endpoint revocation must observe a committed order.
+	// 投递领取与目标吊销按事务提交顺序生效。
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock_shared(hashtext('newim.webhook.fanout'))`); err != nil {
+		return nil, mapStorageError(err)
+	}
 	if _, err = tx.Exec(ctx, `UPDATE newim.im_webhook_deliveries
 SET status='retry', next_attempt_at=clock_timestamp(), lease_owner=NULL, lease_token=NULL, lease_expires_at=NULL, updated_at=clock_timestamp()
 WHERE status='leased' AND lease_expires_at <= clock_timestamp()`); err != nil {
@@ -476,6 +481,18 @@ func (r *Repository) BeginAttempt(ctx context.Context, deliveryID, leaseToken st
 		return false, err
 	}
 	defer rollback(tx)
+	// Authorize the attempt before a revocation can commit. Keep the same
+	// endpoint-before-delivery lock order as management transactions.
+	var active bool
+	err = tx.QueryRow(ctx, `SELECT e.status='active' AND e.revoked_at IS NULL FROM newim.im_webhook_endpoints e
+JOIN newim.im_webhook_deliveries d ON d.destination_id=e.destination_id
+WHERE d.delivery_id=$1 FOR SHARE OF e`, deliveryID).Scan(&active)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return false, mapStorageError(err)
+	}
+	if err == nil && !active {
+		return false, nil
+	}
 	tag, err := tx.Exec(ctx, `UPDATE newim.im_webhook_deliveries d
 SET attempts=attempts+1,lease_expires_at=GREATEST(lease_expires_at,clock_timestamp()+make_interval(secs=>$4)),updated_at=clock_timestamp()
 FROM newim.im_webhook_endpoints e
@@ -570,6 +587,11 @@ func (r *Repository) begin(ctx context.Context) (pgx.Tx, error) {
 		return nil, mapStorageError(err)
 	}
 	return tx, nil
+}
+
+func lockFanout(ctx context.Context, tx pgx.Tx) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtext('newim.webhook.fanout'))`)
+	return mapStorageError(err)
 }
 
 func newID() (string, error) {

@@ -42,6 +42,7 @@ FRIEND_TABLES = {'im_friend_edges', 'im_friend_applications', 'im_friend_sync_ac
 GROUP_TABLES = {'im_groups', 'im_group_requests', 'im_group_sync_accounts', 'im_group_sync_changes'}
 ACCOUNT_REVOCATION_TABLES = {'im_account_revocation_requests'}
 CONVERSATION_ACCOUNT_TABLES = {'im_conversation_account_settings'}
+WEBHOOK_MANAGEMENT_TABLES = {'im_webhook_management_audit'}
 
 
 def source_migrations():
@@ -74,10 +75,20 @@ def check_catalog(db, target=None):
     expected |= GROUP_TABLES if target >= 12 else set()
     expected |= ACCOUNT_REVOCATION_TABLES if target >= 13 else set()
     expected |= CONVERSATION_ACCOUNT_TABLES if target >= 18 else set()
+    expected |= WEBHOOK_MANAGEMENT_TABLES if target >= 19 else set()
     actual_tables = set(db.sql("SELECT tablename FROM pg_tables WHERE schemaname='newim';").splitlines())
     if actual_tables != expected:
         raise Failure('exact catalog table set: missing='+repr(sorted(expected-actual_tables))+
                       ' extra='+repr(sorted(actual_tables-expected)))
+    if target >= 19:
+        scalar(db, """SELECT count(*) FROM pg_index
+WHERE indisvalid AND indisready AND indexrelid IN (
+  'newim.im_webhook_management_replay_request_idx'::regclass,
+  'newim.im_webhook_management_replay_delivery_idx'::regclass,
+  'newim.im_webhook_deliveries_management_idx'::regclass,
+  'newim.im_webhook_endpoints_active_idx'::regclass,
+  'newim.im_webhook_revisions_key_idx'::regclass
+);""", 5, 'webhook management uses valid indexes')
     scalar(db, "SELECT count(*) FROM pg_constraint WHERE connamespace='newim'::regnamespace AND contype='f' AND confdeltype<>'a';",
            0, 'no cascading deletes')
     functions = db.sql("SELECT p.oid::regprocedure::text FROM pg_proc p WHERE pronamespace='newim'::regnamespace ORDER BY 1;").splitlines()
@@ -1349,6 +1360,43 @@ def conversation_account_settings_migration(db, commands):
     print('PASS populated 018 failure/termination rollback and unchanged settings history', flush=True)
 
 
+def webhook_management_migration(db, commands):
+    ensure_webhook_endpoint(db)
+    history = snapshot(db)
+    with tempfile.TemporaryDirectory(prefix='webhook-management-migration-copy-', dir=commands.directory) as owned:
+        directory = Path(owned)
+        for path in source_migrations():
+            (directory/path.name).write_bytes(path.read_bytes())
+        candidate = directory/'019_webhook_management.sql'
+        original = candidate.read_text()
+        candidate.write_text(original + "\nSELECT 1/0;\n")
+        db.sql(migration_sql(19, directory=directory), error='22012')
+        check_catalog(db, 18)
+        equal(snapshot(db), history, 'failed 019 preserves populated 018')
+        candidate.write_text(original + "\nSELECT pg_sleep(30);\n")
+        held = db.session("SET application_name='newim_webhook_management_migration_interrupt'; " +
+                          migration_sql(19, directory=directory))
+        db.wait_sql("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name="
+                    "'newim_webhook_management_migration_interrupt' AND wait_event='PgSleep');")
+        db.sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+               "WHERE application_name='newim_webhook_management_migration_interrupt';")
+        held.finish(error='57P01')
+        check_catalog(db, 18)
+        equal(snapshot(db), history, 'terminated 019 preserves populated 018')
+    db.sql(migration_sql(19))
+    check_catalog(db, 19)
+    added = WEBHOOK_MANAGEMENT_TABLES | {'migrations'}
+    equal({k: v for k, v in snapshot(db).items() if k not in added},
+          {k: v for k, v in history.items() if k not in added}, '019 preserves historical endpoint and delivery rows')
+    scalar(db, 'SELECT count(*) FROM newim.im_webhook_management_audit;', 0, '019 starts with empty audit')
+    insert = ('INSERT INTO newim.im_webhook_management_audit(action,request_id,destination_id,revision) VALUES ')
+    db.sql(insert+"('create','management_create','destination',1);")
+    db.sql(insert+"('bad','management_bad_action','destination',1);", error='23514')
+    db.sql(insert+"('replay','management_missing_delivery','destination',1);", error='23514')
+    db.sql(insert+"('update','management_unknown_revision','destination',2147483647);", error='23503')
+    print('PASS populated 019 failure/termination rollback and webhook audit constraints', flush=True)
+
+
 def migrations(db, commands):
     head = len(source_migrations())
     db.sql(migration_sql(1))
@@ -1380,6 +1428,7 @@ def migrations(db, commands):
     stranger_message_index_migration(db, commands)
     conversation_read_sync_migration(db, commands)
     conversation_account_settings_migration(db, commands)
+    webhook_management_migration(db, commands)
     after = snapshot(db)
     db.sql(migration_sql())
     equal(snapshot(db), after, 'head replay stable')

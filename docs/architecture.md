@@ -55,9 +55,10 @@ implementation and independent product acceptance remain separate.
 | `server/message` | Send validation, media preconditions, idempotent persistence orchestration, persisted ACK construction, and bounded request-local lifecycle observations. |
 | `server/sync/*` | Internal bounded conversation bootstrap/delta and message delta read services; trusted principals are supplied by their callers. |
 | `server/media` | Protocol-neutral media application rules and ports for grants, metadata, validation, and private download authorization. |
-| `server/webhook` | Policy-neutral outbox fan-out, at-least-once delivery, HMAC-v1 signing, fenced retry/dead-letter state, secure outbound HTTP and bounded operation/code observations; no message transaction, endpoint management or Push authority. |
+| `server/webhook` | Outbox fan-out, at-least-once delivery, HMAC-v1 signing, fenced retry and secure outbound HTTP. Defines the management store port. |
+| `server/webhookhttp` | Exact loopback deployment routes for endpoint lifecycle, delivery status and bounded dead-letter replay. |
 | `server/storage/*` | PostgreSQL adapters for message, auth/session, sync, media metadata and Webhook endpoint/delivery state; the NIM-SRV-008 auth/message pools share a `postgresidentity.Guard`; no wire or UI authority. |
-| `server` | Application services depend on domain rules and ports; transport/storage adapters implement those ports. `cmd/newim-server` runs the loopback API/Ops foundation, optional bearer/message composition and optional in-process Webhook worker; `cmd/newim-buildinfo` remains the local artifact diagnostic. |
+| `server` | Application services depend on domain rules and ports. `cmd/newim-server` runs the loopback API/Ops listeners, optional bearer/message routes and optional Webhook worker and deployment routes. `cmd/newim-buildinfo` provides local artifact diagnostics. |
 | `sdk/core` | Rust platform-neutral contracts and the host-driven outbox state machine; no Go runtime, SQLite, browser API, or UI dependency. |
 | `sdk/storage/sqlite` | Native SQLite LocalStore adapter with migrations, recovery, pending-outbox CAS, and bounded receipts. |
 | Platform wrappers (planned) | Translate host networking, lifecycle, storage and FFI concerns into SDK contracts; message semantics stay in core. |

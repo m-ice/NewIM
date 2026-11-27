@@ -64,7 +64,22 @@ func run(args []string, stdout, stderr io.Writer, read func() (buildinfo.Info, e
 		return 2
 	}
 
-	server, err := api.NewWithRoutes(cfg, logger, routes)
+	runtime, runtimeErr := newWebhookRuntimeFromEnv(ctx, logger)
+	if runtimeErr != nil {
+		closeRuntime()
+		fmt.Fprintln(stderr, errorCode(runtimeErr))
+		return 2
+	}
+	if runtime != nil {
+		defer runtime.Close()
+	}
+	managementRoutes, err := newWebhookManagementRoutes(ctx, cfg, runtime)
+	if err != nil {
+		closeRuntime()
+		fmt.Fprintln(stderr, errorCode(err))
+		return 2
+	}
+	server, err := api.NewWithRoutes(cfg, logger, append(routes, managementRoutes...))
 	if err != nil {
 		closeRuntime()
 		fmt.Fprintln(stderr, errorCode(err))
@@ -72,19 +87,12 @@ func run(args []string, stdout, stderr io.Writer, read func() (buildinfo.Info, e
 	}
 	server.AttachMetricsRegistry(metricsRegistry)
 
-	runtime, runtimeErr := newWebhookRuntimeFromEnv(ctx, logger)
-	if runtimeErr != nil {
-		closeRuntime()
-		fmt.Fprintln(stderr, errorCode(runtimeErr))
-		return 2
-	}
 	workerCtx, cancelWorker := context.WithCancel(ctx)
 	defer cancelWorker()
 	serverCtx, cancelServer := context.WithCancel(ctx)
 	defer cancelServer()
 	var runtimeDone chan error
 	if runtime != nil {
-		defer runtime.Close()
 		runtime.AttachMetricsSink(metricsSink)
 		server.AttachMetricsSource(webhookGaugeSource{store: runtime.repo})
 		runtimeDone = make(chan error, 1)

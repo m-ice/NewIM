@@ -11,7 +11,7 @@ import (
 )
 
 func TestAPIRouteCapacity(t *testing.T) {
-	routes := make([]APIRoute, 13)
+	routes := make([]APIRoute, 19)
 	for i := range routes {
 		suffix := strconv.Itoa(i)
 		routes[i] = APIRoute{
@@ -19,11 +19,11 @@ func TestAPIRouteCapacity(t *testing.T) {
 			Handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
 		}
 	}
-	if got, err := validateAPIRoutes(routes[:12]); err != nil || len(got) != 12 {
-		t.Fatalf("12 routes: accepted=%d error=%v", len(got), err)
+	if got, err := validateAPIRoutes(routes[:18]); err != nil || len(got) != 18 {
+		t.Fatalf("18 routes: accepted=%d error=%v", len(got), err)
 	}
 	if _, err := validateAPIRoutes(routes); codeOf(err) != CodeInvalidConfig {
-		t.Fatalf("13 routes: error=%v want %s", err, CodeInvalidConfig)
+		t.Fatalf("19 routes: error=%v want %s", err, CodeInvalidConfig)
 	}
 }
 

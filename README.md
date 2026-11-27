@@ -116,12 +116,12 @@ presented token and treats retries as idempotent; it does not revoke the session
 or sibling tokens. See [ADR 0019](docs/adr/0019-bearer-token-revocation.md) and
 the [token revocation specification](specs/http/session-logout.md).
 
-The same process can optionally run the internal Webhook worker when explicit
-DSN/master-key configuration is present. It consumes the message outbox with
-at-least-once delivery and the PRT-003 signed envelope, but exposes no public
-endpoint-management API or Push/login semantics. See
-[ADR 0015](docs/adr/0015-webhook-delivery.md) and the
-[delivery specification](specs/webhook/delivery.md).
+The same process can run the Webhook worker with an explicit DSN and master
+key. The worker consumes committed outbox events with signed at-least-once
+delivery. Setting `NEWIM_WEBHOOK_MANAGEMENT_TOKEN_FILE` enables endpoint
+management and bounded dead-letter replay on the loopback API after migration
+019. [Delivery specification](specs/webhook/delivery.md) ·
+[Management specification](specs/webhook/management.md)
 
 The NIM-SRV-008 contract adds the exact loopback route
 `POST /api/v1/messages` for already-issued bearer tokens and protocol text v1
