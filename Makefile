@@ -288,6 +288,16 @@ tls-message-security: toolchain
 tls-message-recovery: toolchain
 	python3 -B infra/db/tls_message_suite.py recovery
 
+.PHONY: group-check group-security group-recovery
+group-check: toolchain
+	python3 -B infra/db/group_suite.py check
+
+group-security: toolchain
+	python3 -B infra/db/group_suite.py security
+
+group-recovery: toolchain
+	python3 -B infra/db/group_suite.py recovery
+
 .PHONY: message-check message-recovery message-errors
 message-check: toolchain
 	python3 -B infra/db/message_suite.py check

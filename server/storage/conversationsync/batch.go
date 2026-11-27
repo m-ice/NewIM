@@ -6,15 +6,17 @@ import (
 	"slices"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/m-ice/NewIM/server/storage/membership"
 	app "github.com/m-ice/NewIM/server/sync/conversation"
 )
 
 // Batch binds declared sources/accounts to the caller's locked transaction.
 // Batch 将声明的会话和账户绑定到调用方已加锁的事务，不可并发使用。
 type Batch struct {
-	tx            pgx.Tx
-	conversations map[string]struct{}
-	users         map[string]struct{}
+	tx                pgx.Tx
+	conversations     map[string]struct{}
+	users             map[string]struct{}
+	activeMembersOnly bool
 }
 
 // PrepareBatch must precede all source mutations and row locks in a fresh
@@ -48,7 +50,14 @@ func (r *Repository) PrepareBatch(ctx context.Context, tx pgx.Tx, conversationID
 	if _, err = tx.Exec(ctx, "LOCK TABLE newim.im_conversation_members IN ROW EXCLUSIVE MODE"); err != nil {
 		return nil, fixed(err)
 	}
-	batch := &Batch{tx: tx, conversations: make(map[string]struct{}, len(conversations)), users: make(map[string]struct{}, len(users))}
+	activeMembersOnly, err := membership.Advanced(ctx, tx)
+	if err != nil {
+		return nil, fixed(err)
+	}
+	batch := &Batch{
+		tx: tx, activeMembersOnly: activeMembersOnly,
+		conversations: make(map[string]struct{}, len(conversations)), users: make(map[string]struct{}, len(users)),
+	}
 	for _, id := range conversations {
 		var found string
 		err = tx.QueryRow(ctx, "SELECT conversation_id FROM newim.im_conversations WHERE conversation_id=$1 FOR UPDATE", id).Scan(&found)
@@ -117,8 +126,7 @@ func (b *Batch) record(ctx context.Context, conversation, user string, remove bo
 	}
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	var member bool
-	err := b.tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM newim.im_conversation_members WHERE user_id=$1 AND conversation_id=$2)", user, conversation).Scan(&member)
+	member, err := hasMember(ctx, b.tx, user, conversation, b.activeMembersOnly)
 	if err != nil {
 		return 0, fixed(err)
 	}

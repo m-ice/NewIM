@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/m-ice/NewIM/server/storage/membership"
 	"github.com/m-ice/NewIM/server/storage/postgresidentity"
 	app "github.com/m-ice/NewIM/server/sync/message"
 )
@@ -146,15 +147,31 @@ func (r *Repository) read(ctx context.Context, user string, request app.ReadRequ
 			return app.ReadResult{}, app.Fail(app.StorageUnavailable)
 		}
 	}
-	latestSeq, latestID, latestSeqFromPointer, err := readHead(ctx, tx, user, request.ConversationID)
+	advanced, err := membership.Advanced(ctx, tx)
+	if err != nil {
+		return app.ReadResult{}, fixed(err)
+	}
+	head, err := readHead(ctx, tx, user, request.ConversationID, advanced)
 	if err != nil {
 		return app.ReadResult{}, err
 	}
-	if err = validateHead(ctx, tx, request.ConversationID, latestSeq, latestID, latestSeqFromPointer); err != nil {
+	if err = validateHead(ctx, tx, request.ConversationID, head.latestSeq, head.latestID, head.pointerSeq); err != nil {
 		return app.ReadResult{}, err
 	}
-	if request.HasAfterSeq && request.AfterSeq > 0 {
-		present, err := anchorPresent(ctx, tx, request.ConversationID, request.AfterSeq)
+
+	visibleSeq := head.latestSeq
+	if head.departedThroughSeq != nil {
+		if *head.departedThroughSeq > head.latestSeq {
+			return app.ReadResult{}, app.Fail(app.StorageUnavailable)
+		}
+		visibleSeq = *head.departedThroughSeq
+	}
+	lower, err := request.EffectiveAfterSeq(head.historyAfterSeq, visibleSeq)
+	if err != nil {
+		return app.ReadResult{}, err
+	}
+	if lower > head.historyAfterSeq {
+		present, err := anchorPresent(ctx, tx, request.ConversationID, lower)
 		if err != nil {
 			return app.ReadResult{}, err
 		}
@@ -162,25 +179,18 @@ func (r *Repository) read(ctx context.Context, user string, request app.ReadRequ
 			return app.ReadResult{}, app.Fail(app.InvalidCursor)
 		}
 	}
-	if (!request.HasAfterSeq && request.AfterSeq != 0) || request.AfterSeq < 0 || request.AfterSeq > latestSeq {
-		return app.ReadResult{}, app.Fail(app.InvalidCursor)
-	}
 	limit, err := normalizeLimit(request.Limit)
 	if err != nil {
 		return app.ReadResult{}, err
 	}
-	lower := int64(-1)
-	if request.HasAfterSeq {
-		lower = request.AfterSeq
-	}
-	rows, err := readRows(ctx, tx, request.ConversationID, lower, latestSeq, limit+1)
+	rows, err := readRows(ctx, tx, request.ConversationID, lower, visibleSeq, limit+1)
 	if err != nil {
 		return app.ReadResult{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return app.ReadResult{}, app.Fail(app.StorageUnavailable)
 	}
-	return app.ReadResult{LatestSeq: latestSeq, Limit: limit, Rows: rows}, nil
+	return app.ReadResult{HistoryAfterSeq: head.historyAfterSeq, LatestSeq: visibleSeq, Limit: limit, Rows: rows}, nil
 }
 
 func (r *Repository) begin(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
@@ -214,27 +224,38 @@ func verifyReadTransaction(ctx context.Context, tx pgx.Tx) error {
 	return nil
 }
 
-func readHead(ctx context.Context, tx pgx.Tx, user, conversationID string) (int64, *string, *int64, error) {
-	var latestSeq int64
-	var latestID *string
-	var pointerSeq *int64
-	err := tx.QueryRow(ctx, `SELECT c.last_seq, c.latest_server_msg_id, m.conversation_seq
+type conversationHead struct {
+	latestSeq          int64
+	latestID           *string
+	pointerSeq         *int64
+	historyAfterSeq    int64
+	departedThroughSeq *int64
+}
+
+func readHead(ctx context.Context, tx pgx.Tx, user, conversationID string, advanced bool) (conversationHead, error) {
+	var head conversationHead
+	history := "0::bigint, NULL::bigint"
+	if advanced {
+		history = "member.history_after_seq, member.departed_through_seq"
+	}
+	err := tx.QueryRow(ctx, "SELECT c.last_seq, c.latest_server_msg_id, m.conversation_seq, "+history+`
 FROM newim.im_conversations c
 JOIN newim.im_conversation_members member
   ON member.conversation_id = c.conversation_id AND member.user_id = $2
 LEFT JOIN newim.im_messages m
   ON m.conversation_id = c.conversation_id AND m.server_msg_id = c.latest_server_msg_id
-WHERE c.conversation_id = $1`, conversationID, user).Scan(&latestSeq, &latestID, &pointerSeq)
+WHERE c.conversation_id = $1`, conversationID, user).
+		Scan(&head.latestSeq, &head.latestID, &head.pointerSeq, &head.historyAfterSeq, &head.departedThroughSeq)
 	if errors.Is(err, pgx.ErrNoRows) {
-		return 0, nil, nil, app.Fail(app.Forbidden)
+		return conversationHead{}, app.Fail(app.Forbidden)
 	}
 	if err != nil {
-		return 0, nil, nil, fixed(err)
+		return conversationHead{}, fixed(err)
 	}
-	if latestSeq < 0 {
-		return 0, nil, nil, app.Fail(app.StorageUnavailable)
+	if head.latestSeq < 0 {
+		return conversationHead{}, app.Fail(app.StorageUnavailable)
 	}
-	return latestSeq, latestID, pointerSeq, nil
+	return head, nil
 }
 
 func validateHead(ctx context.Context, tx pgx.Tx, conversationID string, latestSeq int64, latestID *string, pointerSeq *int64) error {

@@ -15,6 +15,7 @@ import (
 	protocol "github.com/m-ice/NewIM/core/protocol/go"
 	"github.com/m-ice/NewIM/server/conversation"
 	app "github.com/m-ice/NewIM/server/message"
+	"github.com/m-ice/NewIM/server/storage/membership"
 	"github.com/m-ice/NewIM/server/storage/postgresidentity"
 )
 
@@ -33,6 +34,8 @@ type Config struct {
 	// DirectOnly limits sends and receipt replay to verified direct conversations.
 	// DirectOnly 仅允许在已核验的私聊中发送和重放回执。
 	DirectOnly bool
+	// ManagedGroups permits verified direct conversations and managed groups.
+	ManagedGroups bool
 	// Guard enables shared backend identity validation when non-nil.
 	// Guard 非 nil 时启用共享后端身份校验。
 	Guard *postgresidentity.Guard
@@ -45,6 +48,7 @@ type Repository struct {
 	authorizer    conversation.Authorizer
 	privatePolicy bool
 	directOnly    bool
+	managedGroups bool
 }
 
 // Open requires verified TLS for TCP or explicitly enabled local sockets.
@@ -53,7 +57,10 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 	if ctx == nil || config.DSN == "" || config.MaxConnections < 0 || config.MaxConnections > 8 {
 		return nil, app.Fail(app.SendStorageUnavailable)
 	}
-	if config.DirectOnly && (!config.PrivatePolicy || config.Guard == nil) {
+	if config.DirectOnly && config.ManagedGroups {
+		return nil, app.Fail(app.SendStorageUnavailable)
+	}
+	if (config.DirectOnly || config.ManagedGroups) && (!config.PrivatePolicy || config.Guard == nil) {
 		return nil, app.Fail(app.SendStorageUnavailable)
 	}
 	if config.ApplicationName != "" && !identifier(config.ApplicationName) {
@@ -114,10 +121,33 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 			return nil, err
 		}
 	}
-	return &Repository{
+	repository := &Repository{
 		pool: pool, authorizer: conversationAuthorizer{},
-		privatePolicy: config.PrivatePolicy, directOnly: config.DirectOnly,
-	}, nil
+		privatePolicy: config.PrivatePolicy, directOnly: config.DirectOnly, managedGroups: config.ManagedGroups,
+	}
+	if repository.managedGroups {
+		if err = repository.checkManagedGroupSchema(ctx); err != nil {
+			pool.Close()
+			return nil, err
+		}
+	}
+	return repository, nil
+}
+
+func (r *Repository) checkManagedGroupSchema(ctx context.Context) error {
+	tx, err := r.begin(ctx, pgx.TxOptions{AccessMode: pgx.ReadOnly})
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	advanced, err := membership.Advanced(ctx, tx)
+	if err != nil || !advanced {
+		return app.Fail(app.SendStorageUnavailable)
+	}
+	if _, err = tx.Exec(ctx, "SELECT group_id, muted, dissolved_at FROM newim.im_groups LIMIT 0"); err != nil {
+		return privateStorageError(err)
+	}
+	return privateStorageError(tx.Commit(ctx))
 }
 
 func installGuard(poolConfig *pgxpool.Config, guard *postgresidentity.Guard) {
@@ -160,20 +190,19 @@ func (r *Repository) Persist(ctx context.Context, principal conversation.Princip
 		return app.PersistedMessage{}, err
 	}
 	defer rollback(tx)
+	advanced, err := membership.Advanced(ctx, tx)
+	if err != nil {
+		return app.PersistedMessage{}, privateStorageError(err)
+	}
+	if r.managedGroups && !advanced {
+		return app.PersistedMessage{}, app.Fail(app.SendStorageUnavailable)
+	}
 	if err = r.authorizer.Authorize(ctx, conversationTx{tx: tx}, principal.UserID, request.ConversationID); err != nil {
 		return app.PersistedMessage{}, fixed(err)
 	}
-	if !r.directOnly {
-		receipt, found, err := loadReceipt(ctx, tx, principal.UserID, request)
-		if found || err != nil {
-			return receipt, err
-		}
-	}
-	if r.privatePolicy {
-		receipt, found, err := checkPrivateSend(ctx, tx, principal.UserID, request, r.directOnly)
-		if found || err != nil {
-			return receipt, err
-		}
+	receipt, found, err := r.checkSendPolicy(ctx, tx, principal.UserID, request, advanced)
+	if found || err != nil {
+		return receipt, err
 	}
 	if err = validate(); err != nil {
 		return app.PersistedMessage{}, fixed(err)

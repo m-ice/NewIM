@@ -68,6 +68,18 @@ type ReadRequest struct {
 	Limit          int
 }
 
+// EffectiveAfterSeq clamps a cursor to the authorized start of its snapshot.
+// EffectiveAfterSeq 将游标调整到当前快照的授权起点。
+func (r ReadRequest) EffectiveAfterSeq(historyAfterSeq, latestSeq int64) (int64, error) {
+	if historyAfterSeq < 0 || historyAfterSeq > latestSeq {
+		return 0, Fail(StorageUnavailable)
+	}
+	if (!r.HasAfterSeq && r.AfterSeq != 0) || r.AfterSeq < 0 || r.AfterSeq > latestSeq {
+		return 0, Fail(InvalidCursor)
+	}
+	return max(r.AfterSeq, historyAfterSeq), nil
+}
+
 // Item is one immutable persisted message row.
 // Item 是一条不可变的持久化消息行。
 type Item struct {
@@ -96,9 +108,10 @@ type Page struct {
 // effective limit used by the adapter.
 // ReadResult 是一次一致性存储快照；Limit 是适配器实际使用的规范化上限。
 type ReadResult struct {
-	LatestSeq int64
-	Limit     int
-	Rows      []Item
+	HistoryAfterSeq int64 // Exclusive lower bound from membership authorization.
+	LatestSeq       int64 // Inclusive visible head, possibly capped at departure.
+	Limit           int
+	Rows            []Item
 }
 
 // Store is the application-to-storage port.

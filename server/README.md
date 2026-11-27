@@ -112,6 +112,12 @@ and the [lifecycle specification](../specs/observability/server-message-lifecycl
 `NEWIM_TLS_MESSAGE_IP_ATTEMPTS_PER_MINUTE` 和 `NEWIM_TLS_MESSAGE_ACCOUNT_ATTEMPTS_PER_MINUTE` 调整。
 [私聊接入](../specs/http/tls-message-send.md)。运行 `make tls-message-check tls-message-security tls-message-recovery` 验证。
 
+应用迁移 012 并部署更新后的读写进程后，在已启用 TLS 消息发送的网关设置
+`NEWIM_GROUP_HTTP=1`，可开放受管小群的管理、消息发送和群变更读取。
+每进程每分钟的地址与账号预算默认分别为 120 和 60，可用
+`NEWIM_GROUP_IP_ATTEMPTS_PER_MINUTE` 和 `NEWIM_GROUP_ACCOUNT_ATTEMPTS_PER_MINUTE` 调整。
+[小群接口](../specs/group/membership.md)。运行 `make group-check group-security group-recovery` 验证。
+
 Run the root `make build`, `make check`, `make docs-check`, `make api-check`,
 `make api-recovery`, `make api-security`, `make auth-http-check`,
 `make auth-http-security`, `make auth-route-check`, `make auth-logout-check`,

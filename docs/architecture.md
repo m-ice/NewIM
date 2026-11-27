@@ -25,6 +25,9 @@ See [ADR 0027](adr/0027-friend-relationships.md).
 Native clients can create direct conversations and send text over the TLS gateway.
 The sender uses the existing durable ACK, and the receiving device reads the same committed sequence over WSS.
 See [ADR 0028](adr/0028-tls-private-messaging.md).
+The TLS gateway manages small groups, including membership approval, roles, muting and per-account changes.
+Group lifecycle writes share the conversation lock with message sends. Message reads honor the membership's history range.
+See [ADR 0029](adr/0029-group-membership.md).
 Public HTTP sync endpoints, UI, push delivery, complete credential verification, client
 lifecycle integration, retention/moderation/account erasure, and platform
 wrappers remain future work. A
@@ -48,6 +51,7 @@ implementation and independent product acceptance remain separate.
 | `server/auth/bearerhttp` | Policy-neutral `GET /api/v1/session` and exact `DELETE /api/v1/session/tokens/current` handlers with strict Authorization/body/route/method rules and stable HTTP errors; mounted only by explicit loopback auth composition. |
 | `server/messagehttp` | Exact loopback `POST /api/v1/messages` adapter: strict bearer/body/type checks, token-scoped logical identity, stable HTTP error mapping and ACK-after-commit; it owns no transaction or delivery semantics. |
 | `server/gateway` | Independent TLS listener for bearer-authenticated, single-conversation delivery and resume. Reads committed message sequence pages and records one-time handshake reservations in PostgreSQL. |
+| `server/group`, `server/grouphttp` | Managed group operations, role and membership commands, and owner-scoped changes over authenticated TLS. |
 | `server/message` | Send validation, media preconditions, idempotent persistence orchestration, persisted ACK construction, and bounded request-local lifecycle observations. |
 | `server/sync/*` | Internal bounded conversation bootstrap/delta and message delta read services; trusted principals are supplied by their callers. |
 | `server/media` | Protocol-neutral media application rules and ports for grants, metadata, validation, and private download authorization. |

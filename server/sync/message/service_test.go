@@ -155,6 +155,41 @@ func TestEmptyTerminalPageHasNoContinuation(t *testing.T) {
 	}
 }
 
+func TestReadAfterSeqHonorsAuthorizedHistoryWindow(t *testing.T) {
+	for _, tt := range []struct {
+		name       string
+		after      int64
+		hasAfter   bool
+		result     ReadResult
+		wantCode   Code
+		wantLength int
+	}{
+		{"initial read starts at authorized sequence", 0, false, ReadResult{HistoryAfterSeq: 5, LatestSeq: 7, Limit: 2, Rows: []Item{item(6), item(7)}}, "", 2},
+		{"older cursor starts at authorized sequence", 2, true, ReadResult{HistoryAfterSeq: 5, LatestSeq: 7, Limit: 2, Rows: []Item{item(6), item(7)}}, "", 2},
+		{"empty window", 0, true, ReadResult{HistoryAfterSeq: 5, LatestSeq: 5, Limit: 2}, "", 0},
+		{"past departure ceiling", 8, true, ReadResult{HistoryAfterSeq: 5, LatestSeq: 7, Limit: 2}, InvalidCursor, 0},
+		{"gap inside authorized window", 0, true, ReadResult{HistoryAfterSeq: 5, LatestSeq: 7, Limit: 2, Rows: []Item{item(7)}}, StorageUnavailable, 0},
+		{"message before authorized window", 0, true, ReadResult{HistoryAfterSeq: 5, LatestSeq: 7, Limit: 2, Rows: []Item{item(5), item(6)}}, StorageUnavailable, 0},
+		{"message after departure ceiling", 5, true, ReadResult{HistoryAfterSeq: 5, LatestSeq: 6, Limit: 2, Rows: []Item{item(6), item(7)}}, StorageUnavailable, 0},
+		{"invalid authorization bounds", 0, true, ReadResult{HistoryAfterSeq: 7, LatestSeq: 6, Limit: 2}, StorageUnavailable, 0},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			service, err := NewService(storeFunc(func(context.Context, string, ReadRequest) (ReadResult, error) {
+				return tt.result, nil
+			}), Config{})
+			if err != nil {
+				t.Fatal(err)
+			}
+			page, err := service.ReadAfterSeq(context.Background(), identity(t), ReadRequest{
+				ConversationID: "conversation", AfterSeq: tt.after, HasAfterSeq: tt.hasAfter, Limit: 2,
+			})
+			if ErrorCode(err) != tt.wantCode || len(page.Items) != tt.wantLength {
+				t.Fatalf("page=%+v error=%v, want %d items and %q", page, err, tt.wantLength, tt.wantCode)
+			}
+		})
+	}
+}
+
 func TestPageBudgetTruncatesAndKeepsContinuation(t *testing.T) {
 	payload := strings.Repeat("x", 65536)
 	rows := make([]Item, 0, 5)

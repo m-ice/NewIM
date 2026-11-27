@@ -5,6 +5,7 @@ import (
 	"errors"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/m-ice/NewIM/server/storage/membership"
 	app "github.com/m-ice/NewIM/server/sync/conversation"
 )
 
@@ -31,6 +32,10 @@ func (r *Repository) Read(ctx context.Context, user string, request app.ReadRequ
 		return result, err
 	}
 	defer rollback(tx)
+	activeMembersOnly, err := membership.Advanced(ctx, tx)
+	if err != nil {
+		return result, fixed(err)
+	}
 	if err = userExists(ctx, tx, user); err != nil {
 		return result, err
 	}
@@ -76,9 +81,9 @@ func (r *Repository) Read(ctx context.Context, user string, request app.ReadRequ
 		if request.AfterKey > result.TerminalKey {
 			return app.ReadResult{}, app.Fail(app.InvalidCursor)
 		}
-		err = readDirectory(ctx, tx, user, request.AfterKey, &result)
+		err = readDirectory(ctx, tx, user, request.AfterKey, activeMembersOnly, &result)
 	} else {
-		err = readDelta(ctx, tx, user, request, &result)
+		err = readDelta(ctx, tx, user, request, activeMembersOnly, &result)
 	}
 	if err != nil {
 		return app.ReadResult{}, err
@@ -89,7 +94,7 @@ func (r *Repository) Read(ctx context.Context, user string, request app.ReadRequ
 	return result, nil
 }
 
-func readDirectory(ctx context.Context, tx pgx.Tx, user, after string, result *app.ReadResult) error {
+func readDirectory(ctx context.Context, tx pgx.Tx, user, after string, activeMembersOnly bool, result *app.ReadResult) error {
 	// LIMIT precedes the first revision filter; future entries still consume budget.
 	// 先 LIMIT 再判断首个版本，未来目录键仍计入扫描预算。
 	rows, err := tx.Query(ctx, "SELECT conversation_id,first_change_seq FROM newim.im_conversation_sync_keys WHERE user_id=$1 AND conversation_id>$2 AND conversation_id<=$3 ORDER BY conversation_id LIMIT 200", user, after, result.TerminalKey)
@@ -125,7 +130,7 @@ func readDirectory(ctx context.Context, tx pgx.Tx, user, after string, result *a
 			if candidate.State == nil {
 				return app.Fail(app.StorageUnavailable)
 			}
-			if err = authorize(ctx, tx, user, &candidate); err != nil {
+			if err = authorize(ctx, tx, user, activeMembersOnly, &candidate); err != nil {
 				return err
 			}
 		}
@@ -134,7 +139,7 @@ func readDirectory(ctx context.Context, tx pgx.Tx, user, after string, result *a
 	return nil
 }
 
-func readDelta(ctx context.Context, tx pgx.Tx, user string, request app.ReadRequest, result *app.ReadResult) error {
+func readDelta(ctx context.Context, tx pgx.Tx, user string, request app.ReadRequest, activeMembersOnly bool, result *app.ReadResult) error {
 	rows, err := tx.Query(ctx, "SELECT conversation_id,change_seq,kind,latest_seq,latest_server_msg_id FROM newim.im_conversation_sync_changes WHERE user_id=$1 AND change_seq>$2 AND change_seq<=$3 ORDER BY change_seq LIMIT $4", user, int64(request.AfterSeq), int64(result.Fence), request.Limit+1)
 	if err != nil {
 		return fixed(err)
@@ -153,18 +158,19 @@ func readDelta(ctx context.Context, tx pgx.Tx, user string, request app.ReadRequ
 		return fixed(err)
 	}
 	for i := range result.Candidates {
-		if err = authorize(ctx, tx, user, &result.Candidates[i]); err != nil {
+		if err = authorize(ctx, tx, user, activeMembersOnly, &result.Candidates[i]); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func authorize(ctx context.Context, tx pgx.Tx, user string, candidate *app.Candidate) error {
+func authorize(ctx context.Context, tx pgx.Tx, user string, activeMembersOnly bool, candidate *app.Candidate) error {
 	if candidate.State.Kind != "upsert" {
 		return nil
 	}
-	err := tx.QueryRow(ctx, "SELECT EXISTS(SELECT 1 FROM newim.im_conversation_members WHERE user_id=$1 AND conversation_id=$2)", user, candidate.Key).Scan(&candidate.Member)
+	var err error
+	candidate.Member, err = hasMember(ctx, tx, user, candidate.Key, activeMembersOnly)
 	if err != nil {
 		return fixed(err)
 	}
@@ -172,6 +178,16 @@ func authorize(ctx context.Context, tx pgx.Tx, user string, candidate *app.Candi
 		candidate.Latest, err = latest(ctx, tx, user, candidate.Key, app.MaxSequence)
 	}
 	return err
+}
+
+func hasMember(ctx context.Context, tx pgx.Tx, user, conversation string, activeMembersOnly bool) (bool, error) {
+	query := "SELECT EXISTS(SELECT 1 FROM newim.im_conversation_members WHERE user_id=$1 AND conversation_id=$2)"
+	if activeMembersOnly {
+		query = "SELECT EXISTS(SELECT 1 FROM newim.im_conversation_members WHERE user_id=$1 AND conversation_id=$2 AND departed_at IS NULL)"
+	}
+	var member bool
+	err := tx.QueryRow(ctx, query, user, conversation).Scan(&member)
+	return member, err
 }
 
 func latest(ctx context.Context, tx pgx.Tx, user, conversation string, fence uint64) (*app.Item, error) {

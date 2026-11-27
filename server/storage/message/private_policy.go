@@ -104,13 +104,81 @@ func directPair(ctx context.Context, tx pgx.Tx, conversationID string) (userPair
 	return userPair{}, app.Fail(app.SendStorageUnavailable)
 }
 
-func checkPrivateSend(ctx context.Context, tx pgx.Tx, senderID string, request protocol.Send, directOnly bool) (app.PersistedMessage, bool, error) {
+func (r *Repository) checkSendPolicy(ctx context.Context, tx pgx.Tx, senderID string, request protocol.Send, advanced bool) (app.PersistedMessage, bool, error) {
+	if advanced {
+		managed, muted, err := groupSendPermission(ctx, tx, senderID, request.ConversationID)
+		if err != nil {
+			return app.PersistedMessage{}, false, err
+		}
+		if managed {
+			if r.directOnly {
+				return app.PersistedMessage{}, false, app.Fail(app.SendUnauthorized)
+			}
+			receipt, found, err := loadReceipt(ctx, tx, senderID, request)
+			if found || err != nil {
+				return receipt, found, err
+			}
+			if muted {
+				return app.PersistedMessage{}, false, app.Fail(app.SendUnauthorized)
+			}
+			return app.PersistedMessage{}, false, nil
+		}
+	}
+
+	strictDirect := r.directOnly || r.managedGroups
+	if !strictDirect {
+		receipt, found, err := loadReceipt(ctx, tx, senderID, request)
+		if found || err != nil {
+			return receipt, found, err
+		}
+	}
+	if r.privatePolicy {
+		return checkPrivateSend(ctx, tx, senderID, request, strictDirect)
+	}
+	return app.PersistedMessage{}, false, nil
+}
+
+// groupSendPermission runs with the conversation and sender member rows locked.
+// Mute restricts new sends, independently of eligibility to replay a receipt.
+func groupSendPermission(ctx context.Context, tx pgx.Tx, senderID, conversationID string) (bool, bool, error) {
+	var role *string
+	var managed, classified, departed, dissolved, groupMuted, memberMuted bool
+	err := tx.QueryRow(ctx, `SELECT g.group_id IS NOT NULL, COALESCE(c.kind = 'group', false),
+		m.group_role, m.departed_at IS NOT NULL, g.dissolved_at IS NOT NULL,
+		COALESCE(g.muted, false), COALESCE(m.mute_until > clock_timestamp(), false)
+	FROM newim.im_conversation_members m
+	JOIN newim.im_conversations c ON c.conversation_id = m.conversation_id
+	LEFT JOIN newim.im_groups g ON g.group_id = c.conversation_id
+	WHERE m.conversation_id = $1 AND m.user_id = $2`, conversationID, senderID).
+		Scan(&managed, &classified, &role, &departed, &dissolved, &groupMuted, &memberMuted)
+	if err != nil {
+		return false, false, privateStorageError(err)
+	}
+	if !managed && role == nil && !departed {
+		return false, false, nil
+	}
+	if !managed || !classified || role == nil || departed || dissolved {
+		return false, false, app.Fail(app.SendUnauthorized)
+	}
+	switch *role {
+	case "owner":
+		return true, false, nil
+	case "admin":
+		return true, memberMuted, nil
+	case "member":
+		return true, groupMuted || memberMuted, nil
+	default:
+		return false, false, app.Fail(app.SendUnauthorized)
+	}
+}
+
+func checkPrivateSend(ctx context.Context, tx pgx.Tx, senderID string, request protocol.Send, strictDirect bool) (app.PersistedMessage, bool, error) {
 	pair, err := directPair(ctx, tx, request.ConversationID)
 	if err != nil {
 		return app.PersistedMessage{}, false, err
 	}
 	if pair == (userPair{}) {
-		if directOnly {
+		if strictDirect {
 			return app.PersistedMessage{}, false, app.Fail(app.SendUnauthorized)
 		}
 		return app.PersistedMessage{}, false, nil
@@ -122,7 +190,7 @@ func checkPrivateSend(ctx context.Context, tx pgx.Tx, senderID string, request p
 	if err = pair.lock(ctx, tx); err != nil {
 		return app.PersistedMessage{}, false, err
 	}
-	if !directOnly {
+	if !strictDirect {
 		receipt, found, err := loadReceipt(ctx, tx, senderID, request)
 		if found || err != nil {
 			return receipt, found, err
@@ -131,7 +199,7 @@ func checkPrivateSend(ctx context.Context, tx pgx.Tx, senderID string, request p
 	if err = pair.verifyMembers(ctx, tx, request.ConversationID); err != nil {
 		return app.PersistedMessage{}, false, err
 	}
-	if directOnly {
+	if strictDirect {
 		// Verify the stored direct pair before replaying even an existing receipt.
 		receipt, found, err := loadReceipt(ctx, tx, senderID, request)
 		if found || err != nil {

@@ -63,16 +63,11 @@ func (s *Service) assemble(request ReadRequest, result ReadResult) (Page, error)
 	if result.LatestSeq < 0 || result.LatestSeq > MaxSequence || result.Limit < 1 || result.Limit > MaxPageItems || len(result.Rows) > result.Limit+1 {
 		return Page{}, Fail(StorageUnavailable)
 	}
-	if !request.HasAfterSeq {
-		if request.AfterSeq != 0 {
-			return Page{}, Fail(InvalidCursor)
-		}
-	} else {
-		if request.AfterSeq < 0 || request.AfterSeq > result.LatestSeq {
-			return Page{}, Fail(InvalidCursor)
-		}
+	afterSeq, err := request.EffectiveAfterSeq(result.HistoryAfterSeq, result.LatestSeq)
+	if err != nil {
+		return Page{}, err
 	}
-	if err := validateRows(request, result); err != nil {
+	if err := validateRows(request.ConversationID, afterSeq, result); err != nil {
 		return Page{}, err
 	}
 	rows := result.Rows
@@ -106,24 +101,18 @@ func (s *Service) assemble(request ReadRequest, result ReadResult) (Page, error)
 	return page, nil
 }
 
-func validateRows(request ReadRequest, result ReadResult) error {
+func validateRows(conversationID string, afterSeq int64, result ReadResult) error {
 	if len(result.Rows) == 0 {
-		if !request.HasAfterSeq {
-			if result.LatestSeq != 0 {
-				return Fail(StorageUnavailable)
-			}
-			return nil
-		}
-		if request.AfterSeq == result.LatestSeq {
+		if afterSeq == result.LatestSeq {
 			return nil
 		}
 		return Fail(StorageUnavailable)
 	}
 	for i, row := range result.Rows {
-		if row.ConversationID != request.ConversationID || !identifier(row.ServerMsgID) || !identifier(row.ClientMsgID) || !identifier(row.SenderID) || !identifier(row.ConversationID) {
+		if row.ConversationID != conversationID || !identifier(row.ServerMsgID) || !identifier(row.ClientMsgID) || !identifier(row.SenderID) || !identifier(row.ConversationID) {
 			return Fail(StorageUnavailable)
 		}
-		if row.ConversationSeq <= request.AfterSeq || row.ConversationSeq > result.LatestSeq {
+		if row.ConversationSeq <= afterSeq || row.ConversationSeq > result.LatestSeq {
 			return Fail(StorageUnavailable)
 		}
 		if row.ProtocolVersion == 0 || row.ProtocolVersion > 2147483647 || row.SchemaVersion == 0 || row.SchemaVersion > 2147483647 || !messageType(row.MessageType) || row.ServerTime < 0 || len(row.Payload) < 2 || len(row.Payload) > 65536 {
@@ -133,14 +122,7 @@ func validateRows(request ReadRequest, result ReadResult) error {
 			return Fail(StorageUnavailable)
 		}
 	}
-	expected := int64(1)
-	if request.HasAfterSeq && request.AfterSeq > 0 {
-		if request.AfterSeq == MaxSequence {
-			return Fail(StorageUnavailable)
-		}
-		expected = request.AfterSeq + 1
-	}
-	if result.Rows[0].ConversationSeq != expected {
+	if afterSeq == MaxSequence || result.Rows[0].ConversationSeq != afterSeq+1 {
 		return Fail(StorageUnavailable)
 	}
 	return nil

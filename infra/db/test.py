@@ -39,6 +39,7 @@ GATEWAY_TABLES = {'im_gateway_handshakes'}
 USER_PROFILE_TABLES = {'im_user_profiles'}
 FRIEND_TABLES = {'im_friend_edges', 'im_friend_applications', 'im_friend_sync_accounts',
                  'im_friend_sync_changes'}
+GROUP_TABLES = {'im_groups', 'im_group_requests', 'im_group_sync_accounts', 'im_group_sync_changes'}
 
 
 def source_migrations():
@@ -68,6 +69,7 @@ def check_catalog(db, target=None):
     expected |= GATEWAY_TABLES if target >= 9 else set()
     expected |= USER_PROFILE_TABLES if target >= 10 else set()
     expected |= FRIEND_TABLES if target >= 11 else set()
+    expected |= GROUP_TABLES if target >= 12 else set()
     actual_tables = set(db.sql("SELECT tablename FROM pg_tables WHERE schemaname='newim';").splitlines())
     if actual_tables != expected:
         raise Failure('exact catalog table set: missing='+repr(sorted(expected-actual_tables))+
@@ -94,6 +96,12 @@ def check_catalog(db, target=None):
                                "ORDER BY table_name,column_name;").splitlines()
     expected_admission = ['im_devices|last_active_at|YES', 'im_devices|platform|YES', 'im_sessions|admitted_at|YES']
     equal(admission_columns, expected_admission if target >= 8 else [], 'device admission metadata is additive and nullable')
+    group_columns = db.sql("SELECT column_name||'|'||data_type||'|'||is_nullable FROM information_schema.columns "
+                           "WHERE table_schema='newim' AND table_name='im_conversation_members' "
+                           "AND column_name NOT IN ('conversation_id','user_id') ORDER BY column_name;").splitlines()
+    expected_group = ['departed_at|timestamp with time zone|YES', 'departed_through_seq|bigint|YES',
+                      'group_role|text|YES', 'history_after_seq|bigint|NO', 'mute_until|timestamp with time zone|YES']
+    equal(group_columns, expected_group if target >= 12 else [], 'group member role and history column shapes')
     check_ledger(db, target)
 
 
@@ -291,6 +299,7 @@ def schema(db, commands):
     gateway_handshake_constraints(db)
     user_profile_constraints(db)
     friend_constraints(db)
+    group_constraints(db)
     media_constraints(db)
     webhook_constraints(db)
     print(f'PASS schema catalogs and {len(negatives)} negative writes', flush=True)
@@ -490,6 +499,59 @@ def friend_constraints(db):
         db.sql(sql, error=error)
     equal(snapshot(db), before, 'friend constraint failures preserve state')
     print(f'PASS friend schema constraints: {len(negatives)} rejected writes', flush=True)
+
+
+def group_constraints(db):
+    db.sql("INSERT INTO newim.im_users(user_id) VALUES ('group_applicant'); "
+           "INSERT INTO newim.im_conversations(conversation_id,kind) VALUES ('managed_group','group'); "
+           "INSERT INTO newim.im_groups(group_id,name) VALUES ('managed_group','Managed Group'); "
+           "INSERT INTO newim.im_conversation_members(conversation_id,user_id,group_role) VALUES "
+           "('managed_group','alice','owner'),('managed_group','bob','member'); "
+           "INSERT INTO newim.im_group_requests(group_id,actor_id,request_id,user_id,kind,state) VALUES "
+           "('managed_group','group_applicant','request1','group_applicant','join','pending'); "
+           "INSERT INTO newim.im_group_sync_accounts VALUES ('alice',1); "
+           "INSERT INTO newim.im_group_sync_changes VALUES "
+           "('alice',1,'managed_group','group_changed',jsonb_build_object('groupId','managed_group')); "
+           "UPDATE newim.im_conversation_members SET departed_at=clock_timestamp(),departed_through_seq=0 "
+           "WHERE conversation_id='managed_group' AND user_id='bob';")
+    scalar(db, "SELECT departed_through_seq FROM newim.im_conversation_members "
+           "WHERE conversation_id='managed_group' AND user_id='bob';", 0, 'departure from an empty group has a real zero bound')
+    scalar(db, "SELECT join_mode||'|'||member_limit||'|'||members_can_invite::text||'|'||"
+           "history_enabled::text||'|'||muted::text FROM newim.im_groups WHERE group_id='managed_group';",
+           '0|1000|true|true|false', 'initial group defaults')
+    negatives = [
+        ("UPDATE newim.im_conversation_members SET group_role='guest' WHERE conversation_id='managed_group';", '23514'),
+        ("UPDATE newim.im_conversation_members SET group_role='owner',departed_at=NULL,departed_through_seq=NULL "
+         "WHERE conversation_id='managed_group' AND user_id='bob';", '23505'),
+        ("UPDATE newim.im_conversation_members SET departed_at=NULL WHERE conversation_id='managed_group' AND user_id='bob';", '23514'),
+        ("UPDATE newim.im_conversation_members SET departed_through_seq=NULL "
+         "WHERE conversation_id='managed_group' AND user_id='bob';", '23514'),
+        ("UPDATE newim.im_conversation_members SET departed_through_seq=-1 "
+         "WHERE conversation_id='managed_group' AND user_id='bob';", '23514'),
+        ("UPDATE newim.im_conversation_members SET history_after_seq=1 "
+         "WHERE conversation_id='managed_group' AND user_id='bob';", '23514'),
+        ("UPDATE newim.im_conversation_members SET history_after_seq=-1 WHERE conversation_id='managed_group';", '23514'),
+        ("UPDATE newim.im_conversation_members SET mute_until='infinity' WHERE conversation_id='managed_group';", '23514'),
+        ("UPDATE newim.im_conversation_members SET history_after_seq=1 WHERE conversation_id='room';", '23514'),
+        ("UPDATE newim.im_groups SET join_mode=3 WHERE group_id='managed_group';", '23514'),
+        ("UPDATE newim.im_groups SET member_limit=1001 WHERE group_id='managed_group';", '23514'),
+        ("UPDATE newim.im_groups SET dissolved_at='infinity' WHERE group_id='managed_group';", '23514'),
+        ("INSERT INTO newim.im_groups(group_id,name) VALUES ('missing_conversation','Missing Group');", '23503'),
+        ("INSERT INTO newim.im_group_requests(group_id,actor_id,request_id,user_id,kind,state) VALUES "
+         "('managed_group','alice','request2','group_applicant','invite','pending');", '23505'),
+        ("UPDATE newim.im_group_requests SET kind='invite' WHERE group_id='managed_group';", '23514'),
+        ("UPDATE newim.im_group_requests SET state='accepted' WHERE group_id='managed_group';", '23514'),
+        ("UPDATE newim.im_group_requests SET responded_at=clock_timestamp(),responded_by='alice' "
+         "WHERE group_id='managed_group';", '23514'),
+        ("UPDATE newim.im_group_sync_changes SET payload='[]'::jsonb WHERE group_id='managed_group';", '23514'),
+        ("UPDATE newim.im_group_sync_changes SET revision=0 WHERE group_id='managed_group';", '23514'),
+        ("UPDATE newim.im_group_sync_changes SET kind='unknown' WHERE group_id='managed_group';", '23514'),
+    ]
+    before = snapshot(db)
+    for sql, error in negatives:
+        db.sql(sql, error=error)
+    equal(snapshot(db), before, 'group constraint failures preserve state')
+    print(f'PASS group schema constraints: {len(negatives)} rejected writes', flush=True)
 
 
 def media_constraints(db):
@@ -805,6 +867,37 @@ def friend_migration(db):
     print('PASS populated 011 preserves users, profiles, conversations and directional blocks', flush=True)
 
 
+def group_migration(db):
+    db.sql("UPDATE newim.im_conversations SET kind='group' WHERE conversation_id='room'; "
+           "INSERT INTO newim.im_conversations(conversation_id,kind,direct_user_low,direct_user_high) "
+           "VALUES ('migration_direct','direct','alice','bob'); "
+           "INSERT INTO newim.im_conversation_members VALUES ('migration_direct','alice'),('migration_direct','bob'); "
+           "INSERT INTO newim.im_read_states VALUES ('room','alice',1),('migration_direct','bob',0); "
+           "INSERT INTO newim.im_media_assets(media_key,owner_user_id,device_id,session_id,connection_id,token_id,"
+           "conversation_id,media_kind,content_type,declared_size_bytes,sha256,upload_grant_id,"
+           "upload_grant_digest,upload_expires_at,state) VALUES "
+           "('migration_existing_asset','alice','migration_media_phone','migration_media_session','old_connection',"
+           "'abcdef0123456789abcdef0123456789','room','image','image/png',8,decode(repeat('a1',32),'hex'),"
+           "repeat('b',32),decode(repeat('a2',32),'hex'),'2026-01-01 00:30:00+00','pending');")
+    member_projection = ("SELECT md5(string_agg(ROW(conversation_id,user_id)::text,E'\\n' "
+                         "ORDER BY conversation_id,user_id)) FROM newim.im_conversation_members;")
+    members = db.sql(member_projection)
+    historical = snapshot(db)
+    db.sql(migration_sql(12))
+    check_catalog(db, 12)
+    upgraded = snapshot(db)
+    changes = GROUP_TABLES | {'migrations', 'im_conversation_members'}
+    equal({k: v for k, v in upgraded.items() if k not in changes},
+          {k: v for k, v in historical.items() if k not in changes}, '012 preserves conversations, media, read states and other rows')
+    equal(db.sql(member_projection), members, '012 preserves historical membership identities and count')
+    scalar(db, "SELECT count(*) FROM newim.im_conversation_members WHERE group_role IS NOT NULL OR mute_until IS NOT NULL "
+           "OR history_after_seq<>0 OR departed_at IS NOT NULL OR departed_through_seq IS NOT NULL;",
+           0, '012 leaves all historical membership roles and bounds at legacy defaults')
+    for table in sorted(GROUP_TABLES):
+        scalar(db, f"SELECT count(*) FROM newim.{table};", 0, '012 leaves '+table+' empty')
+    print('PASS populated 012 preserves group/direct membership, historical messages, media and reads', flush=True)
+
+
 def migrations(db, commands):
     head = len(source_migrations())
     db.sql(migration_sql(1))
@@ -829,6 +922,7 @@ def migrations(db, commands):
     gateway_handshake_migration(db)
     user_profile_migration(db)
     friend_migration(db)
+    group_migration(db)
     after = snapshot(db)
     db.sql(migration_sql())
     equal(snapshot(db), after, 'head replay stable')

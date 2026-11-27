@@ -14,6 +14,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/m-ice/NewIM/server/auth/session"
 	app "github.com/m-ice/NewIM/server/media"
+	"github.com/m-ice/NewIM/server/storage/membership"
 )
 
 const requestTimeout = 5 * time.Second
@@ -111,7 +112,7 @@ func (r *Repository) BeginUpload(ctx context.Context, now time.Time, identity se
 		return err
 	}
 	defer rollback(tx)
-	if err = authorizeTx(ctx, tx, now, identity, conversationID); err != nil {
+	if err = authorizeTx(ctx, tx, now, identity, conversationID, true); err != nil {
 		return err
 	}
 	grant, err := create()
@@ -183,7 +184,7 @@ func (r *Repository) CompleteReady(ctx context.Context, now time.Time, identity 
 		return app.Grant{}, err
 	}
 	defer rollback(tx)
-	if err = authorizeTx(ctx, tx, now, identity, grant.ConversationID); err != nil {
+	if err = authorizeTx(ctx, tx, now, identity, grant.ConversationID, true); err != nil {
 		return app.Grant{}, err
 	}
 	ready, err := scanGrant(tx.QueryRow(ctx, `UPDATE newim.im_media_assets
@@ -248,25 +249,15 @@ func (r *Repository) Authorize(ctx context.Context, now time.Time, identity sess
 	}
 	readCtx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	var userID, deviceID string
-	err := r.pool.QueryRow(readCtx, `SELECT s.user_id,s.device_id
-FROM newim.im_conversation_members m
-JOIN newim.im_sessions s ON s.session_id=$3
-JOIN newim.im_auth_tokens t ON t.token_id=$5 AND t.session_id=s.session_id
-WHERE m.conversation_id=$4 AND m.user_id=$1 AND s.user_id=$1 AND s.device_id=$2
-  AND s.revoked_at IS NULL AND t.revoked_at IS NULL AND t.expires_at> $6`,
-		identity.UserID(), identity.DeviceID(), identity.SessionID(), conversationID,
-		identity.TokenID(), now).Scan(&userID, &deviceID)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return app.Fail(app.MediaUnauthorized)
-	}
+	tx, err := r.beginReadOnly(readCtx)
 	if err != nil {
-		return mapStorageError(err)
+		return err
 	}
-	if userID != identity.UserID() || deviceID != identity.DeviceID() {
-		return app.Fail(app.MediaUnauthorized)
+	defer rollback(tx)
+	if err = authorizeTx(readCtx, tx, now, identity, conversationID, false); err != nil {
+		return err
 	}
-	return nil
+	return mapStorageError(tx.Commit(readCtx))
 }
 
 // ValidateReadyForSend checks exact ready/owner/conversation-bound metadata.
@@ -278,8 +269,16 @@ func (r *Repository) ValidateReadyForSend(ctx context.Context, now time.Time, id
 	}
 	readCtx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	var found int
-	err := r.pool.QueryRow(readCtx, `SELECT 1
+	tx, err := r.beginReadOnly(readCtx)
+	if err != nil {
+		return err
+	}
+	defer rollback(tx)
+	advanced, err := membership.Advanced(readCtx, tx)
+	if err != nil {
+		return mapStorageError(err)
+	}
+	query := `SELECT 1
 FROM newim.im_media_assets a
 JOIN newim.im_conversation_members m ON m.conversation_id=a.conversation_id AND m.user_id=a.owner_user_id
 JOIN newim.im_sessions s ON s.session_id=a.session_id AND s.user_id=a.owner_user_id AND s.device_id=a.device_id
@@ -288,7 +287,12 @@ WHERE a.media_key=$1 AND a.state='ready'
   AND a.owner_user_id=$2 AND a.device_id=$3 AND a.session_id=$4 AND a.connection_id=$5 AND a.token_id=$6
   AND a.conversation_id=$7 AND a.media_kind=$8 AND a.content_type=$9
   AND a.declared_size_bytes=$10 AND a.actual_size_bytes=$10 AND a.sha256=$11
-  AND m.user_id=$2 AND s.revoked_at IS NULL AND t.revoked_at IS NULL AND t.expires_at> $12`,
+  AND m.user_id=$2 AND s.revoked_at IS NULL AND t.revoked_at IS NULL AND t.expires_at> $12`
+	if advanced {
+		query += " AND m.departed_at IS NULL"
+	}
+	var found int
+	err = tx.QueryRow(readCtx, query,
 		metadata.MediaKey, identity.UserID(), identity.DeviceID(), identity.SessionID(),
 		identity.ConnectionID(), identity.TokenID(), conversationID, metadata.Kind, metadata.ContentType,
 		metadata.Size, metadata.SHA256[:], now).Scan(&found)
@@ -298,7 +302,7 @@ WHERE a.media_key=$1 AND a.state='ready'
 	if err != nil {
 		return mapStorageError(err)
 	}
-	return nil
+	return mapStorageError(tx.Commit(readCtx))
 }
 
 func (r *Repository) begin(ctx context.Context) (pgx.Tx, error) {
@@ -334,15 +338,28 @@ func configure(ctx context.Context, tx pgx.Tx) error {
 	return mapStorageError(err)
 }
 
-func authorizeTx(ctx context.Context, tx pgx.Tx, now time.Time, identity session.ConnectionIdentity, conversationID string) error {
-	var userID, deviceID string
-	err := tx.QueryRow(ctx, `SELECT s.user_id,s.device_id
+func authorizeTx(ctx context.Context, tx pgx.Tx, now time.Time, identity session.ConnectionIdentity, conversationID string, write bool) error {
+	advanced, err := membership.Advanced(ctx, tx)
+	if err != nil {
+		return mapStorageError(err)
+	}
+	query := `SELECT s.user_id,s.device_id
 FROM newim.im_conversation_members m
 JOIN newim.im_sessions s ON s.session_id=$3
 JOIN newim.im_auth_tokens t ON t.token_id=$5 AND t.session_id=s.session_id
 WHERE m.conversation_id=$4 AND m.user_id=$1 AND s.user_id=$1 AND s.device_id=$2
-  AND s.revoked_at IS NULL AND t.revoked_at IS NULL AND t.expires_at> $6
-FOR UPDATE OF s`,
+  AND s.revoked_at IS NULL AND t.revoked_at IS NULL AND t.expires_at> $6`
+	if advanced {
+		query += " AND m.departed_at IS NULL"
+	}
+	if write {
+		query += " FOR UPDATE OF s"
+		if advanced {
+			query += " FOR SHARE OF m"
+		}
+	}
+	var userID, deviceID string
+	err = tx.QueryRow(ctx, query,
 		identity.UserID(), identity.DeviceID(), identity.SessionID(), conversationID,
 		identity.TokenID(), now).Scan(&userID, &deviceID)
 	if errors.Is(err, pgx.ErrNoRows) {

@@ -16,9 +16,12 @@ import (
 	"github.com/m-ice/NewIM/server/friend"
 	"github.com/m-ice/NewIM/server/friendhttp"
 	"github.com/m-ice/NewIM/server/gateway"
+	"github.com/m-ice/NewIM/server/group"
+	"github.com/m-ice/NewIM/server/grouphttp"
 	messageservice "github.com/m-ice/NewIM/server/message"
 	"github.com/m-ice/NewIM/server/storage/authsession"
 	friendstore "github.com/m-ice/NewIM/server/storage/friend"
+	groupstore "github.com/m-ice/NewIM/server/storage/group"
 	messagestore "github.com/m-ice/NewIM/server/storage/message"
 	"github.com/m-ice/NewIM/server/storage/messagesync"
 	"github.com/m-ice/NewIM/server/storage/postgresidentity"
@@ -85,7 +88,8 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 
 	var profiles *userhttp.Handler
 	var friends *friendhttp.Handler
-	var privateMessages *gateway.MessageRoutes
+	var groups *grouphttp.Handler
+	var messageRoutes *gateway.MessageRoutes
 	if limits := cfg.profiles; limits != nil {
 		profileRepo, err := userstore.Open(startup, userstore.Config{
 			DSN: cfg.dsn, AllowLocalSocket: cfg.allowLocalSocket,
@@ -126,7 +130,7 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 		sendRepo, err := messagestore.Open(startup, messagestore.Config{
 			DSN: cfg.dsn, AllowLocalSocket: cfg.allowLocalSocket,
 			ApplicationName: "newim-gateway-send", Guard: guard,
-			PrivatePolicy: true, DirectOnly: true,
+			PrivatePolicy: true, DirectOnly: cfg.groups == nil, ManagedGroups: cfg.groups != nil,
 		})
 		if err != nil {
 			return errors.New("newim-gateway send storage unavailable")
@@ -139,7 +143,25 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 		if err != nil {
 			return errConfig
 		}
-		privateMessages, err = gateway.NewMessageRoutes(auth, sender, sendRepo, gateway.NewProfileBudget(limits.ip, limits.account))
+		messageRoutes, err = gateway.NewMessageRoutes(auth, sender, sendRepo, gateway.NewProfileBudget(limits.ip, limits.account))
+		if err != nil {
+			return errConfig
+		}
+	}
+	if limits := cfg.groups; limits != nil {
+		groupRepo, err := groupstore.Open(startup, groupstore.Config{
+			DSN: cfg.dsn, AllowLocalSocket: cfg.allowLocalSocket,
+			ApplicationName: "newim-gateway-groups", Guard: guard,
+		})
+		if err != nil {
+			return errors.New("newim-gateway group storage unavailable")
+		}
+		defer groupRepo.Close()
+		service, err := group.NewService(groupRepo)
+		if err != nil {
+			return errConfig
+		}
+		groups, err = grouphttp.New(service, auth, gateway.NewProfileBudget(limits.ip, limits.account))
 		if err != nil {
 			return errConfig
 		}
@@ -151,8 +173,10 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 			profiles.ServeHTTP(w, r)
 		case friends != nil && friendhttp.ContainsRoute(path):
 			friends.ServeHTTP(w, r)
-		case privateMessages != nil && gateway.ContainsMessageRoute(path):
-			privateMessages.ServeHTTP(w, r)
+		case groups != nil && grouphttp.ContainsRoute(path):
+			groups.ServeHTTP(w, r)
+		case messageRoutes != nil && gateway.ContainsMessageRoute(path):
+			messageRoutes.ServeHTTP(w, r)
 		default:
 			handler.ServeHTTP(w, r)
 		}
