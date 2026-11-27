@@ -334,6 +334,7 @@ message-delta-http-check: toolchain
 	python3 -B infra/db/message_delta_http_suite.py check
 
 message-delta-http-security: toolchain
+	go test -race -shuffle=on -count=1 ./server/sync/conversationhttp
 	python3 -B infra/db/message_delta_http_suite.py security
 
 message-delta-http-recovery: toolchain

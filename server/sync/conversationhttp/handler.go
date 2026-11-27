@@ -15,6 +15,7 @@ import (
 	"strings"
 
 	"github.com/m-ice/NewIM/server/auth/bearerhttp"
+	"github.com/m-ice/NewIM/server/auth/session"
 	"github.com/m-ice/NewIM/server/sync/conversation"
 	syncmessage "github.com/m-ice/NewIM/server/sync/message"
 	"github.com/m-ice/NewIM/server/userhttp"
@@ -86,10 +87,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeAuthError(w, http.StatusUnauthorized, bearerhttp.CodeInvalidToken)
 		return
 	}
-	identity, err := h.auth.AuthenticateBearer(r.Context(), token)
-	if err != nil {
-		status, code := bearerhttp.MapAuthenticationError(err)
-		writeAuthError(w, status, code)
+	identity, ok := h.authenticate(w, r.Context(), token)
+	if !ok {
 		return
 	}
 	if !h.budget.AllowAccount(identity.UserID()) {
@@ -101,7 +100,7 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if path == messagesRoute {
-		h.readMessages(w, r.Context(), identity, body)
+		h.readMessages(w, r.Context(), token, identity, body)
 		return
 	}
 	request, ok := decodeRequest(path, body)
@@ -117,6 +116,28 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	payload, err := json.Marshal(page)
 	if err != nil || len(payload) > conversation.MaxResponseBytes {
 		writeSyncError(w, string(conversation.StorageUnavailable))
+		return
+	}
+	h.writeVerifiedPage(w, r.Context(), token, identity, payload)
+}
+
+func (h *Handler) authenticate(w http.ResponseWriter, ctx context.Context, token string) (session.BearerSession, bool) {
+	identity, err := h.auth.AuthenticateBearer(ctx, token)
+	if err != nil {
+		status, code := bearerhttp.MapAuthenticationError(err)
+		writeAuthError(w, status, code)
+		return session.BearerSession{}, false
+	}
+	return identity, true
+}
+
+func (h *Handler) writeVerifiedPage(w http.ResponseWriter, ctx context.Context, token string, original session.BearerSession, payload []byte) {
+	current, ok := h.authenticate(w, ctx, token)
+	if !ok {
+		return
+	}
+	if current != original {
+		writeAuthError(w, http.StatusUnauthorized, bearerhttp.CodeInvalidToken)
 		return
 	}
 	writeJSON(w, http.StatusOK, payload)

@@ -1,6 +1,6 @@
 # 0033 · TLS 消息补拉
 
-会话同步网关增加 `POST /api/v1/sync/messages`，沿用 TLS、Bearer 会话、地址与账号限流及有界 JSON。请求使用 `conversationId`、`afterSeq` 和可选 `limit`。序号使用规范的十进制字符串，首次从 `"0"` 开始。
+会话同步网关增加 `POST /api/v1/sync/messages`，沿用 TLS、Bearer 会话、地址与账号限流及有界 JSON。同步页发送前再次核验会话，确保客户端仍持有有效的原绑定。请求使用 `conversationId`、`afterSeq` 和可选 `limit`。序号使用规范的十进制字符串，首次从 `"0"` 开始。
 
 同一消息快照返回 `historyAfterSeq` 和 `latestSeq`。前者是排他历史下界，后者是含端点的可见上界。消息从两种起点的较大值继续，序号在授权范围内连续。退群后使用离群时的可见上界。终页缺少可见尾序号时返回存储不可用。
 

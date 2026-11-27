@@ -16,7 +16,7 @@ import (
 
 const messagesRoute = "/api/v1/sync/messages"
 
-func (h *Handler) readMessages(w http.ResponseWriter, ctx context.Context, bearer session.BearerSession, body []byte) {
+func (h *Handler) readMessages(w http.ResponseWriter, ctx context.Context, token string, bearer session.BearerSession, body []byte) {
 	var wire struct {
 		ConversationID string         `json:"conversationId"`
 		AfterSeq       jsontext.Value `json:"afterSeq"`
@@ -58,7 +58,7 @@ func (h *Handler) readMessages(w http.ResponseWriter, ctx context.Context, beare
 		writeSyncError(w, string(syncmessage.ErrorCode(err)))
 		return
 	}
-	writeJSON(w, http.StatusOK, payload)
+	h.writeVerifiedPage(w, ctx, token, bearer, payload)
 }
 
 func encodeMessagePage(page syncmessage.Page) ([]byte, error) {
