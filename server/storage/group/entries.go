@@ -92,7 +92,7 @@ func (r *Repository) RequestEntry(ctx context.Context, actor string, request app
 	if err != nil {
 		return app.Entry{}, storageError(err)
 	}
-	if err = recordEntryChanges(ctx, tx, entry, direct); err != nil {
+	if err = r.recordEntryChanges(ctx, tx, entry, direct); err != nil {
 		return app.Entry{}, err
 	}
 	return committed(ctx, tx, entry)
@@ -144,7 +144,7 @@ func (r *Repository) Respond(ctx context.Context, actor string, request app.Resp
 	if err != nil {
 		return app.Entry{}, storageError(err)
 	}
-	if err = recordEntryChanges(ctx, tx, entry, admitted); err != nil {
+	if err = r.recordEntryChanges(ctx, tx, entry, admitted); err != nil {
 		return app.Entry{}, err
 	}
 	return committed(ctx, tx, entry)
@@ -202,7 +202,7 @@ func addMember(ctx context.Context, tx pgx.Tx, state groupRow, userID string) (a
 	return member, storageError(err)
 }
 
-func recordEntryChanges(ctx context.Context, tx pgx.Tx, entry app.Entry, admitted bool) error {
+func (r *Repository) recordEntryChanges(ctx context.Context, tx pgx.Tx, entry app.Entry, admitted bool) error {
 	var changes []accountChange
 	if admitted {
 		var err error
@@ -211,5 +211,11 @@ func recordEntryChanges(ctx context.Context, tx pgx.Tx, entry app.Entry, admitte
 			return err
 		}
 	}
-	return recordChanges(ctx, tx, entry.GroupID, append(changes, entryChanges(entry)...))
+	if err := recordChanges(ctx, tx, entry.GroupID, append(changes, entryChanges(entry)...)); err != nil {
+		return err
+	}
+	if admitted {
+		return r.recordConversationSource(ctx, tx, entry.GroupID, nil)
+	}
+	return nil
 }

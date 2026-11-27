@@ -41,6 +41,7 @@ const (
 	authIssuerTTLEnv           = "NEWIM_AUTH_ISSUER_TTL_SECONDS"
 	authAdmissionEnv           = "NEWIM_AUTH_DEVICE_ADMISSION"
 	authAccountRevocationEnv   = "NEWIM_AUTH_ACCOUNT_REVOCATION"
+	conversationProjectionEnv  = "NEWIM_CONVERSATION_PROJECTION"
 	authMaxDevicesEnv          = "NEWIM_AUTH_MAX_DEVICES"
 	authMaxPerPlatformEnv      = "NEWIM_AUTH_MAX_DEVICES_PER_PLATFORM"
 	authSingleDeviceEnv        = "NEWIM_AUTH_SINGLE_DEVICE"
@@ -179,6 +180,11 @@ func newAuthAndMessageRuntime(ctx context.Context, cfg api.Config, admission, pr
 	dsn := strings.TrimSpace(os.Getenv(authDSNEnv))
 	allowLocalSocket := os.Getenv(authAllowLocalSocketEnv) == "1"
 	messageEnabled := os.Getenv(messageHTTPEnv) == "1"
+	projectionValue := os.Getenv(conversationProjectionEnv)
+	if projectionValue != "" && projectionValue != "0" && projectionValue != "1" {
+		return nil, nil, api.ErrInvalidAuthConfig
+	}
+	projectConversations := projectionValue == "1"
 	privatePolicyValue := os.Getenv(privateMessagePolicyEnv)
 	privatePolicy := privatePolicyValue == "1"
 	if (privatePolicy && !messageEnabled) ||
@@ -213,10 +219,11 @@ func newAuthAndMessageRuntime(ctx context.Context, cfg api.Config, admission, pr
 	runtime.terminal = terminal
 	if profileEnabled {
 		runtime.profileRepo, err = userstore.Open(ctx, userstore.Config{
-			DSN:              dsn,
-			AllowLocalSocket: allowLocalSocket,
-			ApplicationName:  "newim-profile-http",
-			Guard:            guard,
+			DSN:                  dsn,
+			AllowLocalSocket:     allowLocalSocket,
+			ApplicationName:      "newim-profile-http",
+			Guard:                guard,
+			ProjectConversations: projectConversations,
 		})
 		if guard.Tripped() != nil {
 			runtime.Close()
@@ -232,12 +239,13 @@ func newAuthAndMessageRuntime(ctx context.Context, cfg api.Config, admission, pr
 	}
 
 	messageRepo, err := messagestore.Open(ctx, messagestore.Config{
-		DSN:              dsn,
-		AllowLocalSocket: allowLocalSocket,
-		MaxConnections:   8,
-		ApplicationName:  messageHTTPApplicationName,
-		Guard:            guard,
-		PrivatePolicy:    privatePolicy,
+		DSN:                  dsn,
+		AllowLocalSocket:     allowLocalSocket,
+		MaxConnections:       8,
+		ApplicationName:      messageHTTPApplicationName,
+		Guard:                guard,
+		PrivatePolicy:        privatePolicy,
+		ProjectConversations: projectConversations,
 	})
 	if err != nil {
 		runtime.Close()

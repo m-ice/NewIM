@@ -123,6 +123,11 @@ and the [lifecycle specification](../specs/observability/server-message-lifecycl
 [撤销接口](../specs/auth/account-revocation.md)。
 运行 `make auth-account-revoke-check auth-account-revoke-security auth-account-revoke-recovery` 验证。
 
+应用迁移 014 后，已升级的回环和 TLS 写进程可用 `NEWIM_CONVERSATION_PROJECTION=1` 记录会话投影。
+排空旧写进程并确认双写后，通过 `newim-sync-backfill` 核对存量账号。
+[会话投影回填](../specs/sync/conversation-backfill.md)。
+运行 `make sync-source-check sync-source-security sync-source-recovery` 验证。
+
 Run the root `make build`, `make check`, `make docs-check`, `make api-check`,
 `make api-recovery`, `make api-security`, `make auth-http-check`,
 `make auth-http-security`, `make auth-route-check`, `make auth-logout-check`,

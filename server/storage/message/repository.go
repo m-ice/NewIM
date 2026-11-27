@@ -15,6 +15,7 @@ import (
 	protocol "github.com/m-ice/NewIM/core/protocol/go"
 	"github.com/m-ice/NewIM/server/conversation"
 	app "github.com/m-ice/NewIM/server/message"
+	"github.com/m-ice/NewIM/server/storage/conversationsync"
 	"github.com/m-ice/NewIM/server/storage/membership"
 	"github.com/m-ice/NewIM/server/storage/postgresidentity"
 )
@@ -36,6 +37,8 @@ type Config struct {
 	DirectOnly bool
 	// ManagedGroups permits verified direct conversations and managed groups.
 	ManagedGroups bool
+	// ProjectConversations records source changes in the owning transaction.
+	ProjectConversations bool
 	// Guard enables shared backend identity validation when non-nil.
 	// Guard 非 nil 时启用共享后端身份校验。
 	Guard *postgresidentity.Guard
@@ -44,11 +47,12 @@ type Config struct {
 // Repository owns a bounded pgx pool and the membership authorizer.
 // Repository 持有有界 pgx 连接池与会话成员授权器。
 type Repository struct {
-	pool          *pgxpool.Pool
-	authorizer    conversation.Authorizer
-	privatePolicy bool
-	directOnly    bool
-	managedGroups bool
+	pool                 *pgxpool.Pool
+	authorizer           conversation.Authorizer
+	privatePolicy        bool
+	directOnly           bool
+	managedGroups        bool
+	projectConversations bool
 }
 
 // Open requires verified TLS for TCP or explicitly enabled local sockets.
@@ -124,12 +128,17 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 	repository := &Repository{
 		pool: pool, authorizer: conversationAuthorizer{},
 		privatePolicy: config.PrivatePolicy, directOnly: config.DirectOnly, managedGroups: config.ManagedGroups,
+		projectConversations: config.ProjectConversations,
 	}
 	if repository.managedGroups {
 		if err = repository.checkManagedGroupSchema(ctx); err != nil {
 			pool.Close()
 			return nil, err
 		}
+	}
+	if config.ProjectConversations && conversationsync.CheckSourceSchema(ctx, pool) != nil {
+		pool.Close()
+		return nil, app.Fail(app.SendStorageUnavailable)
 	}
 	return repository, nil
 }
@@ -190,6 +199,11 @@ func (r *Repository) Persist(ctx context.Context, principal conversation.Princip
 		return app.PersistedMessage{}, err
 	}
 	defer rollback(tx)
+	if r.projectConversations {
+		if err = conversationsync.LockSourceMembership(ctx, tx); err != nil {
+			return app.PersistedMessage{}, privateStorageError(err)
+		}
+	}
 	advanced, err := membership.Advanced(ctx, tx)
 	if err != nil {
 		return app.PersistedMessage{}, privateStorageError(err)
@@ -225,14 +239,19 @@ func (r *Repository) Persist(ctx context.Context, principal conversation.Princip
 	if !same {
 		return app.PersistedMessage{}, app.Fail(app.SendIDConflict)
 	}
-	if err = tx.Commit(ctx); err != nil {
-		return app.PersistedMessage{}, app.Fail(app.SendStorageUnavailable)
-	}
 	persisted := stored.persisted()
 	// A concurrent equal-intent retry is returned by persist_message's
 	// unique-violation path with the winner's generated identity.
 	// 并发等 intent 重试会通过 unique-violation 路径返回胜者的生成身份。
 	persisted.Replayed = stored.ServerMsgID != generated.ServerMsgID
+	if r.projectConversations && !persisted.Replayed {
+		if err = conversationsync.RecordSourceConversation(ctx, tx, request.ConversationID, nil); err != nil {
+			return app.PersistedMessage{}, privateStorageError(err)
+		}
+	}
+	if err = tx.Commit(ctx); err != nil {
+		return app.PersistedMessage{}, app.Fail(app.SendStorageUnavailable)
+	}
 	return persisted, nil
 }
 

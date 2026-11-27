@@ -9,10 +9,18 @@ import (
 	app "github.com/m-ice/NewIM/server/sync/conversation"
 )
 
+type readScope struct {
+	activeMembersOnly  bool
+	requireSourceReady bool
+}
+
 // Read releases its consistent snapshot before returning any candidate.
 // Read 在返回候选前释放一致性快照，不跨页保留事务。
 func (r *Repository) Read(ctx context.Context, user string, request app.ReadRequest) (app.ReadResult, error) {
 	var result app.ReadResult
+	if ctx == nil {
+		return result, app.Fail(app.StorageUnavailable)
+	}
 	if !identifier(user) {
 		return result, app.Fail(app.Forbidden)
 	}
@@ -39,8 +47,16 @@ func (r *Repository) Read(ctx context.Context, user string, request app.ReadRequ
 	if err = userExists(ctx, tx, user); err != nil {
 		return result, err
 	}
+	scope := readScope{activeMembersOnly: activeMembersOnly, requireSourceReady: r.requireSourceReady}
+	query := "SELECT epoch,last_change_seq,min_valid_seq FROM newim.im_conversation_sync_accounts WHERE user_id=$1"
+	if scope.requireSourceReady {
+		if !scope.activeMembersOnly {
+			return result, app.Fail(app.StorageUnavailable)
+		}
+		query += " AND source_ready"
+	}
 	var epoch, head, floor int64
-	err = tx.QueryRow(ctx, "SELECT epoch,last_change_seq,min_valid_seq FROM newim.im_conversation_sync_accounts WHERE user_id=$1", user).Scan(&epoch, &head, &floor)
+	err = tx.QueryRow(ctx, query, user).Scan(&epoch, &head, &floor)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return result, app.Fail(app.NotReady)
 	}
@@ -81,9 +97,9 @@ func (r *Repository) Read(ctx context.Context, user string, request app.ReadRequ
 		if request.AfterKey > result.TerminalKey {
 			return app.ReadResult{}, app.Fail(app.InvalidCursor)
 		}
-		err = readDirectory(ctx, tx, user, request.AfterKey, activeMembersOnly, &result)
+		err = readDirectory(ctx, tx, user, request.AfterKey, scope, &result)
 	} else {
-		err = readDelta(ctx, tx, user, request, activeMembersOnly, &result)
+		err = readDelta(ctx, tx, user, request, scope, &result)
 	}
 	if err != nil {
 		return app.ReadResult{}, err
@@ -94,7 +110,7 @@ func (r *Repository) Read(ctx context.Context, user string, request app.ReadRequ
 	return result, nil
 }
 
-func readDirectory(ctx context.Context, tx pgx.Tx, user, after string, activeMembersOnly bool, result *app.ReadResult) error {
+func readDirectory(ctx context.Context, tx pgx.Tx, user, after string, scope readScope, result *app.ReadResult) error {
 	// LIMIT precedes the first revision filter; future entries still consume budget.
 	// 先 LIMIT 再判断首个版本，未来目录键仍计入扫描预算。
 	rows, err := tx.Query(ctx, "SELECT conversation_id,first_change_seq FROM newim.im_conversation_sync_keys WHERE user_id=$1 AND conversation_id>$2 AND conversation_id<=$3 ORDER BY conversation_id LIMIT 200", user, after, result.TerminalKey)
@@ -130,7 +146,7 @@ func readDirectory(ctx context.Context, tx pgx.Tx, user, after string, activeMem
 			if candidate.State == nil {
 				return app.Fail(app.StorageUnavailable)
 			}
-			if err = authorize(ctx, tx, user, activeMembersOnly, &candidate); err != nil {
+			if err = authorize(ctx, tx, user, scope, &candidate); err != nil {
 				return err
 			}
 		}
@@ -139,7 +155,7 @@ func readDirectory(ctx context.Context, tx pgx.Tx, user, after string, activeMem
 	return nil
 }
 
-func readDelta(ctx context.Context, tx pgx.Tx, user string, request app.ReadRequest, activeMembersOnly bool, result *app.ReadResult) error {
+func readDelta(ctx context.Context, tx pgx.Tx, user string, request app.ReadRequest, scope readScope, result *app.ReadResult) error {
 	rows, err := tx.Query(ctx, "SELECT conversation_id,change_seq,kind,latest_seq,latest_server_msg_id FROM newim.im_conversation_sync_changes WHERE user_id=$1 AND change_seq>$2 AND change_seq<=$3 ORDER BY change_seq LIMIT $4", user, int64(request.AfterSeq), int64(result.Fence), request.Limit+1)
 	if err != nil {
 		return fixed(err)
@@ -158,19 +174,22 @@ func readDelta(ctx context.Context, tx pgx.Tx, user string, request app.ReadRequ
 		return fixed(err)
 	}
 	for i := range result.Candidates {
-		if err = authorize(ctx, tx, user, activeMembersOnly, &result.Candidates[i]); err != nil {
+		if err = authorize(ctx, tx, user, scope, &result.Candidates[i]); err != nil {
 			return err
 		}
 	}
 	return nil
 }
 
-func authorize(ctx context.Context, tx pgx.Tx, user string, activeMembersOnly bool, candidate *app.Candidate) error {
+func authorize(ctx context.Context, tx pgx.Tx, user string, scope readScope, candidate *app.Candidate) error {
 	if candidate.State.Kind != "upsert" {
 		return nil
 	}
 	var err error
-	candidate.Member, err = hasMember(ctx, tx, user, candidate.Key, activeMembersOnly)
+	if scope.requireSourceReady {
+		return authorizeSourceSummary(ctx, tx, user, candidate)
+	}
+	candidate.Member, err = hasMember(ctx, tx, user, candidate.Key, scope.activeMembersOnly)
 	if err != nil {
 		return fixed(err)
 	}
@@ -178,6 +197,57 @@ func authorize(ctx context.Context, tx pgx.Tx, user string, activeMembersOnly bo
 		candidate.Latest, err = latest(ctx, tx, user, candidate.Key, app.MaxSequence)
 	}
 	return err
+}
+
+func authorizeSourceSummary(ctx context.Context, tx pgx.Tx, user string, candidate *app.Candidate) error {
+	var floor int64
+	err := tx.QueryRow(ctx, `SELECT history_after_seq FROM newim.im_conversation_members
+		WHERE user_id=$1 AND conversation_id=$2 AND departed_at IS NULL`, user, candidate.Key).Scan(&floor)
+	if errors.Is(err, pgx.ErrNoRows) {
+		candidate.Latest, err = latest(ctx, tx, user, candidate.Key, app.MaxSequence)
+		return err
+	}
+	if err != nil || floor < 0 {
+		return app.Fail(app.StorageUnavailable)
+	}
+	visible, err := visibleSourceSummary(ctx, tx, candidate.State, uint64(floor))
+	if err != nil || visible {
+		candidate.Member = visible
+		return err
+	}
+
+	// Record the authorization change without expiring an earlier page.
+	candidate.HistoryRestricted = true
+	replacement, err := latest(ctx, tx, user, candidate.Key, app.MaxSequence)
+	if err != nil || replacement == nil || replacement.Kind != "upsert" || replacement.Revision <= candidate.State.Revision {
+		return err
+	}
+	visible, err = visibleSourceSummary(ctx, tx, replacement, uint64(floor))
+	if visible {
+		candidate.Latest = replacement
+	}
+	return err
+}
+
+func visibleSourceSummary(ctx context.Context, tx pgx.Tx, item *app.Item, floor uint64) (bool, error) {
+	seq := *item.LatestConversationSeq
+	if (seq == 0) != (item.LatestServerMsgID == nil) {
+		return false, app.Fail(app.StorageUnavailable)
+	}
+	if seq == 0 {
+		return true, nil
+	}
+	if seq <= floor {
+		return false, nil
+	}
+	var matches bool
+	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM newim.im_messages
+		WHERE conversation_id=$1 AND server_msg_id=$2 AND conversation_seq=$3)`,
+		item.ConversationID, *item.LatestServerMsgID, int64(seq)).Scan(&matches)
+	if err != nil || !matches {
+		return false, app.Fail(app.StorageUnavailable)
+	}
+	return true, nil
 }
 
 func hasMember(ctx context.Context, tx pgx.Tx, user, conversation string, activeMembersOnly bool) (bool, error) {

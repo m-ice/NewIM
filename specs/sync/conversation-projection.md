@@ -10,11 +10,10 @@ conversation visibility. It exists so bootstrap and delta reads use committed
 per-account revisions instead of timestamps, outbox ordering or message-history
 scans.
 
-It does not authenticate callers, expose HTTP/WebSocket routes, merge state in an
-SDK, import existing accounts or make `persist_message` fan out automatically. A
-trusted authentication boundary must construct `Principal`; a request payload
-must never be able to replace it. A source write outside the projection writer is
-not claimed to be synchronized.
+The caller's authentication boundary supplies `Principal` from the verified
+account. The optional production writers record supported source changes in the
+same transaction. See [conversation backfill](conversation-backfill.md) for the
+write flag, covered sources, and account readiness contract.
 
 ## Application API
 

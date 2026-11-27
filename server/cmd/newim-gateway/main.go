@@ -94,6 +94,7 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 		profileRepo, err := userstore.Open(startup, userstore.Config{
 			DSN: cfg.dsn, AllowLocalSocket: cfg.allowLocalSocket,
 			ApplicationName: "newim-gateway-profiles", Guard: guard,
+			ProjectConversations: cfg.projectConversations,
 		})
 		if err != nil {
 			return errors.New("newim-gateway profile storage unavailable")
@@ -131,6 +132,7 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 			DSN: cfg.dsn, AllowLocalSocket: cfg.allowLocalSocket,
 			ApplicationName: "newim-gateway-send", Guard: guard,
 			PrivatePolicy: true, DirectOnly: cfg.groups == nil, ManagedGroups: cfg.groups != nil,
+			ProjectConversations: cfg.projectConversations,
 		})
 		if err != nil {
 			return errors.New("newim-gateway send storage unavailable")
@@ -152,6 +154,7 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 		groupRepo, err := groupstore.Open(startup, groupstore.Config{
 			DSN: cfg.dsn, AllowLocalSocket: cfg.allowLocalSocket,
 			ApplicationName: "newim-gateway-groups", Guard: guard,
+			ProjectConversations: cfg.projectConversations,
 		})
 		if err != nil {
 			return errors.New("newim-gateway group storage unavailable")

@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/m-ice/NewIM/server/storage/postgresidentity"
 	app "github.com/m-ice/NewIM/server/sync/conversation"
 )
 
@@ -19,19 +20,26 @@ const requestTimeout = 5 * time.Second
 // Config is trusted service configuration, never request input.
 // Config 仅接受可信服务配置，不接受客户端输入。
 type Config struct {
-	DSN              string
-	AllowLocalSocket bool
-	MaxConnections   int
+	DSN                string
+	AllowLocalSocket   bool
+	MaxConnections     int
+	ApplicationName    string
+	Guard              *postgresidentity.Guard
+	RequireSourceReady bool
 }
 
 // Repository owns a bounded pool; credentials and driver errors stay private.
 // Repository 持有有界连接池，不暴露凭证或驱动错误。
-type Repository struct{ pool *pgxpool.Pool }
+type Repository struct {
+	pool               *pgxpool.Pool
+	requireSourceReady bool
+}
 
 // Open requires verified TLS for TCP, or explicitly enabled local sockets.
 // Open 的 TCP 必须校验主机证书，本地套接字须显式启用。
 func Open(ctx context.Context, config Config) (*Repository, error) {
-	if config.DSN == "" || config.MaxConnections < 0 || config.MaxConnections > 8 {
+	if ctx == nil || config.DSN == "" || config.MaxConnections < 0 || config.MaxConnections > 8 ||
+		(config.ApplicationName != "" && !identifier(config.ApplicationName)) {
 		return nil, app.Fail(app.StorageUnavailable)
 	}
 	c, err := pgxpool.ParseConfig(config.DSN)
@@ -67,6 +75,20 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 	c.ConnConfig.RuntimeParams["lock_timeout"] = "1000"
 	c.ConnConfig.RuntimeParams["idle_in_transaction_session_timeout"] = "5000"
 	c.ConnConfig.RuntimeParams["transaction_timeout"] = "5000"
+	if config.ApplicationName != "" {
+		c.ConnConfig.RuntimeParams["application_name"] = config.ApplicationName
+	}
+	if guard := config.Guard; guard != nil {
+		c.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+			return fixed(guard.AfterConnect(ctx, conn))
+		}
+		c.PrepareConn = func(ctx context.Context, conn *pgx.Conn) (bool, error) {
+			if err := guard.Verify(ctx, conn); err != nil {
+				return false, fixed(err)
+			}
+			return true, nil
+		}
+	}
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
 	pool, err := pgxpool.NewWithConfig(ctx, c)
@@ -77,7 +99,13 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 		pool.Close()
 		return nil, fixed(err)
 	}
-	return &Repository{pool: pool}, nil
+	if config.RequireSourceReady {
+		if err = CheckSourceSchema(ctx, pool); err != nil {
+			pool.Close()
+			return nil, fixed(err)
+		}
+	}
+	return &Repository{pool: pool, requireSourceReady: config.RequireSourceReady}, nil
 }
 
 // Close releases all pool resources after callers finish their transactions.

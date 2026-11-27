@@ -104,6 +104,23 @@ def check_catalog(db, target=None):
     expected_group = ['departed_at|timestamp with time zone|YES', 'departed_through_seq|bigint|YES',
                       'group_role|text|YES', 'history_after_seq|bigint|NO', 'mute_until|timestamp with time zone|YES']
     equal(group_columns, expected_group if target >= 12 else [], 'group member role and history column shapes')
+    source_columns = db.sql("SELECT column_name||'|'||data_type||'|'||is_nullable||'|'||"
+                            "COALESCE(domain_name,'')||'|'||COALESCE(column_default,'') "
+                            "FROM information_schema.columns WHERE table_schema='newim' "
+                            "AND table_name='im_conversation_sync_accounts' "
+                            "AND column_name IN ('source_ready','source_after_key') ORDER BY column_name;").splitlines()
+    expected_source = ['source_after_key|text|YES|identifier|', 'source_ready|boolean|NO||false']
+    equal(source_columns, expected_source if target >= 14 else [], 'source readiness column shapes')
+    source_indexes = db.sql("SELECT pg_get_indexdef(indexrelid) FROM pg_index WHERE indexrelid IN ("
+                            "to_regclass('newim.im_conversation_members_sync_active_idx'),"
+                            "to_regclass('newim.im_conversation_members_sync_user_active_idx')) ORDER BY 1;").splitlines()
+    expected_indexes = [
+        'CREATE INDEX im_conversation_members_sync_active_idx ON newim.im_conversation_members '
+        'USING btree (conversation_id, user_id) WHERE (departed_at IS NULL)',
+        'CREATE INDEX im_conversation_members_sync_user_active_idx ON newim.im_conversation_members '
+        'USING btree (user_id, conversation_id) WHERE (departed_at IS NULL)',
+    ]
+    equal(source_indexes, expected_indexes if target >= 14 else [], 'active projection membership indexes')
     check_ledger(db, target)
 
 
@@ -185,7 +202,7 @@ def sync_constraints(db):
     scalar(db, "SELECT epoch||'|'||last_change_seq||'|'||min_valid_seq FROM newim.im_conversation_sync_accounts WHERE user_id='alice';",
            '1|0|0', 'initial account defaults')
     columns = {
-        'accounts': 'user_id,epoch,last_change_seq,min_valid_seq',
+        'accounts': 'user_id,epoch,last_change_seq,min_valid_seq,source_ready,source_after_key',
         'keys': 'user_id,conversation_id,first_change_seq',
         'changes': 'user_id,change_seq,conversation_id,kind,latest_seq,latest_server_msg_id',
     }
@@ -206,6 +223,9 @@ def sync_constraints(db):
         ("UPDATE newim.im_conversation_sync_accounts SET last_change_seq=-1;", '23514'),
         ("UPDATE newim.im_conversation_sync_accounts SET min_valid_seq=-1;", '23514'),
         ("UPDATE newim.im_conversation_sync_accounts SET min_valid_seq=1;", '23514'),
+        ("UPDATE newim.im_conversation_sync_accounts SET source_ready=NULL;", '23502'),
+        ("UPDATE newim.im_conversation_sync_accounts SET source_after_key='invalid key';", '23514'),
+        ("UPDATE newim.im_conversation_sync_accounts SET source_ready=true,source_after_key='other';", '23514'),
         ("UPDATE newim.im_conversation_sync_keys SET first_change_seq=0;", '23514'),
         ("INSERT INTO newim.im_conversation_sync_keys VALUES ('bob','room',1);", '23503'),
         ("INSERT INTO newim.im_conversation_sync_keys VALUES ('alice','missing',1);", '23503'),
@@ -989,6 +1009,45 @@ def account_revocation_migration(db, commands):
     print('PASS populated 013 preserves device revocations and previous data after failure and termination', flush=True)
 
 
+def source_projection_migration(db, commands):
+    db.sql("INSERT INTO newim.im_conversation_sync_accounts(user_id,epoch,last_change_seq,min_valid_seq) "
+           "VALUES ('alice',2,1,1); "
+           "INSERT INTO newim.im_conversation_sync_keys(user_id,conversation_id,first_change_seq) VALUES ('alice','room',1); "
+           "INSERT INTO newim.im_conversation_sync_changes(user_id,change_seq,conversation_id,kind,latest_seq,latest_server_msg_id) "
+           "VALUES ('alice',1,'room','upsert',1,'legacy');")
+    historical = snapshot(db)
+    with tempfile.TemporaryDirectory(prefix='source-projection-migration-copy-', dir=commands.directory) as owned:
+        directory = Path(owned)
+        for path in source_migrations():
+            (directory/path.name).write_bytes(path.read_bytes())
+        candidate = directory/'014_conversation_projection_sources.sql'
+        original = candidate.read_text()
+        candidate.write_text(original + "\nSELECT 1/0;\n")
+        db.sql(migration_sql(14, directory=directory), error='22012')
+        check_catalog(db, 13)
+        equal(snapshot(db), historical, 'failed 014 preserves exact populated 013 rows')
+        candidate.write_text(original + "\nSELECT pg_sleep(30);\n")
+        held = db.session("SET application_name='newim_source_projection_migration_interrupt'; " +
+                          migration_sql(14, directory=directory))
+        db.wait_sql("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name="
+                    "'newim_source_projection_migration_interrupt' AND wait_event='PgSleep');")
+        db.sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+               "WHERE application_name='newim_source_projection_migration_interrupt';")
+        held.finish(error='57P01')
+        check_catalog(db, 13)
+        equal(snapshot(db), historical, 'terminated 014 preserves exact populated 013 rows')
+    db.sql(migration_sql(14))
+    check_catalog(db, 14)
+    upgraded = snapshot(db)
+    changed_tables = {'im_conversation_sync_accounts', 'migrations'}
+    equal({k: v for k, v in upgraded.items() if k not in changed_tables},
+          {k: v for k, v in historical.items() if k not in changed_tables}, '014 preserves existing projection history and other rows')
+    scalar(db, "SELECT user_id||'|'||epoch||'|'||last_change_seq||'|'||min_valid_seq||'|'||"
+           "source_ready::text||'|'||(source_after_key IS NULL)::text FROM newim.im_conversation_sync_accounts;",
+           'alice|2|1|1|false|true', '014 preserves the existing head without marking it ready')
+    print('PASS populated 014 failure/termination rollback and existing projection history', flush=True)
+
+
 def migrations(db, commands):
     head = len(source_migrations())
     db.sql(migration_sql(1))
@@ -1015,6 +1074,7 @@ def migrations(db, commands):
     friend_migration(db)
     group_migration(db)
     account_revocation_migration(db, commands)
+    source_projection_migration(db, commands)
     after = snapshot(db)
     db.sql(migration_sql())
     equal(snapshot(db), after, 'head replay stable')

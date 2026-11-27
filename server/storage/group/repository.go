@@ -12,6 +12,7 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	app "github.com/m-ice/NewIM/server/group"
+	"github.com/m-ice/NewIM/server/storage/conversationsync"
 	"github.com/m-ice/NewIM/server/storage/membership"
 	"github.com/m-ice/NewIM/server/storage/postgresidentity"
 	"github.com/m-ice/NewIM/server/user"
@@ -25,16 +26,18 @@ const entryColumns = "group_id,actor_id,request_id,user_id,kind,state,message,re
 // Config holds trusted database settings.
 // Config 保存可信数据库配置。
 type Config struct {
-	DSN              string
-	AllowLocalSocket bool
-	ApplicationName  string
-	Guard            *postgresidentity.Guard
+	DSN                  string
+	AllowLocalSocket     bool
+	ApplicationName      string
+	Guard                *postgresidentity.Guard
+	ProjectConversations bool
 }
 
 // Repository owns a bounded database pool.
 // Repository 持有有界数据库连接池。
 type Repository struct {
-	pool *pgxpool.Pool
+	pool                 *pgxpool.Pool
+	projectConversations bool
 }
 
 var _ app.Store = (*Repository)(nil)
@@ -104,10 +107,14 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 	if err != nil {
 		return nil, app.StorageUnavailable
 	}
-	repo := &Repository{pool: pool}
+	repo := &Repository{pool: pool, projectConversations: config.ProjectConversations}
 	if err = repo.checkSchema(ctx); err != nil {
 		pool.Close()
 		return nil, err
+	}
+	if config.ProjectConversations && conversationsync.CheckSourceSchema(ctx, pool) != nil {
+		pool.Close()
+		return nil, app.StorageUnavailable
 	}
 	return repo, nil
 }
@@ -162,6 +169,23 @@ func (r *Repository) beginWrite(ctx context.Context) (pgx.Tx, error) {
 		return nil, app.StorageUnavailable
 	}
 	return tx, nil
+}
+
+func (r *Repository) recordConversationSource(ctx context.Context, tx pgx.Tx, groupID string, removed []app.Membership) error {
+	if !r.projectConversations {
+		return nil
+	}
+	var removedIDs []string
+	if len(removed) > 0 {
+		removedIDs = make([]string, len(removed))
+		for i, member := range removed {
+			removedIDs[i] = member.UserID
+		}
+	}
+	if err := conversationsync.RecordSourceConversation(ctx, tx, groupID, removedIDs); err != nil {
+		return app.StorageUnavailable
+	}
+	return nil
 }
 
 type groupRow struct {

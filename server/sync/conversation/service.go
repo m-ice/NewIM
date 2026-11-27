@@ -412,7 +412,7 @@ func validateBootstrapCandidates(result ReadResult, afterKey, terminalKey string
 			if candidate.State.ConversationID != candidate.Key || candidate.State.Revision > result.Fence {
 				return Fail(StorageUnavailable)
 			}
-		} else if candidate.Member || candidate.Latest != nil {
+		} else if candidate.Member || candidate.Latest != nil || candidate.HistoryRestricted {
 			return Fail(StorageUnavailable)
 		}
 		if candidate.Latest != nil {
@@ -564,7 +564,7 @@ func selectBootstrapCandidate(candidate Candidate, fence uint64) (*Item, bool, e
 		return nil, false, nil
 	case "upsert":
 		if candidate.Member {
-			if candidate.Latest != nil {
+			if candidate.Latest != nil || candidate.HistoryRestricted {
 				return nil, false, Fail(StorageUnavailable)
 			}
 			return candidate.State, true, nil
@@ -579,6 +579,9 @@ func selectBootstrapCandidate(candidate Candidate, fence uint64) (*Item, bool, e
 			}
 			return nil, false, Fail(StorageUnavailable)
 		case "upsert":
+			if candidate.HistoryRestricted && candidate.Latest.Revision > fence {
+				return nil, false, Fail(CursorExpired)
+			}
 			return nil, false, Fail(NotReady)
 		default:
 			return nil, false, Fail(StorageUnavailable)
@@ -600,7 +603,7 @@ func selectDeltaCandidate(candidate Candidate) (*Item, error) {
 		return candidate.State, nil
 	case "upsert":
 		if candidate.Member {
-			if candidate.Latest != nil {
+			if candidate.Latest != nil || candidate.HistoryRestricted {
 				return nil, Fail(StorageUnavailable)
 			}
 			return candidate.State, nil
@@ -615,6 +618,9 @@ func selectDeltaCandidate(candidate Candidate) (*Item, error) {
 			}
 			return nil, Fail(StorageUnavailable)
 		case "upsert":
+			if candidate.HistoryRestricted && candidate.Latest.Revision > candidate.State.Revision {
+				return nil, Fail(CursorExpired)
+			}
 			return nil, Fail(NotReady)
 		default:
 			return nil, Fail(StorageUnavailable)

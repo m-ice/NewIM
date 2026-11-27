@@ -308,6 +308,16 @@ group-security: toolchain
 group-recovery: toolchain
 	python3 -B infra/db/group_suite.py recovery
 
+.PHONY: sync-source-check sync-source-security sync-source-recovery
+sync-source-check: toolchain
+	python3 -B infra/db/sync_source_suite.py check
+
+sync-source-security: toolchain
+	python3 -B infra/db/sync_source_suite.py security
+
+sync-source-recovery: toolchain
+	python3 -B infra/db/sync_source_suite.py recovery
+
 .PHONY: message-check message-recovery message-errors
 message-check: toolchain
 	python3 -B infra/db/message_suite.py check

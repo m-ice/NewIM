@@ -82,6 +82,11 @@ func (r *Repository) ChangeMember(ctx context.Context, actor string, request app
 		if err = recordChanges(ctx, tx, request.GroupID, changes); err != nil {
 			return app.Membership{}, err
 		}
+		if target.DepartedThroughSeq != nil {
+			if err = r.recordConversationSource(ctx, tx, request.GroupID, []app.Membership{target}); err != nil {
+				return app.Membership{}, err
+			}
+		}
 	}
 	return committed(ctx, tx, target)
 }

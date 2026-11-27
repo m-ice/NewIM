@@ -77,6 +77,9 @@ func (r *Repository) Create(ctx context.Context, actor string, request app.Creat
 	if err = recordCurrentGroup(ctx, tx, request.GroupID); err != nil {
 		return app.View{}, err
 	}
+	if err = r.recordConversationSource(ctx, tx, request.GroupID, nil); err != nil {
+		return app.View{}, err
+	}
 	return commitView(ctx, tx, saved.group, actor)
 }
 
@@ -191,6 +194,9 @@ func (r *Repository) Dissolve(ctx context.Context, actor, groupID string) (bool,
 		changes = append(changes, memberChange(member, app.GroupRemoved))
 	}
 	if err = recordChanges(ctx, tx, groupID, changes); err != nil {
+		return false, err
+	}
+	if err = r.recordConversationSource(ctx, tx, groupID, members); err != nil {
 		return false, err
 	}
 	return committed(ctx, tx, true)

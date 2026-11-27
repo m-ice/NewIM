@@ -96,10 +96,11 @@ type ReadRequest struct {
 // Candidate carries same-snapshot membership and, only if unauthorized,
 // the latest projection. 候选权限与最新投影必须来自同一数据库快照。
 type Candidate struct {
-	Key    string
-	State  *Item
-	Member bool
-	Latest *Item
+	Key               string
+	State             *Item
+	Member            bool
+	Latest            *Item
+	HistoryRestricted bool
 }
 
 // ReadResult owns one bounded read-only snapshot; no transaction escapes.

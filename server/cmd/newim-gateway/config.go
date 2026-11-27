@@ -14,17 +14,18 @@ import (
 var errConfig = errors.New("invalid gateway configuration")
 
 type config struct {
-	addr             string
-	certFile         string
-	keyFile          string
-	dsn              string
-	allowLocalSocket bool
-	drainTimeout     time.Duration
-	gateway          gateway.Config
-	profiles         *httpLimits
-	friends          *httpLimits
-	groups           *httpLimits
-	privateMessages  *httpLimits
+	addr                 string
+	certFile             string
+	keyFile              string
+	dsn                  string
+	allowLocalSocket     bool
+	drainTimeout         time.Duration
+	gateway              gateway.Config
+	profiles             *httpLimits
+	friends              *httpLimits
+	groups               *httpLimits
+	privateMessages      *httpLimits
+	projectConversations bool
 }
 
 type httpLimits struct {
@@ -87,6 +88,13 @@ func readConfig(getenv func(string) string) (config, error) {
 		return config{}, errConfig
 	}
 	if invalidLimit || (cfg.groups != nil && cfg.privateMessages == nil) {
+		return config{}, errConfig
+	}
+	switch getenv("NEWIM_CONVERSATION_PROJECTION") {
+	case "", "0":
+	case "1":
+		cfg.projectConversations = true
+	default:
 		return config{}, errConfig
 	}
 	return cfg, nil

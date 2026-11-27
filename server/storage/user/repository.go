@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/m-ice/NewIM/server/storage/conversationsync"
 	"github.com/m-ice/NewIM/server/storage/postgresidentity"
 	app "github.com/m-ice/NewIM/server/user"
 )
@@ -24,16 +25,18 @@ const profileQuery = `SELECT u.user_id, COALESCE(p.nickname, ''), COALESCE(p.fac
 // Config holds trusted database settings.
 // Config 保存可信数据库配置。
 type Config struct {
-	DSN              string
-	AllowLocalSocket bool
-	ApplicationName  string
-	Guard            *postgresidentity.Guard
+	DSN                  string
+	AllowLocalSocket     bool
+	ApplicationName      string
+	Guard                *postgresidentity.Guard
+	ProjectConversations bool
 }
 
 // Repository owns a bounded database pool.
 // Repository 持有有界数据库连接池。
 type Repository struct {
-	pool *pgxpool.Pool
+	pool                 *pgxpool.Pool
+	projectConversations bool
 }
 
 var _ app.Store = (*Repository)(nil)
@@ -107,7 +110,11 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 		pool.Close()
 		return nil, app.Fail(app.StorageUnavailable)
 	}
-	return &Repository{pool: pool}, nil
+	if config.ProjectConversations && conversationsync.CheckSourceSchema(ctx, pool) != nil {
+		pool.Close()
+		return nil, app.Fail(app.StorageUnavailable)
+	}
+	return &Repository{pool: pool, projectConversations: config.ProjectConversations}, nil
 }
 
 // Close releases the database pool.
@@ -138,8 +145,9 @@ func (r *Repository) Provision(ctx context.Context, userID string, patch app.Pat
 	if err != nil {
 		return app.Profile{}, app.Fail(app.StorageUnavailable)
 	}
+	newUser := created.RowsAffected() == 1
 	var profile app.Profile
-	if created.RowsAffected() == 1 {
+	if newUser {
 		profile, err = scanProfile(tx.QueryRow(ctx, `INSERT INTO newim.im_user_profiles(user_id, nickname, face_url, ex)
 			VALUES ($1, COALESCE($2, ''), COALESCE($3, ''), COALESCE($4, ''))
 			RETURNING user_id, nickname, face_url, ex`, userID, patch.Nickname, patch.FaceURL, patch.Ex))
@@ -149,6 +157,11 @@ func (r *Repository) Provision(ctx context.Context, userID string, patch app.Pat
 	}
 	if err != nil {
 		return app.Profile{}, err
+	}
+	if newUser && r.projectConversations {
+		if err = conversationsync.InitializeSourceAccount(ctx, tx, userID); err != nil {
+			return app.Profile{}, app.Fail(app.StorageUnavailable)
+		}
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return app.Profile{}, app.Fail(app.StorageUnavailable)

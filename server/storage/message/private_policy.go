@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	protocol "github.com/m-ice/NewIM/core/protocol/go"
 	app "github.com/m-ice/NewIM/server/message"
+	"github.com/m-ice/NewIM/server/storage/conversationsync"
 	"github.com/m-ice/NewIM/server/storage/postgrespair"
 )
 
@@ -240,6 +241,11 @@ func (r *Repository) CreateDirect(ctx context.Context, ownerID, peerID string) (
 		return "", privateStorageError(err)
 	}
 	defer rollback(tx)
+	if r.projectConversations {
+		if err = conversationsync.LockSourceMembership(ctx, tx); err != nil {
+			return "", privateStorageError(err)
+		}
+	}
 	if err = pair.lock(ctx, tx); err != nil {
 		return "", err
 	}
@@ -253,6 +259,9 @@ func (r *Repository) CreateDirect(ctx context.Context, ownerID, peerID string) (
 	switch {
 	case errors.Is(err, pgx.ErrNoRows):
 		conversationID, err = createDirectConversation(ctx, tx, pair, ownerID, peerID)
+		if err == nil && r.projectConversations {
+			err = privateStorageError(conversationsync.RecordSourceConversation(ctx, tx, conversationID, nil))
+		}
 	case err != nil:
 		return "", privateStorageError(err)
 	default:

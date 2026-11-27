@@ -86,6 +86,9 @@ jobs:
       - name: Exercise small-group membership, history and recovery
         timeout-minutes: 12
         run: make group-check group-security group-recovery
+      - name: Exercise conversation source writes and online backfill
+        timeout-minutes: 12
+        run: make sync-source-check sync-source-security sync-source-recovery
       - name: Exercise idempotent current-token revocation
         timeout-minutes: 12
         run: make auth-logout-check
