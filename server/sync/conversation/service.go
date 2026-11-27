@@ -485,8 +485,16 @@ func validateItem(item Item) error {
 			(!validSequence(*item.LastReadSeq) || (*item.LatestConversationSeq != 0 && *item.LastReadSeq > *item.LatestConversationSeq)) {
 			return Fail(StorageUnavailable)
 		}
+		if settings := item.Settings; settings != nil {
+			latest := *item.LatestConversationSeq
+			if settings.Version == 0 || !validSequence(settings.Version) || settings.Deleted ||
+				!validSequence(settings.ClearThroughSeq) || (latest != 0 && settings.ClearThroughSeq >= latest) ||
+				!ValidAccountDraft(settings.Draft) {
+				return Fail(StorageUnavailable)
+			}
+		}
 	case "remove":
-		if item.LatestConversationSeq != nil || item.LatestServerMsgID != nil || item.LastReadSeq != nil {
+		if item.LatestConversationSeq != nil || item.LatestServerMsgID != nil || item.LastReadSeq != nil || item.Settings != nil {
 			return Fail(StorageUnavailable)
 		}
 	default:

@@ -6,6 +6,39 @@ import (
 	"testing"
 )
 
+func TestConversationAccountSettingsConfig(t *testing.T) {
+	root := t.TempDir()
+	for _, test := range []struct {
+		name, readSync, sync, settings string
+		enabled, invalid               bool
+	}{
+		{name: "default off"},
+		{name: "enabled", readSync: "1", sync: "1", settings: "1", enabled: true},
+		{name: "requires read sync", sync: "1", settings: "1", invalid: true},
+		{name: "requires public sync", readSync: "1", settings: "1", invalid: true},
+		{name: "invalid flag", readSync: "1", sync: "1", settings: "true", invalid: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			env := map[string]string{
+				"NEWIM_GATEWAY_ADDR":                  "127.0.0.1:0",
+				"NEWIM_GATEWAY_TLS_CERT_FILE":         filepath.Join(root, "cert.pem"),
+				"NEWIM_GATEWAY_TLS_KEY_FILE":          filepath.Join(root, "key.pem"),
+				"NEWIM_AUTH_DSN":                      "postgresql://test@localhost/newim",
+				"NEWIM_AUTH_DEVICE_ADMISSION":         "1",
+				"NEWIM_CONVERSATION_PROJECTION":       "1",
+				"NEWIM_CONVERSATION_READ_SYNC":        test.readSync,
+				"NEWIM_CONVERSATION_SYNC":             test.sync,
+				"NEWIM_CONVERSATION_SYNC_KEYS_FILE":   filepath.Join(root, "sync.json"),
+				"NEWIM_CONVERSATION_ACCOUNT_SETTINGS": test.settings,
+			}
+			got, err := readConfig(func(name string) string { return env[name] })
+			if (err != nil) != test.invalid || got.accountSettings != test.enabled {
+				t.Fatalf("account settings enabled=%t, error=%v", got.accountSettings, err)
+			}
+		})
+	}
+}
+
 func TestConversationReadSyncConfig(t *testing.T) {
 	root := t.TempDir()
 	for _, test := range []struct {

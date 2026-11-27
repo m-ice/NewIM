@@ -60,6 +60,10 @@ increment by one. A terminal page reaches the visible head.
 
 The adapter uses `REPEATABLE READ READ ONLY`, verifies both settings, and reads
 membership, head, latest pointer, bounded probes, and page rows in one snapshot.
+With account settings storage installed, the history lower bound also includes
+the account's clear-through sequence. TLS requests and WebSocket replay use this
+same effective lower bound. The persisted account read watermark uses the
+membership boundary.
 Unknown and non-member conversations return `SYNC_FORBIDDEN`. Authorization is
 linearized at the first database read. A revoke after snapshot acquisition does
 not retroactively fail that read.

@@ -156,6 +156,12 @@ bootstrap 和 delta 携带账号位点。所有相关写入、同步读取和回
 上线与回退步骤见 [会话投影回填](../specs/sync/conversation-backfill.md#已读位点回填)。
 运行 `make read-sync-check read-sync-security read-sync-recovery read-sync-query-plan` 验证。
 
+应用迁移 018 后统一升级发送、群、会话和历史读取进程。在已启用会话同步及已读投影的 TLS 网关设置
+`NEWIM_CONVERSATION_ACCOUNT_SETTINGS=1`，开放草稿、置顶、免打扰及个人清空和删除入口。
+个人历史的已提交约束在关闭新入口后仍生效。[会话设置接口](../specs/sync/conversation-http.md#个人会话设置)。
+运行 `make conversation-account-sync-check conversation-account-sync-security conversation-account-sync-recovery
+conversation-account-sync-query-plan conversation-account-sdk-check` 验证。
+
 TLS 消息网关设置 `NEWIM_MEDIA_HTTP=1` 和绝对路径 `NEWIM_MEDIA_LOCAL_ROOT` 后，
 可处理媒体上传、私有下载和媒体消息发送。媒体网关实例使用同一私有持久目录。
 [媒体传输接口](../specs/media/tls-transfer.md)。

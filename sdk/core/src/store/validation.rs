@@ -37,6 +37,87 @@ fn limit(n: usize) -> bool {
     (1..=MAX_ITEMS).contains(&n)
 }
 
+fn sync_cursor(cursor: &Blob) -> bool {
+    (1..=MAX_SYNC_CURSOR_BYTES).contains(&cursor.0.len())
+}
+
+fn sync_position(position: &ConversationSyncPosition) -> bool {
+    (1..=i64::MAX as u64).contains(&position.round)
+        && match &position.phase {
+            ConversationSyncPhase::BootstrapStart => true,
+            ConversationSyncPhase::BootstrapPage(cursor)
+            | ConversationSyncPhase::DeltaCheckpoint(cursor)
+            | ConversationSyncPhase::DeltaPage(cursor) => sync_cursor(cursor),
+        }
+}
+
+pub(super) fn sync_item(item: &ConversationSyncItem) -> bool {
+    id(&item.conversation_id)
+        && (1..=i64::MAX as u64).contains(&item.revision)
+        && item.known_clear_through_seq <= i64::MAX as u64
+        && match &item.change {
+            ConversationSyncChange::Remove => true,
+            ConversationSyncChange::Upsert(summary) => {
+                let latest = summary.latest_conversation_seq;
+                latest <= i64::MAX as u64
+                    && (latest == 0) == summary.latest_server_msg_id.is_none()
+                    && summary
+                        .latest_server_msg_id
+                        .as_ref()
+                        .is_none_or(|key| id(key))
+                    && summary
+                        .last_read_seq
+                        .is_none_or(|seq| seq <= i64::MAX as u64 && (latest == 0 || seq <= latest))
+                    && summary.settings.as_ref().is_none_or(|settings| {
+                        settings.version <= i64::MAX as u64
+                            && settings.clear_through_seq <= i64::MAX as u64
+                            && settings.draft.len() <= MAX_CONVERSATION_DRAFT_BYTES
+                    })
+            }
+        }
+}
+
+fn sync_query(query: &ConversationSyncQuery) -> bool {
+    match query {
+        ConversationSyncQuery::State => true,
+        ConversationSyncQuery::Merge { ids } => {
+            ids.len() <= MAX_ITEMS
+                && ids.iter().all(|key| id(key))
+                && ids.windows(2).all(|pair| pair[0] < pair[1])
+        }
+        ConversationSyncQuery::Published { after, limit: n } => {
+            limit(*n) && after.as_ref().is_none_or(|key| id(key))
+        }
+    }
+}
+
+fn sync_batch(batch: &ConversationSyncBatch) -> bool {
+    batch.expected_revision <= i64::MAX as u64
+        && sync_position(&batch.expected_position)
+        && match &batch.mutation {
+            ConversationSyncMutation::BeginBootstrap => true,
+            ConversationSyncMutation::CommitPage {
+                next_cursor,
+                has_more,
+                items,
+            } => {
+                let repeats_cursor = match &batch.expected_position.phase {
+                    ConversationSyncPhase::BootstrapStart => false,
+                    ConversationSyncPhase::BootstrapPage(cursor)
+                    | ConversationSyncPhase::DeltaCheckpoint(cursor)
+                    | ConversationSyncPhase::DeltaPage(cursor) => cursor == next_cursor,
+                };
+                sync_cursor(next_cursor)
+                    && (!has_more || !repeats_cursor)
+                    && items.len() <= MAX_ITEMS
+                    && items.iter().all(sync_item)
+                    && items
+                        .windows(2)
+                        .all(|pair| pair[0].conversation_id < pair[1].conversation_id)
+            }
+        }
+}
+
 /// 先验证界限再分配请求序列 / Validate limits before allocating request identity bytes.
 pub fn validate_request(r: &Request) -> Result<(), StoreError> {
     let valid = id(&r.fence.account)
@@ -85,6 +166,8 @@ pub fn validate_request(r: &Request) -> Result<(), StoreError> {
             } => id(conversation) && *through >= 0 && limit(*n),
             Action::Compact { budget_ms } => (1..=30_000).contains(budget_ms),
             Action::AdvanceGeneration | Action::Metrics => true,
+            Action::ConversationSyncSnapshot(query) => sync_query(query),
+            Action::ApplyConversationSync(batch) => sync_batch(batch),
         };
     if !valid {
         return Err(StoreError::InvalidInput);
@@ -140,6 +223,55 @@ impl Writer {
         self.text(&p.client_id);
         self.text(&p.conversation_id);
         self.data(&p.payload.0);
+    }
+    fn sync_position(&mut self, position: &ConversationSyncPosition) {
+        self.number(position.round);
+        match &position.phase {
+            ConversationSyncPhase::BootstrapStart => self.number(0),
+            ConversationSyncPhase::BootstrapPage(cursor) => {
+                self.number(1);
+                self.data(&cursor.0);
+            }
+            ConversationSyncPhase::DeltaCheckpoint(cursor) => {
+                self.number(2);
+                self.data(&cursor.0);
+            }
+            ConversationSyncPhase::DeltaPage(cursor) => {
+                self.number(3);
+                self.data(&cursor.0);
+            }
+        }
+    }
+    fn sync_item(&mut self, item: &ConversationSyncItem) {
+        self.text(&item.conversation_id);
+        self.number(item.revision);
+        self.number(item.known_clear_through_seq);
+        match &item.change {
+            ConversationSyncChange::Remove => self.number(0),
+            ConversationSyncChange::Upsert(summary) => {
+                self.number(1);
+                self.number(summary.latest_conversation_seq);
+                self.optional_text(summary.latest_server_msg_id.as_deref());
+                self.number(u64::from(summary.last_read_seq.is_some()));
+                if let Some(sequence) = summary.last_read_seq {
+                    self.number(sequence);
+                }
+                self.number(u64::from(summary.settings.is_some()));
+                if let Some(settings) = &summary.settings {
+                    self.number(settings.version);
+                    self.number(u64::from(settings.pinned));
+                    self.number(u64::from(settings.muted));
+                    self.text(&settings.draft);
+                    self.number(settings.clear_through_seq);
+                }
+            }
+        }
+    }
+    fn optional_text(&mut self, value: Option<&str>) {
+        self.number(u64::from(value.is_some()));
+        if let Some(text) = value {
+            self.text(text);
+        }
     }
     fn request(&mut self, r: &Request) {
         self.text(&r.fence.account);
@@ -226,6 +358,45 @@ impl Writer {
             Action::Compact { budget_ms } => {
                 self.number(9);
                 self.number(*budget_ms);
+            }
+            Action::ConversationSyncSnapshot(query) => {
+                self.number(10);
+                match query {
+                    ConversationSyncQuery::State => self.number(0),
+                    ConversationSyncQuery::Merge { ids } => {
+                        self.number(1);
+                        self.number(ids.len() as u64);
+                        for id in ids {
+                            self.text(id);
+                        }
+                    }
+                    ConversationSyncQuery::Published { after, limit } => {
+                        self.number(2);
+                        self.optional_text(after.as_deref());
+                        self.number(*limit as u64);
+                    }
+                }
+            }
+            Action::ApplyConversationSync(batch) => {
+                self.number(11);
+                self.number(batch.expected_revision);
+                self.sync_position(&batch.expected_position);
+                match &batch.mutation {
+                    ConversationSyncMutation::BeginBootstrap => self.number(0),
+                    ConversationSyncMutation::CommitPage {
+                        next_cursor,
+                        has_more,
+                        items,
+                    } => {
+                        self.number(1);
+                        self.data(&next_cursor.0);
+                        self.number(u64::from(*has_more));
+                        self.number(items.len() as u64);
+                        for item in items {
+                            self.sync_item(item);
+                        }
+                    }
+                }
             }
         }
     }

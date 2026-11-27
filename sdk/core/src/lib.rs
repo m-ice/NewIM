@@ -3,6 +3,7 @@
 #![forbid(unsafe_code)]
 
 pub mod build_info;
+pub mod conversation_sync;
 pub mod media;
 pub mod message;
 pub mod outbox;

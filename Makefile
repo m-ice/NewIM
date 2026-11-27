@@ -396,6 +396,23 @@ read-sync-recovery: toolchain
 read-sync-query-plan: toolchain
 	python3 -B infra/db/sync_http_suite.py read-sync-query-plan
 
+.PHONY: conversation-account-sync-check conversation-account-sync-security conversation-account-sync-recovery
+.PHONY: conversation-account-sync-query-plan conversation-account-sdk-check
+conversation-account-sync-check: toolchain
+	python3 -B infra/db/sync_http_suite.py conversation-account-sync-check
+
+conversation-account-sync-security: toolchain
+	python3 -B infra/db/sync_http_suite.py conversation-account-sync-security
+
+conversation-account-sync-recovery: toolchain
+	python3 -B infra/db/sync_http_suite.py conversation-account-sync-recovery
+
+conversation-account-sync-query-plan: toolchain
+	python3 -B infra/db/sync_http_suite.py conversation-account-sync-query-plan
+
+conversation-account-sdk-check: toolchain
+	python3 -B infra/db/sync_http_suite.py conversation-account-sdk-check
+
 .PHONY: message-delta-http-check message-delta-http-security message-delta-http-recovery
 message-delta-http-check: toolchain
 	python3 -B infra/db/message_delta_http_suite.py check

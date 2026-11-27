@@ -263,7 +263,7 @@ func (r *Repository) CreateDirect(ctx context.Context, ownerID, peerID string) (
 	case errors.Is(err, pgx.ErrNoRows):
 		conversationID, err = createDirectConversation(ctx, tx, pair, ownerID, peerID)
 		if err == nil && r.projectConversations {
-			err = privateStorageError(conversationsync.RecordSourceConversation(ctx, tx, conversationID, nil, r.projectReadState))
+			err = privateStorageError(conversationsync.RecordSourceConversation(ctx, tx, conversationID, nil, r.projectReadState, r.accountSettings))
 		}
 	case err != nil:
 		return "", privateStorageError(err)

@@ -38,6 +38,11 @@ watermark and the member's exclusive history boundary as of the revision. The
 sequence stays absolute when the summary has no visible messages. Old upserts
 can omit it. A remove carries only its identifier, revision and kind.
 
+In account settings mode, an upsert can carry the account's immutable
+`settings` snapshot. A personal clear advances the history boundary for that
+account. A personal deletion emits a remove. The next persisted message
+received as an active member restores visibility and keeps the new history boundary.
+
 A reference consumer applies an item only when its revision is greater than the
 locally stored revision for that account/conversation. A remove retains that
 revision marker. Page effects and cursor advancement are atomic independently of

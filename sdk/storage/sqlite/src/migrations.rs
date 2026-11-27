@@ -2,9 +2,11 @@ pub const SQL1: &str = include_str!("../migrations/001-initial.sql");
 pub const HASH1: &str = "d51daa1770eed169456c75d73faaf8d357e0017b131291a83b97622018854581";
 pub const SQL2: &str = include_str!("../migrations/002-cache-indexes.sql");
 pub const HASH2: &str = "352174f3eea924f97ccb19795f0b365f28e600fdb3e8e67f2482f139de43555b";
+pub const SQL3: &str = include_str!("../migrations/003-conversation-sync.sql");
+pub const HASH3: &str = "1d5e4cb321646511f624866c33c0bdab239a0c5320af3ec2ff940eef60d8d4e2";
 use crate::{StoreError, db};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
-pub const VERSION: i64 = 2;
+pub const VERSION: i64 = 3;
 const APPLICATION_ID: i64 = 0x4e494d31;
 
 pub fn apply(
@@ -41,7 +43,14 @@ pub fn apply(
         }
         tx.execute_batch("CREATE TABLE schema_migrations(version INTEGER PRIMARY KEY, checksum TEXT NOT NULL, script BLOB NOT NULL)").map_err(db)?;
     }
-    for (v, sql, hash) in [(1, SQL1, HASH1), (2, SQL2, HASH2)] {
+    let n: i64 = tx
+        .query_row("SELECT count(*) FROM schema_migrations", [], |r| r.get(0))
+        .map_err(db)?;
+    if n != version {
+        return Err(StoreError::UnsupportedSchema);
+    }
+
+    for (v, sql, hash) in [(1, SQL1, HASH1), (2, SQL2, HASH2), (3, SQL3, HASH3)] {
         if v <= version {
             let existing: Option<(String, Vec<u8>)> = tx
                 .query_row(
@@ -62,12 +71,6 @@ pub fn apply(
             )
             .map_err(db)?;
         }
-    }
-    let n: i64 = tx
-        .query_row("SELECT count(*) FROM schema_migrations", [], |r| r.get(0))
-        .map_err(db)?;
-    if n != VERSION {
-        return Err(StoreError::UnsupportedSchema);
     }
     if version == 0 {
         tx.execute("INSERT INTO store_metadata(id,account,instance,generation,revision,recovery_required) VALUES(1,?,lower(hex(randomblob(16))),1,0,?)",params![account,recovery]).map_err(db)?;
@@ -100,6 +103,7 @@ fn validate_schema(conn: &Connection) -> Result<(), StoreError> {
     let expected = Connection::open_in_memory().map_err(db)?;
     expected.execute_batch(SQL1).map_err(db)?;
     expected.execute_batch(SQL2).map_err(db)?;
+    expected.execute_batch(SQL3).map_err(db)?;
     if schema(conn)? != schema(&expected)? {
         return Err(StoreError::UnsupportedSchema);
     }

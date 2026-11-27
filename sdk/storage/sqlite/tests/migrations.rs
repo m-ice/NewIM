@@ -41,9 +41,119 @@ fn populated_version_one_upgrade_and_repeat() {
         d.db()
             .pragma_query_value::<i64, _>(None, "user_version", |r| r.get(0))
             .unwrap(),
-        2
+        migrations_source::VERSION
     );
 }
+#[test]
+fn populated_version_two_keeps_legacy_apply_receipt() {
+    let d = Directory::new();
+    legacy(&d);
+    let conn = d.db();
+    conn.execute_batch(migrations_source::SQL2).unwrap();
+    conn.execute(
+        "INSERT INTO schema_migrations VALUES(2,?,?)",
+        params![migrations_source::HASH2, migrations_source::SQL2.as_bytes()],
+    )
+    .unwrap();
+    conn.execute_batch(
+        "PRAGMA user_version=2;
+         INSERT INTO conversations VALUES('room',4,X'F0');
+         INSERT INTO messages VALUES('s3','alice','c3','room',3,0,1,'text',X'FA');
+         UPDATE sync_state SET cursor=X'1234';",
+    )
+    .unwrap();
+    // Exact version-2 request bytes: fence, operation 9, old Apply tag 5,
+    // expected revision 5, no message, one conversation, cursor, no pending resolution.
+    let mut receipt = Vec::new();
+    receipt.extend_from_slice(b"\x05\0\0\0\0\0\0\0alice\x06\0\0\0\0\0\0\0legacy");
+    for value in [1u64, 9, 5, 5, 0, 1, 4] {
+        receipt.extend_from_slice(&value.to_le_bytes());
+    }
+    receipt.extend_from_slice(b"room");
+    for value in [4u64, 1] {
+        receipt.extend_from_slice(&value.to_le_bytes());
+    }
+    receipt.push(0xf0);
+    for value in [1u64, 2] {
+        receipt.extend_from_slice(&value.to_le_bytes());
+    }
+    receipt.extend_from_slice(&[0x12, 0x34]);
+    receipt.extend_from_slice(&0u64.to_le_bytes());
+    conn.execute(
+        "UPDATE store_metadata SET revision=6,last_operation=9,last_request=?,last_revision=6",
+        [receipt.as_slice()],
+    )
+    .unwrap();
+    drop(conn);
+
+    let mut store = d.open();
+    let action = Action::Apply(Batch {
+        expected_revision: 5,
+        conversations: vec![Conversation {
+            id: "room".into(),
+            unread: 4,
+            summary: Blob(vec![0xf0]),
+        }],
+        cursor: Some(Blob(vec![0x12, 0x34])),
+        messages: vec![],
+        resolve_pending: vec![],
+    });
+    assert_eq!(
+        request_bytes(&req(&store, 9, action.clone())).unwrap(),
+        receipt
+    );
+    assert_eq!(
+        run(&mut store, 9, action),
+        Ok(Response::Committed(Receipt {
+            revision: 6,
+            affected: 0,
+            replayed: true,
+        }))
+    );
+    assert_eq!(
+        run(&mut store, 9, batch(5, vec![])),
+        Err(StoreError::OperationConflict)
+    );
+    let old = snapshot(&mut store);
+    assert_eq!(old.conversation.unwrap().summary, Blob(vec![0xf0]));
+    assert_eq!(old.cursor, Blob(vec![0x12, 0x34]));
+    assert_eq!(
+        found(&mut store, 3).unwrap().payload,
+        Some(Blob(vec![0xfa]))
+    );
+    assert!(
+        matches!(run(&mut store,1,Action::Pending{after:None,limit:1}),Ok(Response::Pending(PendingPage{ref items,..})) if items[0].client_id=="stable")
+    );
+    assert_eq!(
+        run(
+            &mut store,
+            1,
+            Action::ConversationSyncSnapshot(ConversationSyncQuery::State)
+        ),
+        Ok(Response::ConversationSyncSnapshot(
+            ConversationSyncSnapshot {
+                revision: 6,
+                position: ConversationSyncPosition::initial(),
+                published_round: None,
+                items: vec![],
+                history_floors: Default::default(),
+                next: None,
+            }
+        ))
+    );
+    drop(store);
+    let conn = d.db();
+    let (hash, script): (String, Vec<u8>) = conn
+        .query_row(
+            "SELECT checksum,script FROM schema_migrations WHERE version=3",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .unwrap();
+    assert_eq!(hash, migrations_source::HASH3);
+    assert_eq!(script, migrations_source::SQL3.as_bytes());
+}
+
 #[test]
 fn future_tampered_and_interrupted_migrations() {
     let d = Directory::new();
@@ -71,7 +181,7 @@ fn future_tampered_and_interrupted_migrations() {
         Err(StoreError::UnsupportedSchema)
     ));
     conn.execute_batch(
-        "PRAGMA user_version=2; UPDATE schema_migrations SET checksum='changed' WHERE version=1",
+        "PRAGMA user_version=3; UPDATE schema_migrations SET checksum='changed' WHERE version=3",
     )
     .unwrap();
     assert!(matches!(

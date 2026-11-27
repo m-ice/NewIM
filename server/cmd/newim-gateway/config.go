@@ -30,6 +30,7 @@ type config struct {
 	messageDeviceLimit   int
 	projectConversations bool
 	projectReadState     bool
+	accountSettings      bool
 	conversationSync     *httpLimits
 	readWatermark        *httpLimits
 	syncKeysFile         string
@@ -156,6 +157,16 @@ func readConfig(getenv func(string) string) (config, error) {
 			return config{}, errConfig
 		}
 		cfg.projectReadState = true
+	default:
+		return config{}, errConfig
+	}
+	switch getenv("NEWIM_CONVERSATION_ACCOUNT_SETTINGS") {
+	case "", "0":
+	case "1":
+		if !cfg.projectReadState || cfg.conversationSync == nil {
+			return config{}, errConfig
+		}
+		cfg.accountSettings = true
 	default:
 		return config{}, errConfig
 	}

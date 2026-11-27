@@ -3,6 +3,7 @@
 //! Parsing validates a wire contract; it never confirms server persistence or
 //! authorizes a send. Unknown payload schemas remain opaque and unsupported.
 
+pub mod conversation_sync;
 mod intent;
 pub mod media;
 mod scan;

@@ -8,6 +8,7 @@ import (
 
 	"github.com/m-ice/NewIM/server/auth/session"
 	app "github.com/m-ice/NewIM/server/read"
+	"github.com/m-ice/NewIM/server/storage/conversationsync"
 )
 
 func (r *Repository) GetReceipt(ctx context.Context, bearer session.BearerSession, conversationID, serverMsgID string) (app.Receipt, error) {
@@ -15,7 +16,7 @@ func (r *Repository) GetReceipt(ctx context.Context, bearer session.BearerSessio
 		return app.Receipt{}, app.Fail(app.InvalidInput)
 	}
 	return withVerifiedBearer(ctx, r, bearer, func(ctx context.Context, tx pgx.Tx) (app.Receipt, error) {
-		return readReceipt(ctx, tx, bearer.UserID(), conversationID, serverMsgID)
+		return readReceipt(ctx, tx, bearer.UserID(), conversationID, serverMsgID, r.accountSettings)
 	})
 }
 
@@ -24,7 +25,7 @@ type receiptMember struct {
 	historyAfter int64
 }
 
-func readReceipt(ctx context.Context, tx pgx.Tx, senderID, conversationID, serverMsgID string) (app.Receipt, error) {
+func readReceipt(ctx context.Context, tx pgx.Tx, senderID, conversationID, serverMsgID string, accountSettings bool) (app.Receipt, error) {
 	var latest int64
 	var low, high string
 	err := tx.QueryRow(ctx, `SELECT c.last_seq,c.direct_user_low,c.direct_user_high
@@ -58,7 +59,15 @@ func readReceipt(ctx context.Context, tx pgx.Tx, senderID, conversationID, serve
 	if messageSeq < 0 || messageSeq > latest || sender.historyAfter < 0 || sender.historyAfter > latest {
 		return app.Receipt{}, app.Fail(app.StorageUnavailable)
 	}
-	if messageSeq <= sender.historyAfter {
+	senderFloor := sender.historyAfter
+	if accountSettings {
+		floor, err := conversationsync.PersonalHistoryFloor(ctx, tx, senderID, conversationID, latest)
+		if err != nil {
+			return app.Receipt{}, app.Fail(app.StorageUnavailable)
+		}
+		senderFloor = max(senderFloor, floor)
+	}
+	if messageSeq <= senderFloor {
 		return app.Receipt{}, app.Fail(app.NotFound)
 	}
 	if peer.historyAfter < 0 || peer.historyAfter > latest {

@@ -226,7 +226,7 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 		repository, err := conversationsync.Open(startup, conversationsync.Config{
 			DSN: cfg.dsn, AllowLocalSocket: cfg.allowLocalSocket,
 			ApplicationName: "newim-gateway-sync", Guard: guard, RequireSourceReady: true,
-			IncludeReadState: cfg.projectReadState,
+			IncludeReadState: cfg.projectReadState, ExposeAccountSettings: cfg.accountSettings,
 		})
 		if err != nil {
 			return errors.New("newim-gateway conversation sync storage unavailable")
@@ -245,7 +245,12 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 		if err != nil {
 			return errConfig
 		}
-		conversationRoutes, err = conversationhttp.NewWithMessages(service, messages, auth, gateway.NewProfileBudget(limits.ip, limits.account))
+		budget := gateway.NewProfileBudget(limits.ip, limits.account)
+		if cfg.accountSettings {
+			conversationRoutes, err = conversationhttp.NewWithAccountSettings(service, messages, auth, budget, repository)
+		} else {
+			conversationRoutes, err = conversationhttp.NewWithMessages(service, messages, auth, budget)
+		}
 		if err != nil {
 			return errConfig
 		}

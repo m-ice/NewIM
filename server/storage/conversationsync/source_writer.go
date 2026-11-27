@@ -85,7 +85,7 @@ const sourceWatermarkTarget = `
 
 // RecordSourceConversation runs after the source mutation with the conversation
 // locked. A failed write must abort the source transaction.
-func RecordSourceConversation(ctx context.Context, tx pgx.Tx, conversationID string, removed []string, includeReadState bool) error {
+func RecordSourceConversation(ctx context.Context, tx pgx.Tx, conversationID string, removed []string, includeReadState, accountSettings bool) error {
 	if ctx == nil || tx == nil || !identifier(conversationID) {
 		return app.Fail(app.StorageUnavailable)
 	}
@@ -95,19 +95,19 @@ func RecordSourceConversation(ctx context.Context, tx pgx.Tx, conversationID str
 		}
 	}
 
-	return recordSourceProjection(ctx, tx, includeReadState, sourceConversationTargets, conversationID, removed)
+	return recordSourceProjection(ctx, tx, includeReadState, accountSettings, sourceConversationTargets, conversationID, removed)
 }
 
 // RecordSourceWatermark records an advanced watermark for the active account only.
 // The caller holds the conversation, membership and updated watermark row locks.
-func RecordSourceWatermark(ctx context.Context, tx pgx.Tx, userID, conversationID string) error {
+func RecordSourceWatermark(ctx context.Context, tx pgx.Tx, userID, conversationID string, accountSettings bool) error {
 	if ctx == nil || tx == nil || !identifier(userID) || !identifier(conversationID) {
 		return app.Fail(app.StorageUnavailable)
 	}
-	return recordSourceProjection(ctx, tx, true, sourceWatermarkTarget, userID, conversationID)
+	return recordSourceProjection(ctx, tx, true, accountSettings, sourceWatermarkTarget, userID, conversationID)
 }
 
-func recordSourceProjection(ctx context.Context, tx pgx.Tx, includeReadState bool, targetSQL string, args ...any) error {
+func recordSourceProjection(ctx context.Context, tx pgx.Tx, includeReadState, accountSettings bool, targetSQL string, args ...any) error {
 	// The conflict clause locks existing rows without issuing updates. Inserting
 	// new rows and locking existing rows in one sorted pass gives both the same order.
 	_, err := tx.Exec(ctx, `INSERT INTO newim.im_conversation_sync_accounts AS account(user_id)
@@ -123,14 +123,14 @@ func recordSourceProjection(ctx context.Context, tx pgx.Tx, includeReadState boo
 	if err != nil {
 		return fixed(err)
 	}
-	return appendSourceProjection(ctx, tx, includeReadState, targetSQL, args...)
+	return appendSourceProjection(ctx, tx, includeReadState, accountSettings, targetSQL, args...)
 }
 
 // appendSourceProjection receives fixed package SQL yielding unique identifiers
 // for (user_id, conversation_id). Its caller holds the conversation and account locks.
-func appendSourceProjection(ctx context.Context, tx pgx.Tx, includeReadState bool, targetSQL string, args ...any) error {
+func appendSourceProjection(ctx context.Context, tx pgx.Tx, includeReadState, accountSettings bool, targetSQL string, args ...any) error {
 	var valid bool
-	err := tx.QueryRow(ctx, sourceProjectionQuery(includeReadState, targetSQL), args...).Scan(&valid)
+	err := tx.QueryRow(ctx, sourceProjectionQuery(includeReadState, accountSettings, targetSQL), args...).Scan(&valid)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "22003" {
@@ -147,13 +147,36 @@ func appendSourceProjection(ctx context.Context, tx pgx.Tx, includeReadState boo
 // The lateral limit keeps the globally unique message lookup independent of conversation size.
 const sourceSummaryPoint = "SELECT conversation_id,conversation_seq FROM newim.im_messages WHERE server_msg_id="
 
-func sourceProjectionQuery(includeReadState bool, targetSQL string) string {
+func sourceProjectionQuery(includeReadState, accountSettings bool, targetSQL string) string {
 	// Keep the 014 path independent of the read-state columns and values.
 	var readCheck, readValue, readJoin string
+	active := "m.user_id IS NOT NULL"
 	var readColumn, headReadColumn, previousReadColumn, allocatedReadColumn string
+	floor := "m.history_after_seq"
+	var settingsCheck, settingsValues, settingsJoin, hidden, pendingHidden string
+	var settingsColumns, headSettings, previousSettings, allocatedSettings string
+	if accountSettings {
+		active += " AND s.deleted_through_seq IS NULL"
+		floor = "GREATEST(m.history_after_seq, COALESCE(s.clear_through_seq, 0))"
+		settingsJoin = ` LEFT JOIN newim.im_conversation_account_settings s
+			ON s.conversation_id=a.conversation_id AND s.user_id=a.user_id`
+		settingsCheck = " AND (s.clear_through_seq IS NULL OR s.clear_through_seq<=c.last_seq)"
+		hidden = ", s.deleted_through_seq IS NOT NULL AND m.user_id IS NOT NULL AS personally_hidden"
+		pendingHidden = " OR (h.personally_hidden AND previous.kind IS NULL)"
+		settingsValues = `,
+				CASE WHEN ` + active + ` THEN s.version END AS settings_version,
+				CASE WHEN ` + active + ` THEN s.pinned END AS settings_pinned,
+				CASE WHEN ` + active + ` THEN s.muted END AS settings_muted,
+				CASE WHEN ` + active + ` THEN s.draft END AS settings_draft,
+				CASE WHEN ` + active + ` THEN s.clear_through_seq END AS settings_clear_through_seq`
+		settingsColumns = ",settings_version,settings_pinned,settings_muted,settings_draft,settings_clear_through_seq"
+		headSettings = ",h.settings_version,h.settings_pinned,h.settings_muted,h.settings_draft,h.settings_clear_through_seq"
+		previousSettings = ",previous.settings_version,previous.settings_pinned,previous.settings_muted,previous.settings_draft,previous.settings_clear_through_seq"
+		allocatedSettings = ",a.settings_version,a.settings_pinned,a.settings_muted,a.settings_draft,a.settings_clear_through_seq"
+	}
 	if includeReadState {
 		readCheck = " AND (r.read_seq IS NULL OR r.read_seq BETWEEN 0 AND c.last_seq)"
-		readValue = `, CASE WHEN m.user_id IS NOT NULL
+		readValue = `, CASE WHEN ` + active + `
 					THEN GREATEST(m.history_after_seq, COALESCE(r.read_seq, 0))
 				END AS last_read_seq`
 		readJoin = `
@@ -165,40 +188,40 @@ func sourceProjectionQuery(includeReadState bool, targetSQL string) string {
 	}
 	return `WITH audience AS (` + targetSQL + `),
 		head AS MATERIALIZED (
-			SELECT a.user_id, a.conversation_id, m.user_id IS NOT NULL AS active,
+			SELECT a.user_id, a.conversation_id, ` + active + ` AS active` + hidden + `,
 				(CASE WHEN c.conversation_id IS NULL THEN false
 					WHEN m.user_id IS NULL THEN true
 					WHEN c.last_seq=0 THEN m.history_after_seq=0 AND c.latest_server_msg_id IS NULL
 					ELSE m.history_after_seq<=c.last_seq AND msg.conversation_seq IS NOT DISTINCT FROM c.last_seq
-				END` + readCheck + `) AS valid,
-				CASE WHEN m.user_id IS NOT NULL THEN
-					CASE WHEN c.last_seq>m.history_after_seq THEN c.last_seq ELSE 0 END
+				END` + readCheck + settingsCheck + `) AS valid,
+				CASE WHEN ` + active + ` THEN
+					CASE WHEN c.last_seq>` + floor + ` THEN c.last_seq ELSE 0 END
 				END AS latest_seq,
-				CASE WHEN c.last_seq>m.history_after_seq THEN c.latest_server_msg_id END AS latest_server_msg_id` + readValue + `
+				CASE WHEN (` + active + `) AND c.last_seq>` + floor + ` THEN c.latest_server_msg_id END AS latest_server_msg_id` + readValue + settingsValues + `
 			FROM audience a
 			LEFT JOIN newim.im_conversations c ON c.conversation_id=a.conversation_id
 			LEFT JOIN newim.im_conversation_members m ON m.conversation_id=a.conversation_id
 				AND m.user_id=a.user_id AND m.departed_at IS NULL
 			LEFT JOIN LATERAL (
 				` + sourceSummaryPoint + `c.latest_server_msg_id LIMIT 1
-			) msg ON msg.conversation_id=c.conversation_id` + readJoin + `
+			) msg ON msg.conversation_id=c.conversation_id` + readJoin + settingsJoin + `
 		),
 		healthy AS (
 			SELECT NOT EXISTS (SELECT 1 FROM head WHERE NOT valid) AS valid
 		),
 		pending AS (
-			SELECT h.user_id, h.conversation_id, h.latest_seq, h.latest_server_msg_id` + headReadColumn + `,
+			SELECT h.user_id, h.conversation_id, h.latest_seq, h.latest_server_msg_id` + headReadColumn + headSettings + `,
 				CASE WHEN h.active THEN 'upsert' ELSE 'remove' END AS kind
 			FROM head h
 			LEFT JOIN LATERAL (
-				SELECT kind, latest_seq, latest_server_msg_id` + readColumn + ` FROM newim.im_conversation_sync_changes
+				SELECT kind, latest_seq, latest_server_msg_id` + readColumn + settingsColumns + ` FROM newim.im_conversation_sync_changes
 				WHERE user_id=h.user_id AND conversation_id=h.conversation_id
 				ORDER BY change_seq DESC LIMIT 1
 			) previous ON true
 			WHERE (SELECT valid FROM healthy)
-				AND ((h.active AND (previous.kind, previous.latest_seq, previous.latest_server_msg_id` + previousReadColumn + `)
-					IS DISTINCT FROM ('upsert', h.latest_seq, h.latest_server_msg_id` + headReadColumn + `))
-					OR (NOT h.active AND previous.kind='upsert'))
+				AND ((h.active AND (previous.kind, previous.latest_seq, previous.latest_server_msg_id` + previousReadColumn + previousSettings + `)
+					IS DISTINCT FROM ('upsert', h.latest_seq, h.latest_server_msg_id` + headReadColumn + headSettings + `))
+					OR (NOT h.active AND previous.kind='upsert')` + pendingHidden + `)
 		),
 		allocated AS MATERIALIZED (
 			SELECT p.*, a.last_change_seq + row_number() OVER (
@@ -222,8 +245,8 @@ func sourceProjectionQuery(includeReadState bool, targetSQL string) string {
 		),
 		written AS (
 			INSERT INTO newim.im_conversation_sync_changes
-				(user_id, change_seq, conversation_id, kind, latest_seq, latest_server_msg_id` + readColumn + `)
-			SELECT a.user_id, a.change_seq, a.conversation_id, a.kind, a.latest_seq, a.latest_server_msg_id` + allocatedReadColumn + `
+				(user_id, change_seq, conversation_id, kind, latest_seq, latest_server_msg_id` + readColumn + settingsColumns + `)
+			SELECT a.user_id, a.change_seq, a.conversation_id, a.kind, a.latest_seq, a.latest_server_msg_id` + allocatedReadColumn + allocatedSettings + `
 			FROM allocated a
 			JOIN advanced USING (user_id)
 			LEFT JOIN keyed k USING (user_id, conversation_id)

@@ -58,6 +58,7 @@ type Repository struct {
 	managedGroups        bool
 	projectConversations bool
 	projectReadState     bool
+	accountSettings      bool
 }
 
 // Open requires verified TLS for TCP or explicitly enabled local sockets.
@@ -136,12 +137,18 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 			return nil, err
 		}
 	}
+	accountSettings, err := conversationsync.AccountSettingsAvailable(ctx, pool)
+	if err != nil {
+		pool.Close()
+		return nil, app.Fail(app.SendStorageUnavailable)
+	}
 	repository := &Repository{
 		pool: pool, authorizer: conversationAuthorizer{},
 		privatePolicy: config.PrivatePolicy, strangerPolicy: config.StrangerPolicy,
 		directOnly: config.DirectOnly, managedGroups: config.ManagedGroups,
 		projectConversations: config.ProjectConversations,
 		projectReadState:     config.ProjectReadState,
+		accountSettings:      accountSettings,
 	}
 	if repository.managedGroups {
 		if err = repository.checkManagedGroupSchema(ctx); err != nil {
@@ -218,7 +225,7 @@ func (r *Repository) Persist(ctx context.Context, principal conversation.Princip
 		return app.PersistedMessage{}, err
 	}
 	defer rollback(tx)
-	if r.projectConversations {
+	if r.projectConversations || r.accountSettings {
 		if err = conversationsync.LockSourceMembership(ctx, tx); err != nil {
 			return app.PersistedMessage{}, privateStorageError(err)
 		}
@@ -263,8 +270,13 @@ func (r *Repository) Persist(ctx context.Context, principal conversation.Princip
 	// unique-violation path with the winner's generated identity.
 	// 并发等 intent 重试会通过 unique-violation 路径返回胜者的生成身份。
 	persisted.Replayed = stored.ServerMsgID != generated.ServerMsgID
+	if r.accountSettings && !persisted.Replayed {
+		if err = conversationsync.RestoreAccountSettings(ctx, tx, request.ConversationID, persisted.ConversationSeq); err != nil {
+			return app.PersistedMessage{}, privateStorageError(err)
+		}
+	}
 	if r.projectConversations && !persisted.Replayed {
-		if err = conversationsync.RecordSourceConversation(ctx, tx, request.ConversationID, nil, r.projectReadState); err != nil {
+		if err = conversationsync.RecordSourceConversation(ctx, tx, request.ConversationID, nil, r.projectReadState, r.accountSettings); err != nil {
 			return app.PersistedMessage{}, privateStorageError(err)
 		}
 	}

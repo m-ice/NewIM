@@ -24,6 +24,11 @@ TESTS = {
     'read-sync-security': 'TestReadSyncHTTPSecurity',
     'read-sync-recovery': 'TestReadSyncHTTPRecovery',
     'read-sync-query-plan': 'TestReadSyncHTTPWide',
+    'conversation-account-sync-check': 'TestAccountSettingsHTTPCheck',
+    'conversation-account-sync-security': 'TestAccountSettingsHTTPSecurity',
+    'conversation-account-sync-recovery': 'TestAccountSettingsHTTPRecovery',
+    'conversation-account-sync-query-plan': 'TestAccountSettingsHTTPWide',
+    'conversation-account-sdk-check': 'TestAccountSDKBridge',
 }
 
 
@@ -44,6 +49,23 @@ def run_test(db, name, phase='single', binary='conversationsynchttp.test'):
         raise Failure('TLS conversation sync test failed or skipped: ' + phase + ': ' + ', '.join(problems))
 
 
+def run_account_sdk(db):
+    name = 'tls_sqlite_conversation_account_sync'
+    result = db.commands.run([
+        'env', 'NEWIM_ACCOUNT_SDK_BRIDGE_CONTAINER=' + db.name,
+        'python3', 'sdk/storage/sqlite/engine.py', 'run',
+        'cargo', 'test', '-p', 'newim-store-sqlite', '--locked', '--offline',
+        '--test', 'account_sdk_bridge', '--', '--ignored', '--exact', name,
+    ], label='conversation-account-sdk-bridge', timeout=360, check=False)
+    output = result.stdout + result.stderr
+    (db.commands.directory / 'test-sdk.log').write_bytes(output)
+    print(output.decode(errors='replace'), end='', flush=True)
+    if (result.returncode or b'running 1 test' not in output
+            or ('test ' + name + ' ... ok').encode() not in output
+            or b'test result: ok. 1 passed; 0 failed; 0 ignored' not in output):
+        raise Failure('native SQLite account sync bridge failed or ran no tests')
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('suite', choices=TESTS)
@@ -57,7 +79,9 @@ def main():
         binary = directory / 'conversationsynchttp.test'
         read_sync = args.suite.startswith('read-sync-')
         read_suite = args.suite.startswith('read-')
-        query_plan = args.suite == 'read-sync-query-plan'
+        account_sync = args.suite.startswith('conversation-account-')
+        sdk_bridge = args.suite == 'conversation-account-sdk-check'
+        query_plan = args.suite.endswith('query-plan')
         servers = ('newim-gateway', 'newim-server')
         if not read_suite or read_sync:
             servers += ('newim-sync-backfill',)
@@ -67,26 +91,29 @@ def main():
         if query_plan:
             plan = directory / 'readsyncplan.test'
             build(commands, ['go', 'test', '-c', '-tags=integration', '-o', str(plan),
-                             './server/storage/conversationsync'], env, 'read-sync-query-plan-cross-compile')
+                             './server/storage/conversationsync'], env, 'sync-query-plan-cross-compile')
             paths += (plan.name,)
         for name in servers:
             build(commands, ['go', 'build', '-o', str(directory / name), './server/cmd/' + name],
                   env, 'sync-http-' + name + '-build')
         with Database(commands, image, platform) as db:
-            db.sql(migration_sql(17 if read_sync else 15 if read_suite else 14))
+            db.sql(migration_sql(18 if account_sync else 17 if read_sync else 15 if read_suite else 14))
             for name in paths:
                 commands.run(['docker', 'cp', str(directory / name), db.name + ':/tmp/' + name],
                              label='copy-owned-' + name)
             commands.run(['docker', 'exec', db.name, 'chmod', '0755', *('/tmp/' + name for name in paths)],
                          label='make-sync-http-executable')
-            if args.suite.endswith('recovery'):
+            if sdk_bridge:
+                run_account_sdk(db)
+            elif args.suite.endswith('recovery'):
                 run_test(db, TESTS[args.suite], 'prepare')
                 restart_database(db)
                 run_test(db, TESTS[args.suite], 'restart')
             else:
                 run_test(db, TESTS[args.suite])
                 if query_plan:
-                    run_test(db, 'TestReadSyncQueryPlan', 'plan', plan.name)
+                    test = 'TestAccountSettingsSourceQueryPlan' if account_sync else 'TestReadSyncQueryPlan'
+                    run_test(db, test, 'plan', plan.name)
         print('TLS conversation sync suite passed; command records: ' + str(directory))
     except (Failure, OSError) as exc:
         print('TLS conversation sync suite failed: ' + str(exc) + '; command records: ' + str(directory))

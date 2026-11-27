@@ -31,6 +31,31 @@
 每进程每分钟地址、账号预算默认分别为 120、60，可通过
 `NEWIM_CONVERSATION_SYNC_IP_ATTEMPTS_PER_MINUTE` 和 `NEWIM_CONVERSATION_SYNC_ACCOUNT_ATTEMPTS_PER_MINUTE` 调整。
 
+## 个人会话设置
+
+启用 `NEWIM_CONVERSATION_ACCOUNT_SETTINGS=1` 后，当前账号可使用以下 TLS 入口。沿用会话 Bearer 和同步预算。
+
+| 方法与路径 | 请求 |
+| --- | --- |
+| `GET /api/v1/conversations/{conversationId}/settings` | 空请求体 |
+| `PATCH /api/v1/conversations/{conversationId}/settings` | `expectedVersion` 及至少一个 `pinned`、`muted`、`draft` |
+| `POST /api/v1/conversations/{conversationId}/clear` | `expectedVersion` |
+| `POST /api/v1/conversations/{conversationId}/delete` | `expectedVersion` |
+
+写入体为 UTF-8 JSON，最多 32 KiB。草稿按解码后的 UTF-8 字节计量，最多 4096 字节。空字符串清草稿。
+成功返回 `settingsVersion`、`pinned`、`muted`、`draft`、`clearThroughSeq`、`deleted`。
+`expectedVersion`、`settingsVersion` 和 `clearThroughSeq` 使用规范非负十进制字符串。
+初始版本和清空下界为 `"0"`，设置默认关闭且草稿为空。版本不匹配返回 `409 SYNC_ACCOUNT_STATE_CONFLICT`，
+客户端可读取当前设置。成员外或会话不可用时返回 `404 SYNC_CONVERSATION_NOT_FOUND`。
+
+清空保留目录和设置，隐藏当前账号在服务端尾序号之前及该序号的消息。删除还清除个人设置并写目录移除修订。
+已删除时可读取设置或按当前版本重复删除，更新设置或清空返回 `409 SYNC_CONVERSATION_DELETED`。
+活跃成员收到新持久消息后，目录恢复，既有个人历史下界仍有效。免打扰记录通知偏好，消息正常收发与同步。
+
+新的 upsert 可以携带 `settings` 对象，字段同设置响应且 `deleted` 为 `false`。
+与摘要和位点一同持久化。缺省字段表示该修订未携带设置，客户端保留已知值。收到移除项后隐藏该会话。
+读取旧分页时，若其中的摘要已被当前账号清空或删除，返回 `SYNC_CURSOR_EXPIRED`。
+
 ## 消息补拉
 
 使用相同的会话和限流配置，向 `POST /api/v1/sync/messages` 发送 `conversationId`、`afterSeq` 和可选 `limit`。
@@ -41,6 +66,6 @@
 
 `afterSeq` 为规范十进制字符串，初次传 `"0"`，随后传客户端已保存的序号。响应的 `items` 为 [现有消息帧](../protocol/send-ack.md)，按授权范围内的消息序号连续排列。
 
-`historyAfterSeq` 为排他的历史下界，`latestSeq` 为当前账号可见的尾序号。实际读取从请求游标和历史下界中的较大值继续。退群后的 `latestSeq` 截止到离群时的授权上限。终页缺少可见尾序号会返回 `503 SYNC_STORAGE_UNAVAILABLE`。
+`historyAfterSeq` 为排他的历史下界，使用成员授权下界与个人清空下界的较大值。`latestSeq` 为当前账号可见的尾序号。实际读取从请求游标和历史下界中的较大值继续。退群后的 `latestSeq` 截止到离群时的授权上限。终页缺少可见尾序号会返回 `503 SYNC_STORAGE_UNAVAILABLE`。
 
 单页最多 262,144 字节。使用 `hasNext` 判断是否还有数据，使用 `nextAfterSeq` 继续。它是最后实际发出的序号，空页时为 `null`。序号游标超出授权范围或格式无效时返回 `400 SYNC_INVALID_CURSOR`。

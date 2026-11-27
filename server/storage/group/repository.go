@@ -40,6 +40,7 @@ type Repository struct {
 	pool                 *pgxpool.Pool
 	projectConversations bool
 	projectReadState     bool
+	accountSettings      bool
 }
 
 var _ app.Store = (*Repository)(nil)
@@ -109,8 +110,13 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 	if err != nil {
 		return nil, app.StorageUnavailable
 	}
+	accountSettings, err := conversationsync.AccountSettingsAvailable(ctx, pool)
+	if err != nil {
+		pool.Close()
+		return nil, app.StorageUnavailable
+	}
 	repo := &Repository{
-		pool: pool, projectConversations: config.ProjectConversations, projectReadState: config.ProjectReadState,
+		pool: pool, projectConversations: config.ProjectConversations, projectReadState: config.ProjectReadState, accountSettings: accountSettings,
 	}
 	if err = repo.checkSchema(ctx); err != nil {
 		pool.Close()
@@ -186,7 +192,7 @@ func (r *Repository) recordConversationSource(ctx context.Context, tx pgx.Tx, gr
 			removedIDs[i] = member.UserID
 		}
 	}
-	if err := conversationsync.RecordSourceConversation(ctx, tx, groupID, removedIDs, r.projectReadState); err != nil {
+	if err := conversationsync.RecordSourceConversation(ctx, tx, groupID, removedIDs, r.projectReadState, r.accountSettings); err != nil {
 		return app.StorageUnavailable
 	}
 	return nil

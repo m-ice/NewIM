@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/m-ice/NewIM/server/storage/conversationsync"
 	"github.com/m-ice/NewIM/server/storage/membership"
 	"github.com/m-ice/NewIM/server/storage/postgresidentity"
 	app "github.com/m-ice/NewIM/server/sync/message"
@@ -33,8 +34,9 @@ type Config struct {
 // Repository owns a bounded pgx pool and implements message.Store.
 // Repository 持有有界 pgx 连接池并实现 message.Store。
 type Repository struct {
-	pool          *pgxpool.Pool
-	readTxOptions pgx.TxOptions
+	pool            *pgxpool.Pool
+	readTxOptions   pgx.TxOptions
+	accountSettings bool
 }
 
 // Open requires verified TLS for TCP or an explicitly enabled local socket.
@@ -107,7 +109,13 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 		pool.Close()
 		return nil, app.Fail(app.StorageUnavailable)
 	}
-	return &Repository{pool: pool, readTxOptions: pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly}}, nil
+	accountSettings, err := conversationsync.AccountSettingsAvailable(ctx, pool)
+	if err != nil {
+		pool.Close()
+		return nil, app.Fail(app.StorageUnavailable)
+	}
+	return &Repository{pool: pool, readTxOptions: pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly},
+		accountSettings: accountSettings}, nil
 }
 
 // Close releases all pool resources.
@@ -165,6 +173,13 @@ func (r *Repository) read(ctx context.Context, user string, request app.ReadRequ
 			return app.ReadResult{}, app.Fail(app.StorageUnavailable)
 		}
 		visibleSeq = *head.departedThroughSeq
+	}
+	if r.accountSettings {
+		floor, err := conversationsync.PersonalHistoryFloor(ctx, tx, user, request.ConversationID, visibleSeq)
+		if err != nil {
+			return app.ReadResult{}, app.Fail(app.StorageUnavailable)
+		}
+		head.historyAfterSeq = max(head.historyAfterSeq, floor)
 	}
 	lower, err := request.EffectiveAfterSeq(head.historyAfterSeq, visibleSeq)
 	if err != nil {
@@ -242,8 +257,10 @@ func readHead(ctx context.Context, tx pgx.Tx, user, conversationID string, advan
 FROM newim.im_conversations c
 JOIN newim.im_conversation_members member
   ON member.conversation_id = c.conversation_id AND member.user_id = $2
-LEFT JOIN newim.im_messages m
-  ON m.conversation_id = c.conversation_id AND m.server_msg_id = c.latest_server_msg_id
+LEFT JOIN LATERAL (
+  SELECT conversation_id, conversation_seq FROM newim.im_messages
+  WHERE server_msg_id = c.latest_server_msg_id LIMIT 1
+) m ON m.conversation_id = c.conversation_id
 WHERE c.conversation_id = $1`, conversationID, user).
 		Scan(&head.latestSeq, &head.latestID, &head.pointerSeq, &head.historyAfterSeq, &head.departedThroughSeq)
 	if errors.Is(err, pgx.ErrNoRows) {

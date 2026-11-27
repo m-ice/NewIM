@@ -1,4 +1,4 @@
-// Package conversationhttp serves the authenticated conversation read protocol.
+// Package conversationhttp serves authenticated conversation sync and settings.
 package conversationhttp
 
 import (
@@ -32,6 +32,7 @@ const (
 type Handler struct {
 	service  *conversation.Service
 	messages *syncmessage.Service
+	settings AccountSettingsStore
 	auth     userhttp.Authenticator
 	budget   userhttp.Budget
 }
@@ -56,17 +57,29 @@ func NewWithMessages(service *conversation.Service, messages *syncmessage.Servic
 }
 
 func ContainsRoute(path string) bool {
+	_, _, settings := accountSettingsRoute(path)
+	return isSyncRoute(path) || settings
+}
+
+func isSyncRoute(path string) bool {
 	return path == bootstrapRoute || path == deltaRoute || path == messagesRoute
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.EscapedPath()
+	id, action, settings := accountSettingsRoute(path)
+	methods := http.MethodPost
+	allowed := r.Method == http.MethodPost
+	if settings && action == conversation.ChangeAccountSettings {
+		methods = "GET, PATCH"
+		allowed = r.Method == http.MethodGet || r.Method == http.MethodPatch
+	}
 	switch {
-	case !ContainsRoute(path) || (path == messagesRoute && h.messages == nil):
+	case (!isSyncRoute(path) && !settings) || (settings && h.settings == nil) || (path == messagesRoute && h.messages == nil):
 		writeError(w, http.StatusNotFound, "HTTP_NOT_FOUND")
 		return
-	case r.Method != http.MethodPost:
-		w.Header().Set("Allow", http.MethodPost)
+	case !allowed:
+		w.Header().Set("Allow", methods)
 		writeError(w, http.StatusMethodNotAllowed, "HTTP_METHOD_NOT_ALLOWED")
 		return
 	case r.TLS == nil || r.URL.RawQuery != "" || r.URL.ForceQuery:
@@ -93,6 +106,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if !h.budget.AllowAccount(identity.UserID()) {
 		writeError(w, http.StatusTooManyRequests, rateLimited)
+		return
+	}
+	if settings {
+		h.serveAccountSettings(w, r, token, identity, id, action)
 		return
 	}
 	body, ok := readBody(w, r)
@@ -207,7 +224,11 @@ func (h *Handler) read(ctx context.Context, path string, principal conversation.
 }
 
 func readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
-	if r.ContentLength > bodyLimit {
+	return readLimitedBody(w, r, bodyLimit)
+}
+
+func readLimitedBody(w http.ResponseWriter, r *http.Request, limit int64) ([]byte, bool) {
+	if r.ContentLength > limit {
 		writeError(w, http.StatusRequestEntityTooLarge, "HTTP_BODY_TOO_LARGE")
 		return nil, false
 	}
@@ -219,7 +240,7 @@ func readBody(w http.ResponseWriter, r *http.Request) ([]byte, bool) {
 		writeError(w, http.StatusBadRequest, invalidInput)
 		return nil, false
 	}
-	reader := http.MaxBytesReader(w, r.Body, bodyLimit)
+	reader := http.MaxBytesReader(w, r.Body, limit)
 	defer reader.Close()
 	body, err := io.ReadAll(reader)
 	if err == nil {
@@ -252,11 +273,13 @@ func jsonContentType(headers http.Header) bool {
 func writeSyncError(w http.ResponseWriter, code string) {
 	status := http.StatusServiceUnavailable
 	switch conversation.Code(code) {
-	case conversation.InvalidCursor, conversation.LimitExceeded:
+	case conversation.InvalidCursor, conversation.LimitExceeded, conversation.AccountSettingsInvalid:
 		status = http.StatusBadRequest
 	case conversation.Forbidden:
 		status = http.StatusForbidden
-	case conversation.CursorExpired:
+	case conversation.AccountSettingsNotFound:
+		status = http.StatusNotFound
+	case conversation.CursorExpired, conversation.AccountStateConflict, conversation.ConversationDeleted:
 		status = http.StatusConflict
 	}
 	writeError(w, status, code)

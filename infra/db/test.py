@@ -41,6 +41,7 @@ FRIEND_TABLES = {'im_friend_edges', 'im_friend_applications', 'im_friend_sync_ac
                  'im_friend_sync_changes'}
 GROUP_TABLES = {'im_groups', 'im_group_requests', 'im_group_sync_accounts', 'im_group_sync_changes'}
 ACCOUNT_REVOCATION_TABLES = {'im_account_revocation_requests'}
+CONVERSATION_ACCOUNT_TABLES = {'im_conversation_account_settings'}
 
 
 def source_migrations():
@@ -72,6 +73,7 @@ def check_catalog(db, target=None):
     expected |= FRIEND_TABLES if target >= 11 else set()
     expected |= GROUP_TABLES if target >= 12 else set()
     expected |= ACCOUNT_REVOCATION_TABLES if target >= 13 else set()
+    expected |= CONVERSATION_ACCOUNT_TABLES if target >= 18 else set()
     actual_tables = set(db.sql("SELECT tablename FROM pg_tables WHERE schemaname='newim';").splitlines())
     if actual_tables != expected:
         raise Failure('exact catalog table set: missing='+repr(sorted(expected-actual_tables))+
@@ -142,6 +144,34 @@ def check_catalog(db, target=None):
     expected_read_sync = ['im_conversation_sync_accounts|read_state_epoch|bigint|YES|',
                           'im_conversation_sync_changes|last_read_seq|bigint|YES|']
     equal(read_sync_columns, expected_read_sync if target >= 17 else [], 'nullable read projection columns without defaults')
+    settings_columns = db.sql("SELECT table_name||'|'||column_name||'|'||"
+                              "COALESCE(domain_name,data_type)||'|'||is_nullable "
+                              "FROM information_schema.columns WHERE table_schema='newim' "
+                              "AND (table_name='im_conversation_account_settings' "
+                              "OR (table_name='im_conversation_sync_changes' AND left(column_name,9)='settings_')) "
+                              "ORDER BY table_name,ordinal_position;").splitlines()
+    expected_settings = [
+        'im_conversation_account_settings|conversation_id|identifier|NO',
+        'im_conversation_account_settings|user_id|identifier|NO',
+        'im_conversation_account_settings|version|bigint|NO',
+        'im_conversation_account_settings|pinned|boolean|NO',
+        'im_conversation_account_settings|muted|boolean|NO',
+        'im_conversation_account_settings|draft|bytea|NO',
+        'im_conversation_account_settings|clear_through_seq|bigint|NO',
+        'im_conversation_account_settings|deleted_through_seq|bigint|YES',
+        'im_conversation_sync_changes|settings_version|bigint|YES',
+        'im_conversation_sync_changes|settings_pinned|boolean|YES',
+        'im_conversation_sync_changes|settings_muted|boolean|YES',
+        'im_conversation_sync_changes|settings_draft|bytea|YES',
+        'im_conversation_sync_changes|settings_clear_through_seq|bigint|YES',
+    ]
+    equal(settings_columns, expected_settings if target >= 18 else [], 'account settings and optional revision column shapes')
+    settings_keys = db.sql("SELECT pg_get_constraintdef(oid) FROM pg_constraint WHERE "
+                           "conrelid=to_regclass('newim.im_conversation_account_settings') "
+                           "AND contype IN ('p','f') ORDER BY contype;").splitlines()
+    expected_keys = ['FOREIGN KEY (conversation_id, user_id) REFERENCES newim.im_conversation_members(conversation_id, user_id)',
+                     'PRIMARY KEY (conversation_id, user_id)']
+    equal(settings_keys, expected_keys if target >= 18 else [], 'account settings reuse the member key')
     check_ledger(db, target)
 
 
@@ -225,7 +255,8 @@ def sync_constraints(db):
     columns = {
         'accounts': 'user_id,epoch,last_change_seq,min_valid_seq,source_ready,source_after_key,read_state_epoch',
         'keys': 'user_id,conversation_id,first_change_seq',
-        'changes': 'user_id,change_seq,conversation_id,kind,latest_seq,latest_server_msg_id,last_read_seq',
+        'changes': ('user_id,change_seq,conversation_id,kind,latest_seq,latest_server_msg_id,last_read_seq,'
+                    'settings_version,settings_pinned,settings_muted,settings_draft,settings_clear_through_seq'),
     }
     for suffix, expected in columns.items():
         scalar(db, "SELECT string_agg(column_name,',' ORDER BY ordinal_position) FROM information_schema.columns "
@@ -277,6 +308,44 @@ def sync_constraints(db):
            f"UPDATE newim.im_conversation_sync_changes SET last_read_seq={MAXIMUM} WHERE change_seq=2; ROLLBACK;")
     equal(snapshot(db), before, 'boundary transaction rollback')
     print(f'PASS sync schema constraints: {len(negatives)} rejected writes', flush=True)
+
+
+def conversation_account_settings_constraints(db):
+    db.sql("INSERT INTO newim.im_conversation_account_settings(conversation_id,user_id,version,deleted_through_seq) "
+           "VALUES ('room','alice',1,0); "
+           "INSERT INTO newim.im_conversation_account_settings(conversation_id,user_id,version,draft,clear_through_seq) "
+           f"VALUES ('room','bob',{MAXIMUM},decode(repeat('00',4096),'hex'),{MAXIMUM}); "
+           "UPDATE newim.im_conversation_sync_changes SET settings_version=1,settings_pinned=false,settings_muted=true,"
+           "settings_draft=decode('c3a900','hex'),settings_clear_through_seq=0 WHERE change_seq=2;")
+    scalar(db, "SELECT pinned::text||'|'||muted::text||'|'||octet_length(draft)||'|'||clear_through_seq||'|'||deleted_through_seq "
+           "FROM newim.im_conversation_account_settings WHERE user_id='alice';",
+           'false|false|0|0|0', 'explicit deletion at zero is distinct from absence')
+    scalar(db, "SELECT octet_length(draft)||'|'||get_byte(draft,0)||'|'||(deleted_through_seq IS NULL)::text "
+           "FROM newim.im_conversation_account_settings WHERE user_id='bob';",
+           '4096|0|true', 'private draft accepts 4096 bytes including UTF-8 NUL')
+    scalar(db, "SELECT encode(settings_draft,'hex') FROM newim.im_conversation_sync_changes WHERE change_seq=2;",
+           'c3a900', 'complete upsert snapshot preserves draft bytes')
+    negatives = [
+        ("INSERT INTO newim.im_conversation_account_settings(conversation_id,user_id,version) VALUES ('other','alice',1);", '23503'),
+        ("INSERT INTO newim.im_conversation_account_settings(conversation_id,user_id,version) VALUES ('room','alice',2);", '23505'),
+        ("UPDATE newim.im_conversation_account_settings SET version=0;", '23514'),
+        ("UPDATE newim.im_conversation_account_settings SET draft=decode(repeat('00',4097),'hex');", '23514'),
+        ("UPDATE newim.im_conversation_account_settings SET pinned=NULL;", '23502'),
+        ("UPDATE newim.im_conversation_account_settings SET clear_through_seq=-1;", '23514'),
+        ("UPDATE newim.im_conversation_account_settings SET deleted_through_seq=-1;", '23514'),
+        ("UPDATE newim.im_conversation_account_settings SET deleted_through_seq=clear_through_seq+1 "
+         "WHERE user_id='alice';", '23514'),
+        ("UPDATE newim.im_conversation_sync_changes SET settings_pinned=false WHERE change_seq=1;", '23514'),
+        ("UPDATE newim.im_conversation_sync_changes SET settings_version=0 WHERE change_seq=2;", '23514'),
+        ("UPDATE newim.im_conversation_sync_changes SET settings_draft=decode(repeat('00',4097),'hex') "
+         "WHERE change_seq=2;", '23514'),
+        ("UPDATE newim.im_conversation_sync_changes SET settings_clear_through_seq=-1 WHERE change_seq=2;", '23514'),
+        ("UPDATE newim.im_conversation_sync_changes SET settings_version=1,settings_pinned=false,settings_muted=false,"
+         "settings_draft=''::bytea,settings_clear_through_seq=0 WHERE kind='remove';", '23514'),
+    ]
+    for sql, error in negatives:
+        db.sql(sql, error=error)
+    print(f'PASS conversation account settings constraints: {len(negatives)} rejected writes', flush=True)
 
 
 def schema(db, commands):
@@ -344,6 +413,7 @@ def schema(db, commands):
         db.sql(sql, error=error)
     equal(snapshot(db), before, 'negative writes preserve database')
     sync_constraints(db)
+    conversation_account_settings_constraints(db)
     auth_constraints(db)
     account_revocation_constraints(db)
     gateway_handshake_constraints(db)
@@ -1238,6 +1308,47 @@ def conversation_read_sync_migration(db, commands):
     print('PASS populated 017 failure/termination rollback and immutable projection history', flush=True)
 
 
+def conversation_account_settings_migration(db, commands):
+    legacy_changes = ("SELECT to_jsonb(c)-ARRAY['settings_version','settings_pinned','settings_muted','settings_draft',"
+                      "'settings_clear_through_seq'] FROM newim.im_conversation_sync_changes c ORDER BY user_id,change_seq;")
+    historical = snapshot(db)
+    changes = db.sql(legacy_changes)
+    with tempfile.TemporaryDirectory(prefix='conversation-account-settings-migration-copy-', dir=commands.directory) as owned:
+        directory = Path(owned)
+        for path in source_migrations():
+            (directory/path.name).write_bytes(path.read_bytes())
+        candidate = directory/'018_conversation_account_settings.sql'
+        original = candidate.read_text()
+        candidate.write_text(original + "\nSELECT 1/0;\n")
+        db.sql(migration_sql(18, directory=directory), error='22012')
+        check_catalog(db, 17)
+        equal(snapshot(db), historical, 'failed 018 preserves populated 017 rows')
+        candidate.write_text(original + "\nSELECT pg_sleep(30);\n")
+        held = db.session("SET application_name='newim_conversation_account_settings_migration_interrupt'; " +
+                          migration_sql(18, directory=directory))
+        db.wait_sql("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name="
+                    "'newim_conversation_account_settings_migration_interrupt' AND wait_event='PgSleep');")
+        db.sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+               "WHERE application_name='newim_conversation_account_settings_migration_interrupt';")
+        held.finish(error='57P01')
+        check_catalog(db, 17)
+        equal(snapshot(db), historical, 'terminated 018 preserves populated 017 rows')
+    db.sql(migration_sql(18))
+    check_catalog(db, 18)
+    upgraded = snapshot(db)
+    changed_tables = CONVERSATION_ACCOUNT_TABLES | {'im_conversation_sync_changes', 'migrations'}
+    equal({k: v for k, v in upgraded.items() if k not in changed_tables},
+          {k: v for k, v in historical.items() if k not in changed_tables}, '018 preserves every other table')
+    equal(db.sql(legacy_changes), changes, '018 preserves historical revisions and read positions')
+    scalar(db, "SELECT count(*) FROM newim.im_conversation_account_settings;",
+           0, '018 does not invent account settings')
+    scalar(db, "SELECT count(*) FROM newim.im_conversation_sync_changes WHERE settings_version IS NOT NULL;",
+           0, '018 does not invent historical settings snapshots')
+    db.sql("INSERT INTO newim.im_conversation_account_settings(conversation_id,user_id,version,pinned) "
+           "VALUES ('room','alice',1,true);")
+    print('PASS populated 018 failure/termination rollback and unchanged settings history', flush=True)
+
+
 def migrations(db, commands):
     head = len(source_migrations())
     db.sql(migration_sql(1))
@@ -1268,6 +1379,7 @@ def migrations(db, commands):
     read_watermark_migration(db, commands)
     stranger_message_index_migration(db, commands)
     conversation_read_sync_migration(db, commands)
+    conversation_account_settings_migration(db, commands)
     after = snapshot(db)
     db.sql(migration_sql())
     equal(snapshot(db), after, 'head replay stable')

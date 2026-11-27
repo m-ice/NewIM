@@ -1,5 +1,6 @@
 //! 原生 SQLite 本地存储 / Native SQLite store with explicit durability boundaries.
 #![forbid(unsafe_code)]
+mod conversation_sync;
 mod deadline;
 mod files;
 mod initialization;

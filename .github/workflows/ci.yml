@@ -107,6 +107,12 @@ jobs:
       - name: Exercise read state in conversation sync
         timeout-minutes: 12
         run: make read-sync-check read-sync-security read-sync-recovery read-sync-query-plan
+      - name: Exercise account conversation settings and history
+        timeout-minutes: 12
+        run: make conversation-account-sync-check conversation-account-sync-security conversation-account-sync-recovery conversation-account-sync-query-plan
+      - name: Exercise native SDK conversation sync through TLS
+        timeout-minutes: 12
+        run: make conversation-account-sdk-check
       - name: Exercise idempotent current-token revocation
         timeout-minutes: 12
         run: make auth-logout-check

@@ -20,21 +20,24 @@ const requestTimeout = 5 * time.Second
 // Config is trusted service configuration, never request input.
 // Config 仅接受可信服务配置，不接受客户端输入。
 type Config struct {
-	DSN                string
-	AllowLocalSocket   bool
-	MaxConnections     int
-	ApplicationName    string
-	Guard              *postgresidentity.Guard
-	RequireSourceReady bool
-	IncludeReadState   bool
+	DSN                   string
+	AllowLocalSocket      bool
+	MaxConnections        int
+	ApplicationName       string
+	Guard                 *postgresidentity.Guard
+	RequireSourceReady    bool
+	IncludeReadState      bool
+	ExposeAccountSettings bool
 }
 
 // Repository owns a bounded pool; credentials and driver errors stay private.
 // Repository 持有有界连接池，不暴露凭证或驱动错误。
 type Repository struct {
-	pool               *pgxpool.Pool
-	requireSourceReady bool
-	includeReadState   bool
+	pool                  *pgxpool.Pool
+	requireSourceReady    bool
+	includeReadState      bool
+	accountSettings       bool
+	exposeAccountSettings bool
 }
 
 // Open requires verified TLS for TCP, or explicitly enabled local sockets.
@@ -42,7 +45,7 @@ type Repository struct {
 func Open(ctx context.Context, config Config) (*Repository, error) {
 	if ctx == nil || config.DSN == "" || config.MaxConnections < 0 || config.MaxConnections > 8 ||
 		(config.ApplicationName != "" && !identifier(config.ApplicationName)) ||
-		(config.IncludeReadState && !config.RequireSourceReady) {
+		(config.IncludeReadState && !config.RequireSourceReady) || (config.ExposeAccountSettings && !config.IncludeReadState) {
 		return nil, app.Fail(app.StorageUnavailable)
 	}
 	c, err := pgxpool.ParseConfig(config.DSN)
@@ -108,7 +111,13 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 			return nil, fixed(err)
 		}
 	}
-	return &Repository{pool: pool, requireSourceReady: config.RequireSourceReady, includeReadState: config.IncludeReadState}, nil
+	accountSettings, err := AccountSettingsAvailable(ctx, pool)
+	if err != nil || config.ExposeAccountSettings && !accountSettings {
+		pool.Close()
+		return nil, app.Fail(app.StorageUnavailable)
+	}
+	return &Repository{pool: pool, requireSourceReady: config.RequireSourceReady, includeReadState: config.IncludeReadState,
+		accountSettings: accountSettings, exposeAccountSettings: config.ExposeAccountSettings}, nil
 }
 
 // Close releases all pool resources after callers finish their transactions.

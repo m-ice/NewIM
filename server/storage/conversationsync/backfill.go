@@ -32,10 +32,10 @@ func (r *Repository) BackfillStep(ctx context.Context, userID string, limit int)
 	if ctx == nil || r == nil || r.pool == nil || !r.requireSourceReady {
 		return false, app.Fail(app.StorageUnavailable)
 	}
-	return backfillStep(ctx, r.pool, userID, limit, r.includeReadState)
+	return backfillStep(ctx, r.pool, userID, limit, r.includeReadState, r.accountSettings)
 }
 
-func backfillStep(ctx context.Context, db sourceBackfillDB, userID string, limit int, includeReadState bool) (bool, error) {
+func backfillStep(ctx context.Context, db sourceBackfillDB, userID string, limit int, includeReadState, accountSettings bool) (bool, error) {
 	if !identifier(userID) {
 		return false, app.Fail(app.Forbidden)
 	}
@@ -44,21 +44,21 @@ func backfillStep(ctx context.Context, db sourceBackfillDB, userID string, limit
 	}
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	ready, err := backfillPage(ctx, db, userID, limit, includeReadState)
+	ready, err := backfillPage(ctx, db, userID, limit, includeReadState, accountSettings)
 	if !errors.Is(err, errReadBackfillUnprepared) {
 		return ready, err
 	}
 	if err = prepareReadBackfillAccount(ctx, db, userID); err != nil {
 		return false, err
 	}
-	ready, err = backfillPage(ctx, db, userID, limit, includeReadState)
+	ready, err = backfillPage(ctx, db, userID, limit, includeReadState, accountSettings)
 	if errors.Is(err, errReadBackfillUnprepared) {
 		return false, app.Fail(app.NotReady)
 	}
 	return ready, err
 }
 
-func backfillPage(ctx context.Context, db sourceBackfillDB, userID string, limit int, includeReadState bool) (bool, error) {
+func backfillPage(ctx context.Context, db sourceBackfillDB, userID string, limit int, includeReadState, accountSettings bool) (bool, error) {
 	tx, err := db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return false, fixed(err)
@@ -108,7 +108,7 @@ func backfillPage(ctx context.Context, db sourceBackfillDB, userID string, limit
 		return current.ready, fixed(tx.Commit(ctx))
 	}
 	if len(keys) > 0 {
-		if err = appendSourceProjection(ctx, tx, includeReadState, sourceAccountPageTargets, userID, keys); err != nil {
+		if err = appendSourceProjection(ctx, tx, includeReadState, accountSettings, sourceAccountPageTargets, userID, keys); err != nil {
 			return false, err
 		}
 	}
@@ -324,7 +324,7 @@ func (r *Repository) RunSourceBackfill(ctx context.Context, limit int) (err erro
 		}
 		for _, userID := range pending {
 			for {
-				ready, err := backfillStep(ctx, conn, userID, limit, r.includeReadState)
+				ready, err := backfillStep(ctx, conn, userID, limit, r.includeReadState, r.accountSettings)
 				if err != nil {
 					return err
 				}

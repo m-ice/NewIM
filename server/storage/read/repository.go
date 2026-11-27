@@ -33,6 +33,7 @@ type Config struct {
 type Repository struct {
 	pool             *pgxpool.Pool
 	projectReadState bool
+	accountSettings  bool
 }
 
 var _ app.Store = (*Repository)(nil)
@@ -87,7 +88,12 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 	if err != nil {
 		return nil, app.Fail(app.StorageUnavailable)
 	}
-	r := &Repository{pool: pool, projectReadState: config.ProjectReadState}
+	accountSettings, err := conversationsync.AccountSettingsAvailable(ctx, pool)
+	if err != nil {
+		pool.Close()
+		return nil, app.Fail(app.StorageUnavailable)
+	}
+	r := &Repository{pool: pool, projectReadState: config.ProjectReadState, accountSettings: accountSettings}
 	if err = r.checkSchema(ctx); err != nil {
 		r.Close()
 		return nil, err
@@ -289,7 +295,7 @@ func (r *Repository) advanceWatermark(ctx context.Context, tx pgx.Tx, state app.
 		return app.State{}, app.Fail(app.StorageUnavailable)
 	}
 	if r.projectReadState {
-		if err = conversationsync.RecordSourceWatermark(ctx, tx, userID, state.ConversationID); err != nil {
+		if err = conversationsync.RecordSourceWatermark(ctx, tx, userID, state.ConversationID, r.accountSettings); err != nil {
 			return app.State{}, app.Fail(app.StorageUnavailable)
 		}
 	}

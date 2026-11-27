@@ -13,6 +13,7 @@ type readScope struct {
 	activeMembersOnly  bool
 	requireSourceReady bool
 	includeReadState   bool
+	accountSettings    bool
 }
 
 // Read releases its consistent snapshot before returning any candidate.
@@ -49,7 +50,7 @@ func (r *Repository) Read(ctx context.Context, user string, request app.ReadRequ
 		return result, err
 	}
 	scope := readScope{
-		activeMembersOnly: activeMembersOnly, requireSourceReady: r.requireSourceReady, includeReadState: r.includeReadState,
+		activeMembersOnly: activeMembersOnly, requireSourceReady: r.requireSourceReady, includeReadState: r.includeReadState, accountSettings: r.accountSettings,
 	}
 	query := "SELECT epoch,last_change_seq,min_valid_seq FROM newim.im_conversation_sync_accounts WHERE user_id=$1"
 	if scope.requireSourceReady {
@@ -110,6 +111,16 @@ func (r *Repository) Read(ctx context.Context, user string, request app.ReadRequ
 	if err != nil {
 		return app.ReadResult{}, err
 	}
+	if scope.accountSettings && !r.exposeAccountSettings {
+		for _, candidate := range result.Candidates {
+			if candidate.State != nil {
+				candidate.State.Settings = nil
+			}
+			if candidate.Latest != nil {
+				candidate.Latest.Settings = nil
+			}
+		}
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return app.ReadResult{}, fixed(err)
 	}
@@ -145,7 +156,7 @@ func readDirectory(ctx context.Context, tx pgx.Tx, user, after string, scope rea
 	for _, e := range entries {
 		candidate := app.Candidate{Key: e.key}
 		if uint64(e.first) <= result.Fence {
-			candidate.State, err = latestItem(ctx, tx, user, e.key, result.Fence, scope.includeReadState)
+			candidate.State, err = latestItem(ctx, tx, user, e.key, result.Fence, scope)
 			if err != nil {
 				return err
 			}
@@ -162,12 +173,12 @@ func readDirectory(ctx context.Context, tx pgx.Tx, user, after string, scope rea
 }
 
 func readDelta(ctx context.Context, tx pgx.Tx, user string, request app.ReadRequest, scope readScope, result *app.ReadResult) error {
-	rows, err := tx.Query(ctx, "SELECT "+itemColumns(scope.includeReadState)+" FROM newim.im_conversation_sync_changes WHERE user_id=$1 AND change_seq>$2 AND change_seq<=$3 ORDER BY change_seq LIMIT $4", user, int64(request.AfterSeq), int64(result.Fence), request.Limit+1)
+	rows, err := tx.Query(ctx, "SELECT "+itemColumns(scope)+" FROM newim.im_conversation_sync_changes WHERE user_id=$1 AND change_seq>$2 AND change_seq<=$3 ORDER BY change_seq LIMIT $4", user, int64(request.AfterSeq), int64(result.Fence), request.Limit+1)
 	if err != nil {
 		return fixed(err)
 	}
 	for rows.Next() {
-		item, err := scanItem(rows, scope.includeReadState)
+		item, err := scanItem(rows, scope)
 		if err != nil {
 			rows.Close()
 			return err
@@ -192,8 +203,8 @@ func authorize(ctx context.Context, tx pgx.Tx, user string, scope readScope, can
 		return nil
 	}
 	var err error
-	if scope.requireSourceReady {
-		return authorizeSourceSummary(ctx, tx, user, candidate, scope.includeReadState)
+	if scope.requireSourceReady || scope.accountSettings {
+		return authorizeSourceSummary(ctx, tx, user, candidate, scope)
 	}
 	candidate.Member, err = hasMember(ctx, tx, user, candidate.Key, scope.activeMembersOnly)
 	if err != nil {
@@ -205,30 +216,57 @@ func authorize(ctx context.Context, tx pgx.Tx, user string, scope readScope, can
 	return err
 }
 
-func authorizeSourceSummary(ctx context.Context, tx pgx.Tx, user string, candidate *app.Candidate, includeReadState bool) error {
+func authorizeSourceSummary(ctx context.Context, tx pgx.Tx, user string, candidate *app.Candidate, scope readScope) error {
 	var floor int64
-	err := tx.QueryRow(ctx, `SELECT history_after_seq FROM newim.im_conversation_members
-		WHERE user_id=$1 AND conversation_id=$2 AND departed_at IS NULL`, user, candidate.Key).Scan(&floor)
+	var personalFloor, deleted *int64
+	query := `SELECT m.history_after_seq FROM newim.im_conversation_members m
+		WHERE m.user_id=$1 AND m.conversation_id=$2 AND m.departed_at IS NULL`
+	fields := []any{&floor}
+	if scope.accountSettings {
+		query = `SELECT m.history_after_seq,s.clear_through_seq,s.deleted_through_seq
+			FROM newim.im_conversation_members m
+			LEFT JOIN newim.im_conversation_account_settings s USING (conversation_id,user_id)
+			WHERE m.user_id=$1 AND m.conversation_id=$2 AND m.departed_at IS NULL`
+		fields = append(fields, &personalFloor, &deleted)
+	}
+	err := tx.QueryRow(ctx, query, user, candidate.Key).Scan(fields...)
 	if errors.Is(err, pgx.ErrNoRows) {
-		candidate.Latest, err = latestItem(ctx, tx, user, candidate.Key, app.MaxSequence, includeReadState)
+		candidate.Latest, err = latestItem(ctx, tx, user, candidate.Key, app.MaxSequence, scope)
 		return err
 	}
-	if err != nil || floor < 0 {
+	if err != nil || floor < 0 || personalFloor != nil && *personalFloor < 0 {
 		return app.Fail(app.StorageUnavailable)
 	}
-	visible, err := visibleSourceSummary(ctx, tx, candidate.State, uint64(floor))
-	if err != nil || visible {
-		candidate.Member = visible
-		return err
+	if !scope.requireSourceReady && personalFloor == nil {
+		candidate.Member = true
+		return nil
+	}
+	history := uint64(0)
+	if personalFloor != nil {
+		history = uint64(*personalFloor)
+	}
+	if deleted == nil {
+		visible, err := visibleSourceSummary(ctx, tx, candidate.State, uint64(floor), history)
+		if err != nil || visible {
+			candidate.Member = visible
+			return err
+		}
 	}
 
-	// Record the authorization change without expiring an earlier page.
+	// Current history or a personal deletion can invalidate a frozen summary.
 	candidate.HistoryRestricted = true
-	replacement, err := latestItem(ctx, tx, user, candidate.Key, app.MaxSequence, includeReadState)
-	if err != nil || replacement == nil || replacement.Kind != "upsert" || replacement.Revision <= candidate.State.Revision {
+	replacement, err := latestItem(ctx, tx, user, candidate.Key, app.MaxSequence, scope)
+	if err != nil || replacement == nil || replacement.Revision <= candidate.State.Revision {
 		return err
 	}
-	visible, err = visibleSourceSummary(ctx, tx, replacement, uint64(floor))
+	if replacement.Kind == "remove" {
+		candidate.Latest = replacement
+		return nil
+	}
+	if deleted != nil {
+		return nil
+	}
+	visible, err := visibleSourceSummary(ctx, tx, replacement, uint64(floor), history)
 	if visible {
 		candidate.Latest = replacement
 	}
@@ -239,18 +277,25 @@ const visibleSummarySQL = `
 	SELECT COALESCE((SELECT conversation_id=$1 AND conversation_seq=$3
 		FROM (` + sourceSummaryPoint + `$2 LIMIT 1) AS summary), false)`
 
-func visibleSourceSummary(ctx context.Context, tx pgx.Tx, item *app.Item, floor uint64) (bool, error) {
+func visibleSourceSummary(ctx context.Context, tx pgx.Tx, item *app.Item, memberFloor, personalFloor uint64) (bool, error) {
 	seq := *item.LatestConversationSeq
 	if (seq == 0) != (item.LatestServerMsgID == nil) {
 		return false, app.Fail(app.StorageUnavailable)
 	}
-	if item.LastReadSeq != nil && *item.LastReadSeq < floor {
+	if item.LastReadSeq != nil && *item.LastReadSeq < memberFloor {
+		return false, nil
+	}
+	var frozenFloor uint64
+	if item.Settings != nil {
+		frozenFloor = item.Settings.ClearThroughSeq
+	}
+	if frozenFloor < personalFloor {
 		return false, nil
 	}
 	if seq == 0 {
 		return true, nil
 	}
-	if seq <= floor {
+	if seq <= max(memberFloor, personalFloor) {
 		return false, nil
 	}
 	var matches bool
@@ -271,30 +316,39 @@ func hasMember(ctx context.Context, tx pgx.Tx, user, conversation string, active
 	return member, err
 }
 
-func itemColumns(includeReadState bool) string {
-	const columns = "conversation_id,change_seq,kind,latest_seq,latest_server_msg_id"
-	if includeReadState {
-		return columns + ",last_read_seq"
+func itemColumns(scope readScope) string {
+	columns := "conversation_id,change_seq,kind,latest_seq,latest_server_msg_id"
+	if scope.includeReadState {
+		columns += ",last_read_seq"
+	}
+	if scope.accountSettings {
+		columns += ",settings_version,settings_pinned,settings_muted,settings_draft,settings_clear_through_seq"
 	}
 	return columns
 }
 
 func latest(ctx context.Context, tx pgx.Tx, user, conversation string, fence uint64) (*app.Item, error) {
-	return latestItem(ctx, tx, user, conversation, fence, false)
+	return latestItem(ctx, tx, user, conversation, fence, readScope{})
 }
 
-func latestItem(ctx context.Context, tx pgx.Tx, user, conversation string, fence uint64, includeReadState bool) (*app.Item, error) {
-	row := tx.QueryRow(ctx, "SELECT "+itemColumns(includeReadState)+" FROM newim.im_conversation_sync_changes WHERE user_id=$1 AND conversation_id=$2 AND change_seq<=$3 ORDER BY change_seq DESC LIMIT 1", user, conversation, int64(fence))
-	return scanItem(row, includeReadState)
+func latestItem(ctx context.Context, tx pgx.Tx, user, conversation string, fence uint64, scope readScope) (*app.Item, error) {
+	row := tx.QueryRow(ctx, "SELECT "+itemColumns(scope)+" FROM newim.im_conversation_sync_changes WHERE user_id=$1 AND conversation_id=$2 AND change_seq<=$3 ORDER BY change_seq DESC LIMIT 1", user, conversation, int64(fence))
+	return scanItem(row, scope)
 }
 
-func scanItem(row interface{ Scan(...any) error }, includeReadState bool) (*app.Item, error) {
+func scanItem(row interface{ Scan(...any) error }, scope readScope) (*app.Item, error) {
 	item := &app.Item{}
 	var revision int64
 	var sequence, readSequence *int64
 	fields := []any{&item.ConversationID, &revision, &item.Kind, &sequence, &item.LatestServerMsgID}
-	if includeReadState {
+	if scope.includeReadState {
 		fields = append(fields, &readSequence)
+	}
+	var settingsVersion, clearThrough *int64
+	var pinned, muted *bool
+	var draft []byte
+	if scope.accountSettings {
+		fields = append(fields, &settingsVersion, &pinned, &muted, &draft, &clearThrough)
 	}
 	err := row.Scan(fields...)
 	if errors.Is(err, pgx.ErrNoRows) {
@@ -305,6 +359,15 @@ func scanItem(row interface{ Scan(...any) error }, includeReadState bool) (*app.
 	}
 	if revision <= 0 || !identifier(item.ConversationID) {
 		return nil, app.Fail(app.StorageUnavailable)
+	}
+	if settingsVersion != nil || pinned != nil || muted != nil || draft != nil || clearThrough != nil {
+		if item.Kind != "upsert" || settingsVersion == nil || *settingsVersion <= 0 ||
+			pinned == nil || muted == nil || draft == nil || clearThrough == nil || *clearThrough < 0 ||
+			!app.ValidAccountDraft(string(draft)) {
+			return nil, app.Fail(app.StorageUnavailable)
+		}
+		item.Settings = &app.AccountSettings{Version: uint64(*settingsVersion), Pinned: *pinned, Muted: *muted,
+			Draft: string(draft), ClearThroughSeq: uint64(*clearThrough)}
 	}
 	item.Revision = uint64(revision)
 	if item.Kind == "upsert" {

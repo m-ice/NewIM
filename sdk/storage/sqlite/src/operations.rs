@@ -1,10 +1,10 @@
-use crate::{SqliteStore, db};
+use crate::{SqliteStore, conversation_sync, db};
 use newim_sdk_core::store::*;
 use rusqlite::{Connection, OptionalExtension, Row, TransactionBehavior, params};
 use std::{sync::mpsc, time::Duration};
 
 const COLUMNS: &str = "server_id,sender_id,client_id,conversation_id,sequence,server_time,schema_version,message_type,payload";
-fn bounded(row: &Row<'_>, index: usize, max: usize) -> rusqlite::Result<()> {
+pub(crate) fn bounded(row: &Row<'_>, index: usize, max: usize) -> rusqlite::Result<()> {
     let value = row.get_ref(index)?;
     let len = match value {
         rusqlite::types::ValueRef::Text(v) | rusqlite::types::ValueRef::Blob(v) => v.len(),
@@ -16,7 +16,7 @@ fn bounded(row: &Row<'_>, index: usize, max: usize) -> rusqlite::Result<()> {
     }
     Ok(())
 }
-fn message_read_error(error: rusqlite::Error) -> StoreError {
+pub(crate) fn row_read_error(error: rusqlite::Error) -> StoreError {
     match error {
         rusqlite::Error::InvalidQuery
         | rusqlite::Error::InvalidColumnType(..)
@@ -57,7 +57,7 @@ fn lookup(conn: &Connection, id: &str) -> Result<Option<Message>, StoreError> {
             message,
         )
         .optional()
-        .map_err(message_read_error)?;
+        .map_err(row_read_error)?;
     if let Some(message) = &found {
         validate_message_read(message)?;
     }
@@ -70,7 +70,7 @@ fn identity(a: &Message, b: &Message) -> bool {
         && a.conversation_id == b.conversation_id
         && a.sequence == b.sequence
 }
-fn unsigned(row: &Row<'_>, index: usize) -> rusqlite::Result<u64> {
+pub(crate) fn unsigned(row: &Row<'_>, index: usize) -> rusqlite::Result<u64> {
     let n: i64 = row.get(index)?;
     u64::try_from(n).map_err(|_| rusqlite::Error::IntegralValueOutOfRange(index, n))
 }
@@ -172,23 +172,30 @@ impl SqliteStore {
                     recovery_required,
                 }))
             }
+            Action::ConversationSyncSnapshot(query) => {
+                let tx = self.conn.transaction().map_err(db)?;
+                Ok(Response::ConversationSyncSnapshot(
+                    conversation_sync::snapshot(&tx, query)?,
+                ))
+            }
             Action::Messages {
                 conversation,
                 after,
                 limit,
             } => {
-                let mut statement=self.conn.prepare(&format!("SELECT {COLUMNS} FROM messages WHERE conversation_id=? AND sequence>? ORDER BY sequence LIMIT ?")).map_err(db)?;
+                let tx = self.conn.transaction().map_err(db)?;
+                let after = after.unwrap_or(-1).max(
+                    conversation_sync::published_history_floor(&tx, conversation)?.unwrap_or(-1),
+                );
+                let mut statement=tx.prepare(&format!("SELECT {COLUMNS} FROM messages WHERE conversation_id=? AND sequence>? ORDER BY sequence LIMIT ?")).map_err(db)?;
                 let rows = statement
-                    .query_map(
-                        params![conversation, after.unwrap_or(-1), *limit as i64 + 1],
-                        message,
-                    )
+                    .query_map(params![conversation, after, *limit as i64 + 1], message)
                     .map_err(db)?;
                 let mut items = Vec::new();
                 let mut bytes = 0;
                 let mut more = false;
                 for row in rows {
-                    let m = row.map_err(message_read_error)?;
+                    let m = row.map_err(row_read_error)?;
                     validate_message_read(&m)?;
                     if m.payload
                         .as_ref()
@@ -375,7 +382,7 @@ impl SqliteStore {
                         )
                         .map_err(db)?
                         .collect::<rusqlite::Result<Vec<_>>>()
-                        .map_err(message_read_error)?;
+                        .map_err(row_read_error)?;
                     for old in &existing {
                         validate_message_read(old)?;
                     }
@@ -440,6 +447,12 @@ impl SqliteStore {
                     )
                     .map_err(db)?;
                 }
+            }
+            Action::ApplyConversationSync(batch) => {
+                if batch.expected_revision != rev {
+                    return Err(StoreError::StaleRevision);
+                }
+                affected = conversation_sync::apply(&tx, batch)?;
             }
             Action::Trim {
                 conversation,

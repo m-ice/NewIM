@@ -56,12 +56,13 @@ type Principal struct{ UserID string }
 // Item is an immutable account revision; a remove retains no summary.
 // Item 是账户不可变版本；remove 不携带摘要。
 type Item struct {
-	ConversationID        string  `json:"conversationId"`
-	Revision              uint64  `json:"revision,string"`
-	Kind                  string  `json:"kind"`
-	LatestConversationSeq *uint64 `json:"latestConversationSeq,omitempty,string"`
-	LatestServerMsgID     *string `json:"latestServerMsgId,omitempty"`
-	LastReadSeq           *uint64 `json:"lastReadSeq,omitempty,string"`
+	ConversationID        string           `json:"conversationId"`
+	Revision              uint64           `json:"revision,string"`
+	Kind                  string           `json:"kind"`
+	LatestConversationSeq *uint64          `json:"latestConversationSeq,omitempty,string"`
+	LatestServerMsgID     *string          `json:"latestServerMsgId,omitempty"`
+	LastReadSeq           *uint64          `json:"lastReadSeq,omitempty,string"`
+	Settings              *AccountSettings `json:"settings,omitempty"`
 }
 
 // Page effects and NextCursor must be persisted atomically by consumers.

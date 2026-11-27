@@ -17,6 +17,8 @@ type Batch struct {
 	conversations     map[string]struct{}
 	users             map[string]struct{}
 	activeMembersOnly bool
+	includeReadState  bool
+	accountSettings   bool
 }
 
 // PrepareBatch must precede all source mutations and row locks in a fresh
@@ -56,6 +58,7 @@ func (r *Repository) PrepareBatch(ctx context.Context, tx pgx.Tx, conversationID
 	}
 	batch := &Batch{
 		tx: tx, activeMembersOnly: activeMembersOnly,
+		includeReadState: r.includeReadState, accountSettings: r.accountSettings,
 		conversations: make(map[string]struct{}, len(conversations)), users: make(map[string]struct{}, len(users)),
 	}
 	for _, id := range conversations {
@@ -139,6 +142,19 @@ func (b *Batch) record(ctx context.Context, conversation, user string, remove bo
 	}
 	if remove && previous == nil {
 		return 0, app.Fail(app.Forbidden)
+	}
+	if b.accountSettings {
+		if err = appendSourceProjection(ctx, b.tx, b.includeReadState, true, sourceAccountPageTargets, user, []string{conversation}); err != nil {
+			return 0, err
+		}
+		projected, err := latest(ctx, b.tx, user, conversation, app.MaxSequence)
+		if err != nil {
+			return 0, err
+		}
+		if projected == nil || !remove && projected.Kind != "upsert" {
+			return 0, app.Fail(app.Forbidden)
+		}
+		return projected.Revision, nil
 	}
 	kind := "remove"
 	var sequence *int64
