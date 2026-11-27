@@ -12,6 +12,11 @@ import (
 
 const sourceBackfillLock int64 = 0x4e494d53594e4301
 
+type sourceBackfillDB interface {
+	BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error)
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
 type sourceBackfillState struct {
 	epoch int64
 	ready bool
@@ -21,9 +26,13 @@ type sourceBackfillState struct {
 // BackfillStep reconciles one account page and commits its progress.
 // BackfillStep 核对账号的一页会话并提交回填进度。
 func (r *Repository) BackfillStep(ctx context.Context, userID string, limit int) (bool, error) {
-	if ctx == nil || r == nil || !r.requireSourceReady {
+	if ctx == nil || r == nil || r.pool == nil || !r.requireSourceReady {
 		return false, app.Fail(app.StorageUnavailable)
 	}
+	return backfillStep(ctx, r.pool, userID, limit)
+}
+
+func backfillStep(ctx context.Context, db sourceBackfillDB, userID string, limit int) (bool, error) {
 	if !identifier(userID) {
 		return false, app.Fail(app.Forbidden)
 	}
@@ -32,11 +41,14 @@ func (r *Repository) BackfillStep(ctx context.Context, userID string, limit int)
 	}
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	tx, err := r.begin(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	tx, err := db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
-		return false, err
+		return false, fixed(err)
 	}
 	defer rollback(tx)
+	if err = configure(ctx, tx); err != nil {
+		return false, err
+	}
 	if err = LockSourceMembership(ctx, tx); err != nil {
 		return false, err
 	}
@@ -150,12 +162,16 @@ func (r *Repository) NextSourceAccounts(ctx context.Context, after string) (next
 	if ctx == nil || r == nil || r.pool == nil || !r.requireSourceReady {
 		return "", nil, app.Fail(app.StorageUnavailable)
 	}
+	return nextSourceAccounts(ctx, r.pool, after)
+}
+
+func nextSourceAccounts(ctx context.Context, db sourceBackfillDB, after string) (next string, pending []string, err error) {
 	if after != "" && !identifier(after) {
 		return "", nil, app.Fail(app.InvalidCursor)
 	}
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	rows, err := r.pool.Query(ctx, `SELECT page.user_id,COALESCE((
+	rows, err := db.Query(ctx, `SELECT page.user_id,COALESCE((
 		SELECT a.source_ready FROM newim.im_conversation_sync_accounts a WHERE a.user_id=page.user_id
 	), false)
 	FROM (SELECT user_id FROM newim.im_users WHERE user_id>$1::text ORDER BY user_id LIMIT $2) page
@@ -182,7 +198,7 @@ func (r *Repository) NextSourceAccounts(ctx context.Context, after string) (next
 // RunSourceBackfill completes the account directory under a lock shared with reset.
 // RunSourceBackfill 在与重置互斥的锁下遍历全部账号。
 func (r *Repository) RunSourceBackfill(ctx context.Context, limit int) (err error) {
-	if ctx == nil || r == nil || r.pool == nil || !r.requireSourceReady || r.pool.Config().MaxConns < 2 {
+	if ctx == nil || r == nil || r.pool == nil || !r.requireSourceReady {
 		return app.Fail(app.StorageUnavailable)
 	}
 	if limit < 1 || limit > app.MaxPageItems {
@@ -221,13 +237,14 @@ func (r *Repository) RunSourceBackfill(ctx context.Context, limit int) (err erro
 
 	var after string
 	for {
-		next, pending, err := r.NextSourceAccounts(ctx, after)
+		// A disconnected session loses both the lock and the ability to write.
+		next, pending, err := nextSourceAccounts(ctx, conn, after)
 		if err != nil || next == "" {
 			return err
 		}
 		for _, userID := range pending {
 			for {
-				ready, err := r.BackfillStep(ctx, userID, limit)
+				ready, err := backfillStep(ctx, conn, userID, limit)
 				if err != nil {
 					return err
 				}

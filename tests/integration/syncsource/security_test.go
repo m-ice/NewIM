@@ -21,6 +21,7 @@ func TestSyncSourceSecurity(t *testing.T) {
 	t.Run("backfill-command-boundaries", testBackfillCLI)
 	t.Run("bulk-backfill-crosses-ready-only-pages", testBulkBackfillDiscovery)
 	t.Run("bulk-backfill-excludes-reset", testBulkBackfillResetInterlock)
+	t.Run("bulk-backfill-stops-after-lock-connection-loss", testBulkBackfillLosesLockConnection)
 }
 
 func testAtomicSource(t *testing.T) {

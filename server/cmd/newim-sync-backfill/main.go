@@ -50,7 +50,7 @@ func run(ctx context.Context, args []string) int {
 		AllowLocalSocket:   os.Getenv("NEWIM_AUTH_ALLOW_LOCAL_SOCKET") == "1",
 		ApplicationName:    "newim-sync-backfill",
 		RequireSourceReady: true,
-		MaxConnections:     2,
+		MaxConnections:     1,
 		Guard:              postgresidentity.NewGuard(nil),
 	})
 	if err != nil {
