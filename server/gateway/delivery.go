@@ -34,12 +34,6 @@ var (
 	socketGone    = end{code: -1}
 )
 
-func (e end) close(ws *websocket.Conn) {
-	if e.code > 0 {
-		_ = ws.Close(e.code, e.reason)
-	}
-}
-
 type subscription struct {
 	conversationID string
 	afterSeq       int64
@@ -53,9 +47,7 @@ type peer struct {
 	active   bool
 }
 
-func (g *Gateway) serveConnection(base context.Context, ws *websocket.Conn, raw string, identity session.ConnectionIdentity) {
-	ctx, cancel := context.WithCancel(base)
-	defer cancel()
+func (g *Gateway) serveConnection(ctx context.Context, ws *websocket.Conn, raw string, identity session.ConnectionIdentity) end {
 	p := peer{
 		ws: ws, identity: identity, stopped: make(chan end, 1),
 		auth: session.AuthenticateRequest{
@@ -74,18 +66,15 @@ func (g *Gateway) serveConnection(base context.Context, ws *websocket.Conn, raw 
 	var request subscription
 	select {
 	case <-g.draining:
-		draining.close(ws)
-		return
+		return draining
 	case result := <-p.stopped:
-		result.close(ws)
-		return
+		return result
 	case <-timer.C:
-		subscribeLate.close(ws)
-		return
+		return subscribeLate
 	case request = <-subscriptions:
 	}
 	timer.Stop()
-	g.deliver(ctx, &p, request).close(ws)
+	return g.deliver(ctx, &p, request)
 }
 
 // read keeps control frames flowing while the delivery loop owns every app write.

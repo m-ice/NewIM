@@ -58,11 +58,30 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	defer ws.CloseNow()
-	if ws.Subprotocol() != Subprotocol {
-		_ = ws.Close(websocket.StatusPolicyViolation, "invalid_subscription")
+	connectionCtx, stop := context.WithCancel(context.WithoutCancel(r.Context()))
+	defer stop()
+	result := invalid
+	if ws.Subprotocol() == Subprotocol {
+		result = g.serveConnection(connectionCtx, ws, rawToken, identity)
+	}
+	g.finishConnection(ws, entry.conn, result)
+}
+
+func (g *Gateway) finishConnection(ws *websocket.Conn, transport net.Conn, result end) {
+	if result.code <= 0 {
+		_ = transport.Close()
 		return
 	}
-	g.serveConnection(context.WithoutCancel(r.Context()), ws, rawToken, identity)
+	// Buffered reads in the close handshake need a transport deadline. The
+	// timer also bounds TLS cleanup, which can set its own write deadline.
+	deadline := time.Now().Add(g.config.WriteTimeout)
+	if err := transport.SetDeadline(deadline); err != nil {
+		_ = transport.Close()
+		return
+	}
+	timer := time.AfterFunc(time.Until(deadline), func() { _ = transport.Close() })
+	defer timer.Stop()
+	_ = ws.Close(result.code, result.reason)
 }
 
 func (g *Gateway) authorizeUpgrade(ctx context.Context, r *http.Request, nonce [32]byte) (string, session.ConnectionIdentity, int) {

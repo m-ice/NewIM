@@ -174,6 +174,7 @@ func TestGatewaySecurity(t *testing.T) {
 	t.Run("device-attempt-limit", testDeviceAttemptLimit)
 	t.Run("direct-ip-attempt-limit", testIPAttemptLimit)
 	t.Run("full-and-slow-subscriber-releases-slot", testConnectionCapacity)
+	t.Run("unresponsive-peer-releases-slot", testUnresponsivePeer)
 	t.Run("slow-reader-releases-slot-and-keeps-healthy-peer", testSlowReader)
 }
 
@@ -262,6 +263,34 @@ func testConnectionCapacity(t *testing.T) {
 	f.dial(g, gatewayRoute, token, nil, "").rejected(t, http.StatusServiceUnavailable)
 	expectClose(t, slow, websocket.StatusPolicyViolation, "subscription_timeout")
 	_ = f.dial(g, gatewayRoute, token, nil, "").connected(t).CloseNow()
+}
+
+func testUnresponsivePeer(t *testing.T) {
+	f := openFixture(t)
+	idle := f.admit("gateway_idle_user", "fixture_device", 8).Token.RawToken()
+	probe := f.admit("gateway_idle_probe", "fixture_device", 8).Token.RawToken()
+	g := f.gateway(map[string]string{
+		"NEWIM_GATEWAY_MAX_CONNECTIONS":      "1",
+		"NEWIM_GATEWAY_SUBSCRIBE_TIMEOUT_MS": "800",
+		"NEWIM_GATEWAY_WRITE_TIMEOUT_MS":     "250",
+	})
+	// Model a suspended client that performs no further reads or writes.
+	f.dial(g, gatewayRoute, idle, nil, "").connected(t)
+	f.dial(g, gatewayRoute, probe, nil, "").rejected(t, http.StatusServiceUnavailable)
+
+	deadline := time.Now().Add(4 * time.Second)
+	for {
+		attempt := f.dial(g, gatewayRoute, probe, nil, "")
+		if attempt.status() == http.StatusSwitchingProtocols {
+			_ = attempt.connected(t).CloseNow()
+			return
+		}
+		attempt.rejected(t, http.StatusServiceUnavailable)
+		if time.Now().After(deadline) {
+			t.Fatal("gateway kept the connection slot while the client was suspended")
+		}
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 func testSlowReader(t *testing.T) {
