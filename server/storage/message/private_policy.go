@@ -104,10 +104,16 @@ func directPair(ctx context.Context, tx pgx.Tx, conversationID string) (userPair
 	return userPair{}, app.Fail(app.SendStorageUnavailable)
 }
 
-func checkPrivateSend(ctx context.Context, tx pgx.Tx, senderID string, request protocol.Send) (app.PersistedMessage, bool, error) {
+func checkPrivateSend(ctx context.Context, tx pgx.Tx, senderID string, request protocol.Send, directOnly bool) (app.PersistedMessage, bool, error) {
 	pair, err := directPair(ctx, tx, request.ConversationID)
-	if err != nil || pair == (userPair{}) {
+	if err != nil {
 		return app.PersistedMessage{}, false, err
+	}
+	if pair == (userPair{}) {
+		if directOnly {
+			return app.PersistedMessage{}, false, app.Fail(app.SendUnauthorized)
+		}
+		return app.PersistedMessage{}, false, nil
 	}
 	peerID := pair.peer(senderID)
 	if peerID == "" {
@@ -116,12 +122,21 @@ func checkPrivateSend(ctx context.Context, tx pgx.Tx, senderID string, request p
 	if err = pair.lock(ctx, tx); err != nil {
 		return app.PersistedMessage{}, false, err
 	}
-	receipt, found, err := loadReceipt(ctx, tx, senderID, request)
-	if found || err != nil {
-		return receipt, found, err
+	if !directOnly {
+		receipt, found, err := loadReceipt(ctx, tx, senderID, request)
+		if found || err != nil {
+			return receipt, found, err
+		}
 	}
 	if err = pair.verifyMembers(ctx, tx, request.ConversationID); err != nil {
 		return app.PersistedMessage{}, false, err
+	}
+	if directOnly {
+		// Verify the stored direct pair before replaying even an existing receipt.
+		receipt, found, err := loadReceipt(ctx, tx, senderID, request)
+		if found || err != nil {
+			return receipt, found, err
+		}
 	}
 	return app.PersistedMessage{}, false, checkRecipientBlock(ctx, tx, senderID, peerID)
 }

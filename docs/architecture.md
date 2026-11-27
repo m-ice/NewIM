@@ -22,7 +22,10 @@ The trusted application provisions accounts through the loopback server.
 See [ADR 0026](adr/0026-user-profile.md).
 The same TLS gateway serves friendship operations and per-account relationship changes.
 See [ADR 0027](adr/0027-friend-relationships.md).
-Public HTTP message and sync endpoints, UI, push delivery, complete credential verification, client
+Native clients can create direct conversations and send text over the TLS gateway.
+The sender uses the existing durable ACK, and the receiving device reads the same committed sequence over WSS.
+See [ADR 0028](adr/0028-tls-private-messaging.md).
+Public HTTP sync endpoints, UI, push delivery, complete credential verification, client
 lifecycle integration, retention/moderation/account erasure, and platform
 wrappers remain future work. A
 bearer-session HTTP handler validates already-issued tokens when an explicit

@@ -16,8 +16,10 @@ import (
 	"github.com/m-ice/NewIM/server/friend"
 	"github.com/m-ice/NewIM/server/friendhttp"
 	"github.com/m-ice/NewIM/server/gateway"
+	messageservice "github.com/m-ice/NewIM/server/message"
 	"github.com/m-ice/NewIM/server/storage/authsession"
 	friendstore "github.com/m-ice/NewIM/server/storage/friend"
+	messagestore "github.com/m-ice/NewIM/server/storage/message"
 	"github.com/m-ice/NewIM/server/storage/messagesync"
 	"github.com/m-ice/NewIM/server/storage/postgresidentity"
 	userstore "github.com/m-ice/NewIM/server/storage/user"
@@ -83,6 +85,7 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 
 	var profiles *userhttp.Handler
 	var friends *friendhttp.Handler
+	var privateMessages *gateway.MessageRoutes
 	if limits := cfg.profiles; limits != nil {
 		profileRepo, err := userstore.Open(startup, userstore.Config{
 			DSN: cfg.dsn, AllowLocalSocket: cfg.allowLocalSocket,
@@ -119,6 +122,28 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 			return errConfig
 		}
 	}
+	if limits := cfg.privateMessages; limits != nil {
+		sendRepo, err := messagestore.Open(startup, messagestore.Config{
+			DSN: cfg.dsn, AllowLocalSocket: cfg.allowLocalSocket,
+			ApplicationName: "newim-gateway-send", Guard: guard,
+			PrivatePolicy: true, DirectOnly: true,
+		})
+		if err != nil {
+			return errors.New("newim-gateway send storage unavailable")
+		}
+		defer sendRepo.Close()
+		sender, err := messageservice.NewService(sendRepo, messageservice.Config{
+			IDs:   messageservice.NewCSPRNGIDGenerator(),
+			Clock: messageservice.ClockFunc(time.Now), Observer: sendObserver{},
+		})
+		if err != nil {
+			return errConfig
+		}
+		privateMessages, err = gateway.NewMessageRoutes(auth, sender, sendRepo, gateway.NewProfileBudget(limits.ip, limits.account))
+		if err != nil {
+			return errConfig
+		}
+	}
 	routes := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.EscapedPath()
 		switch {
@@ -126,6 +151,8 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 			profiles.ServeHTTP(w, r)
 		case friends != nil && friendhttp.ContainsRoute(path):
 			friends.ServeHTTP(w, r)
+		case privateMessages != nil && gateway.ContainsMessageRoute(path):
+			privateMessages.ServeHTTP(w, r)
 		default:
 			handler.ServeHTTP(w, r)
 		}
@@ -211,6 +238,10 @@ func prune(ctx context.Context, repo *authsession.Repository, logger *log.Logger
 type authObserver struct{}
 
 func (authObserver) Observe(session.Observation) {}
+
+type sendObserver struct{}
+
+func (sendObserver) Observe(messageservice.Observation) {}
 
 type messageObserver struct{}
 

@@ -1,5 +1,5 @@
-// Package messagehttp exposes the exact loopback text-message send boundary.
-// messagehttp 提供精确的 loopback 文本消息发送 HTTP 边界，不拥有持久化事务。
+// Package messagehttp serves text messages and private conversation operations.
+// messagehttp 提供文本消息发送和私聊操作的 HTTP 入口。
 package messagehttp
 
 import (
@@ -37,6 +37,7 @@ const (
 	CodeConversationNotFound Code = "SEND_CONVERSATION_NOT_FOUND"
 	CodeMethodNotAllowed     Code = "HTTP_METHOD_NOT_ALLOWED"
 	CodeRouteNotFound        Code = "HTTP_ROUTE_NOT_FOUND"
+	CodeRateLimited          Code = "HTTP_RATE_LIMITED"
 	CodeIDConflict           Code = "SEND_ID_CONFLICT"
 	CodeSequenceExhausted    Code = "SEND_SEQUENCE_EXHAUSTED"
 	CodeBodyTooLarge         Code = "HTTP_BODY_TOO_LARGE"
@@ -48,11 +49,14 @@ const (
 	bearerChallenge               = `Bearer realm="newim-session"`
 )
 
+// ErrRateLimited indicates that a verified account exceeded its request budget.
+var ErrRateLimited = errors.New("messagehttp: request rate limited")
+
 var errInvalidConfiguration = errors.New("messagehttp: invalid configuration")
 var errBodyTooLarge = errors.New("messagehttp: body too large")
 
-// Authenticator is implemented by the policy-neutral session service.
-// Authenticator 由策略无关的 session service 实现。
+// Authenticator verifies the Bearer session. It may return ErrRateLimited
+// after successful verification.
 type Authenticator interface {
 	AuthenticateBearer(context.Context, string) (app.BearerSession, error)
 }
@@ -187,6 +191,10 @@ func authenticateSession(w http.ResponseWriter, ctx context.Context, header http
 	}
 	session, err := authenticator.AuthenticateBearer(ctx, rawToken)
 	if err != nil {
+		if errors.Is(err, ErrRateLimited) {
+			writeError(w, http.StatusTooManyRequests, CodeRateLimited, false)
+			return app.BearerSession{}, false
+		}
 		status, _ := bearerhttp.MapAuthenticationError(err)
 		if status == http.StatusUnauthorized {
 			writeUnauthorized(w)

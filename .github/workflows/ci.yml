@@ -77,6 +77,9 @@ jobs:
       - name: Exercise authenticated friend operations and durable changes
         timeout-minutes: 12
         run: make friend-check friend-security friend-recovery
+      - name: Exercise client TLS message send, WSS delivery and recovery
+        timeout-minutes: 12
+        run: make tls-message-check tls-message-security tls-message-recovery
       - name: Exercise idempotent current-token revocation
         timeout-minutes: 12
         run: make auth-logout-check

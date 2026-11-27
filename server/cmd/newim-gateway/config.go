@@ -23,6 +23,7 @@ type config struct {
 	gateway          gateway.Config
 	profiles         *httpLimits
 	friends          *httpLimits
+	privateMessages  *httpLimits
 }
 
 type httpLimits struct {
@@ -79,6 +80,10 @@ func readConfig(getenv func(string) string) (config, error) {
 	}
 	cfg.profiles = budget("NEWIM_USER_PROFILE", "NEWIM_USER_PROFILE_IP_ATTEMPTS_PER_MINUTE", "NEWIM_USER_PROFILE_ACCOUNT_ATTEMPTS_PER_MINUTE")
 	cfg.friends = budget("NEWIM_FRIEND_HTTP", "NEWIM_FRIEND_IP_ATTEMPTS_PER_MINUTE", "NEWIM_FRIEND_ACCOUNT_ATTEMPTS_PER_MINUTE")
+	cfg.privateMessages = budget("NEWIM_TLS_PRIVATE_MESSAGES", "NEWIM_TLS_MESSAGE_IP_ATTEMPTS_PER_MINUTE", "NEWIM_TLS_MESSAGE_ACCOUNT_ATTEMPTS_PER_MINUTE")
+	if cfg.privateMessages != nil && getenv("NEWIM_PRIVATE_MESSAGE_POLICY") != "1" {
+		return config{}, errConfig
+	}
 	if invalidLimit {
 		return config{}, errConfig
 	}

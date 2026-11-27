@@ -106,6 +106,12 @@ and the [lifecycle specification](../specs/observability/server-message-lifecycl
 `NEWIM_FRIEND_IP_ATTEMPTS_PER_MINUTE` 和 `NEWIM_FRIEND_ACCOUNT_ATTEMPTS_PER_MINUTE` 调整。
 [好友接口](../specs/friend/relationships.md)。运行 `make friend-check friend-security friend-recovery` 验证。
 
+在 TLS 网关设置 `NEWIM_TLS_PRIVATE_MESSAGES=1` 与 `NEWIM_PRIVATE_MESSAGE_POLICY=1` 后，
+原生客户端可创建直接会话、发送文本及管理自己的黑名单。共享数据库的发送进程使用一致的私聊策略。
+每进程每分钟地址与账号预算默认分别为 120 和 60，可用
+`NEWIM_TLS_MESSAGE_IP_ATTEMPTS_PER_MINUTE` 和 `NEWIM_TLS_MESSAGE_ACCOUNT_ATTEMPTS_PER_MINUTE` 调整。
+[私聊接入](../specs/http/tls-message-send.md)。运行 `make tls-message-check tls-message-security tls-message-recovery` 验证。
+
 Run the root `make build`, `make check`, `make docs-check`, `make api-check`,
 `make api-recovery`, `make api-security`, `make auth-http-check`,
 `make auth-http-security`, `make auth-route-check`, `make auth-logout-check`,

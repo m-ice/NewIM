@@ -491,6 +491,7 @@ func TestHandlerAuthenticationErrorMapping(t *testing.T) {
 		{name: "session-revoked", err: app.Fail(app.AuthSessionRevoked), status: http.StatusUnauthorized, code: CodeInvalidToken},
 		{name: "binding-mismatch", err: app.Fail(app.AuthForbidden), status: http.StatusUnauthorized, code: CodeInvalidToken},
 		{name: "storage", err: app.Fail(app.AuthStorageUnavailable), status: http.StatusServiceUnavailable, code: CodeAuthUnavailable},
+		{name: "account-rate-limited", err: ErrRateLimited, status: http.StatusTooManyRequests, code: CodeRateLimited},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
@@ -507,6 +508,9 @@ func TestHandlerAuthenticationErrorMapping(t *testing.T) {
 			requireCommonHeaders(t, recorder)
 			if test.status == http.StatusUnauthorized && recorder.Header().Get("WWW-Authenticate") != bearerChallenge {
 				t.Fatalf("missing bearer challenge: %v", recorder.Header())
+			}
+			if test.status == http.StatusTooManyRequests && (recorder.Header().Get("WWW-Authenticate") != "" || recorder.Header().Get("Retry-After") != "") {
+				t.Fatalf("unexpected rate limit headers: %v", recorder.Header())
 			}
 		})
 	}

@@ -30,6 +30,9 @@ type Config struct {
 	// PrivatePolicy requires trusted conversation classification and enables
 	// private-message policy in the send transaction.
 	PrivatePolicy bool
+	// DirectOnly limits sends and receipt replay to verified direct conversations.
+	// DirectOnly 仅允许在已核验的私聊中发送和重放回执。
+	DirectOnly bool
 	// Guard enables shared backend identity validation when non-nil.
 	// Guard 非 nil 时启用共享后端身份校验。
 	Guard *postgresidentity.Guard
@@ -41,12 +44,16 @@ type Repository struct {
 	pool          *pgxpool.Pool
 	authorizer    conversation.Authorizer
 	privatePolicy bool
+	directOnly    bool
 }
 
 // Open requires verified TLS for TCP or explicitly enabled local sockets.
 // Open 的 TCP 必须校验主机证书，本地套接字须显式启用。
 func Open(ctx context.Context, config Config) (*Repository, error) {
 	if ctx == nil || config.DSN == "" || config.MaxConnections < 0 || config.MaxConnections > 8 {
+		return nil, app.Fail(app.SendStorageUnavailable)
+	}
+	if config.DirectOnly && (!config.PrivatePolicy || config.Guard == nil) {
 		return nil, app.Fail(app.SendStorageUnavailable)
 	}
 	if config.ApplicationName != "" && !identifier(config.ApplicationName) {
@@ -107,7 +114,10 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 			return nil, err
 		}
 	}
-	return &Repository{pool: pool, authorizer: conversationAuthorizer{}, privatePolicy: config.PrivatePolicy}, nil
+	return &Repository{
+		pool: pool, authorizer: conversationAuthorizer{},
+		privatePolicy: config.PrivatePolicy, directOnly: config.DirectOnly,
+	}, nil
 }
 
 func installGuard(poolConfig *pgxpool.Config, guard *postgresidentity.Guard) {
@@ -153,12 +163,14 @@ func (r *Repository) Persist(ctx context.Context, principal conversation.Princip
 	if err = r.authorizer.Authorize(ctx, conversationTx{tx: tx}, principal.UserID, request.ConversationID); err != nil {
 		return app.PersistedMessage{}, fixed(err)
 	}
-	receipt, found, err := loadReceipt(ctx, tx, principal.UserID, request)
-	if found || err != nil {
-		return receipt, err
+	if !r.directOnly {
+		receipt, found, err := loadReceipt(ctx, tx, principal.UserID, request)
+		if found || err != nil {
+			return receipt, err
+		}
 	}
 	if r.privatePolicy {
-		receipt, found, err = checkPrivateSend(ctx, tx, principal.UserID, request)
+		receipt, found, err := checkPrivateSend(ctx, tx, principal.UserID, request, r.directOnly)
 		if found || err != nil {
 			return receipt, err
 		}

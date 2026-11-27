@@ -278,6 +278,16 @@ friend-security: toolchain
 friend-recovery: toolchain
 	python3 -B infra/db/friend_suite.py recovery
 
+.PHONY: tls-message-check tls-message-security tls-message-recovery
+tls-message-check: toolchain
+	python3 -B infra/db/tls_message_suite.py check
+
+tls-message-security: toolchain
+	python3 -B infra/db/tls_message_suite.py security
+
+tls-message-recovery: toolchain
+	python3 -B infra/db/tls_message_suite.py recovery
+
 .PHONY: message-check message-recovery message-errors
 message-check: toolchain
 	python3 -B infra/db/message_suite.py check
