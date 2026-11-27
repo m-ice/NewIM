@@ -11,7 +11,6 @@ import (
 	"unicode/utf8"
 
 	"github.com/coder/websocket"
-	protocol "github.com/m-ice/NewIM/core/protocol/go"
 	"github.com/m-ice/NewIM/server/auth/bearerhttp"
 	"github.com/m-ice/NewIM/server/auth/session"
 	syncmessage "github.com/m-ice/NewIM/server/sync/message"
@@ -278,14 +277,7 @@ func (g *Gateway) sendPage(ctx context.Context, p *peer, request *subscription) 
 		if result := g.shouldStop(p); result.code != 0 {
 			return result
 		}
-		msg := protocol.Message{
-			ProtocolVersion: item.ProtocolVersion, Version: item.SchemaVersion,
-			ClientMsgID: item.ClientMsgID, ServerMsgID: item.ServerMsgID,
-			ConversationID: item.ConversationID, ConversationSeq: strconv.FormatInt(item.ConversationSeq, 10),
-			SenderID: item.SenderID, Type: item.MessageType, ServerTime: strconv.FormatInt(item.ServerTime, 10),
-			Payload: item.Payload,
-		}
-		wire, err := protocol.EncodeServerFrame(protocol.ServerFrame{Message: &msg})
+		wire, err := syncmessage.EncodeServerFrame(item)
 		if err != nil {
 			return unavailable
 		}

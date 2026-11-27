@@ -98,10 +98,11 @@ type Item struct {
 // Page is a bounded, deterministic message page.
 // Page 是有界且确定性的消息页。
 type Page struct {
-	Items        []Item
-	LatestSeq    int64
-	HasNext      bool
-	NextAfterSeq *int64
+	Items           []Item
+	HistoryAfterSeq int64 // Exclusive lower bound from membership authorization.
+	LatestSeq       int64 // Inclusive visible head.
+	HasNext         bool
+	NextAfterSeq    *int64
 }
 
 // ReadResult is one consistent storage snapshot. Limit is the normalized

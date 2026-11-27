@@ -133,6 +133,10 @@ and the [lifecycle specification](../specs/observability/server-message-lifecycl
 [会话同步接口](../specs/sync/conversation-http.md)。
 运行 `make sync-http-check sync-http-security sync-http-recovery` 验证。
 
+会话读取同时提供按已持久化序号补拉消息，供客户端断线恢复。
+[消息补拉接口](../specs/sync/conversation-http.md#消息补拉)。
+运行 `make message-delta-http-check message-delta-http-security message-delta-http-recovery` 验证。
+
 Run the root `make build`, `make check`, `make docs-check`, `make api-check`,
 `make api-recovery`, `make api-security`, `make auth-http-check`,
 `make auth-http-security`, `make auth-route-check`, `make auth-logout-check`,

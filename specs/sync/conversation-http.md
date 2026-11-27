@@ -28,3 +28,17 @@
 
 每进程每分钟地址、账号预算默认分别为 120、60，可通过
 `NEWIM_CONVERSATION_SYNC_IP_ATTEMPTS_PER_MINUTE` 和 `NEWIM_CONVERSATION_SYNC_ACCOUNT_ATTEMPTS_PER_MINUTE` 调整。
+
+## 消息补拉
+
+使用相同的会话和限流配置，向 `POST /api/v1/sync/messages` 发送 `conversationId`、`afterSeq` 和可选 `limit`。
+
+```json
+{"conversationId":"conv_123","afterSeq":"0","limit":50}
+```
+
+`afterSeq` 为规范十进制字符串，初次传 `"0"`，随后传客户端已保存的序号。响应的 `items` 为 [现有消息帧](../protocol/send-ack.md)，按授权范围内的消息序号连续排列。
+
+`historyAfterSeq` 为排他的历史下界，`latestSeq` 为当前账号可见的尾序号。实际读取从请求游标和历史下界中的较大值继续。退群后的 `latestSeq` 截止到离群时的授权上限。终页缺少可见尾序号会返回 `503 SYNC_STORAGE_UNAVAILABLE`。
+
+单页最多 262,144 字节。使用 `hasNext` 判断是否还有数据，使用 `nextAfterSeq` 继续。它是最后实际发出的序号，空页时为 `null`。序号游标超出授权范围或格式无效时返回 `400 SYNC_INVALID_CURSOR`。

@@ -169,6 +169,8 @@ func TestReadAfterSeqHonorsAuthorizedHistoryWindow(t *testing.T) {
 		{"empty window", 0, true, ReadResult{HistoryAfterSeq: 5, LatestSeq: 5, Limit: 2}, "", 0},
 		{"past departure ceiling", 8, true, ReadResult{HistoryAfterSeq: 5, LatestSeq: 7, Limit: 2}, InvalidCursor, 0},
 		{"gap inside authorized window", 0, true, ReadResult{HistoryAfterSeq: 5, LatestSeq: 7, Limit: 2, Rows: []Item{item(7)}}, StorageUnavailable, 0},
+		{"missing authorized tail at page limit", 0, true, ReadResult{HistoryAfterSeq: 5, LatestSeq: 8, Limit: 2, Rows: []Item{item(6), item(7)}}, StorageUnavailable, 0},
+		{"missing authorized tail below page limit", 0, true, ReadResult{HistoryAfterSeq: 5, LatestSeq: 7, Limit: 2, Rows: []Item{item(6)}}, StorageUnavailable, 0},
 		{"message before authorized window", 0, true, ReadResult{HistoryAfterSeq: 5, LatestSeq: 7, Limit: 2, Rows: []Item{item(5), item(6)}}, StorageUnavailable, 0},
 		{"message after departure ceiling", 5, true, ReadResult{HistoryAfterSeq: 5, LatestSeq: 6, Limit: 2, Rows: []Item{item(6), item(7)}}, StorageUnavailable, 0},
 		{"invalid authorization bounds", 0, true, ReadResult{HistoryAfterSeq: 7, LatestSeq: 6, Limit: 2}, StorageUnavailable, 0},
@@ -185,6 +187,18 @@ func TestReadAfterSeqHonorsAuthorizedHistoryWindow(t *testing.T) {
 			})
 			if ErrorCode(err) != tt.wantCode || len(page.Items) != tt.wantLength {
 				t.Fatalf("page=%+v error=%v, want %d items and %q", page, err, tt.wantLength, tt.wantCode)
+			}
+			if tt.wantCode != "" {
+				if page.Items != nil || page.HistoryAfterSeq != 0 || page.LatestSeq != 0 || page.HasNext || page.NextAfterSeq != nil {
+					t.Fatalf("read error returned page metadata: %+v", page)
+				}
+				return
+			}
+			if page.HistoryAfterSeq != tt.result.HistoryAfterSeq || page.LatestSeq != tt.result.LatestSeq {
+				t.Fatalf("page %+v does not preserve authorized window (%d, %d]", page, tt.result.HistoryAfterSeq, tt.result.LatestSeq)
+			}
+			if tt.wantLength == 0 && (page.HasNext || page.NextAfterSeq != nil) {
+				t.Fatalf("empty page returned continuation: %+v", page)
 			}
 		})
 	}

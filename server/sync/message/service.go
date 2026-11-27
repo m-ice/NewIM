@@ -93,7 +93,12 @@ func (s *Service) assemble(request ReadRequest, result ReadResult) (Page, error)
 	if len(rows) > len(items) && len(items) > 0 {
 		hasNext = true
 	}
-	page := Page{Items: items, LatestSeq: result.LatestSeq, HasNext: hasNext}
+	page := Page{
+		Items:           items,
+		HistoryAfterSeq: result.HistoryAfterSeq,
+		LatestSeq:       result.LatestSeq,
+		HasNext:         hasNext,
+	}
 	if len(items) > 0 {
 		next := items[len(items)-1].ConversationSeq
 		page.NextAfterSeq = &next
@@ -123,6 +128,9 @@ func validateRows(conversationID string, afterSeq int64, result ReadResult) erro
 		}
 	}
 	if afterSeq == MaxSequence || result.Rows[0].ConversationSeq != afterSeq+1 {
+		return Fail(StorageUnavailable)
+	}
+	if len(result.Rows) <= result.Limit && result.Rows[len(result.Rows)-1].ConversationSeq != result.LatestSeq {
 		return Fail(StorageUnavailable)
 	}
 	return nil

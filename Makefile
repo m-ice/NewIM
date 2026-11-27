@@ -329,6 +329,16 @@ sync-http-security: toolchain
 sync-http-recovery: toolchain
 	python3 -B infra/db/sync_http_suite.py recovery
 
+.PHONY: message-delta-http-check message-delta-http-security message-delta-http-recovery
+message-delta-http-check: toolchain
+	python3 -B infra/db/message_delta_http_suite.py check
+
+message-delta-http-security: toolchain
+	python3 -B infra/db/message_delta_http_suite.py security
+
+message-delta-http-recovery: toolchain
+	python3 -B infra/db/message_delta_http_suite.py recovery
+
 .PHONY: message-check message-recovery message-errors
 message-check: toolchain
 	python3 -B infra/db/message_suite.py check

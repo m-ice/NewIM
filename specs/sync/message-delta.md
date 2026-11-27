@@ -2,8 +2,9 @@
 
 Task: NIM-SYN-005
 
-This document defines an internal Go contract. It is not a public wire format
-and does not provide authentication or transport.
+This document defines the internal Go read contract. The
+[TLS API](conversation-http.md#消息补拉) supplies authenticated identity and
+encodes these pages as existing message frames.
 
 ## Request
 
@@ -35,22 +36,25 @@ Item {
 
 Page {
   Items        []Item
+  HistoryAfterSeq int64
   LatestSeq    int64
   HasNext      bool
   NextAfterSeq *int64
 }
 ```
 
-`LatestSeq` is the same-snapshot conversation head. `NextAfterSeq` is nil iff
+`HistoryAfterSeq` is the same-snapshot exclusive authorized lower bound.
+`LatestSeq` is the inclusive visible head, capped at departure for a former
+group member. `NextAfterSeq` is nil iff
 `Items` is empty; otherwise it is the last returned `ConversationSeq`.
 `HasNext` is true iff the same snapshot contains a candidate row not included
 in the page because of the limit or byte budget. An empty page never advances a
 checkpoint.
 
-Rows are ordered only by `ConversationSeq`. For a positive continuation,
-`AfterSeq` must exist as an anchor. The first returned row must be
-`AfterSeq+1`, and every following row must increment by one. The explicit start
-form does not require a sequence-zero row; the supported writer starts at 1.
+Rows are ordered only by `ConversationSeq`. The effective starting point is
+the larger of `AfterSeq` and `HistoryAfterSeq`. An anchor is required when it
+exceeds the authorized lower bound. Rows start at the next sequence and
+increment by one. A terminal page reaches the visible head.
 
 ## Snapshot authorization
 

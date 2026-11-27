@@ -16,6 +16,7 @@ import (
 
 	"github.com/m-ice/NewIM/server/auth/bearerhttp"
 	"github.com/m-ice/NewIM/server/sync/conversation"
+	syncmessage "github.com/m-ice/NewIM/server/sync/message"
 	"github.com/m-ice/NewIM/server/userhttp"
 )
 
@@ -28,9 +29,10 @@ const (
 )
 
 type Handler struct {
-	service *conversation.Service
-	auth    userhttp.Authenticator
-	budget  userhttp.Budget
+	service  *conversation.Service
+	messages *syncmessage.Service
+	auth     userhttp.Authenticator
+	budget   userhttp.Budget
 }
 
 func New(service *conversation.Service, auth userhttp.Authenticator, budget userhttp.Budget) (*Handler, error) {
@@ -40,14 +42,26 @@ func New(service *conversation.Service, auth userhttp.Authenticator, budget user
 	return &Handler{service: service, auth: auth, budget: budget}, nil
 }
 
+func NewWithMessages(service *conversation.Service, messages *syncmessage.Service, auth userhttp.Authenticator, budget userhttp.Budget) (*Handler, error) {
+	if messages == nil {
+		return nil, conversation.Fail(conversation.StorageUnavailable)
+	}
+	handler, err := New(service, auth, budget)
+	if err != nil {
+		return nil, err
+	}
+	handler.messages = messages
+	return handler, nil
+}
+
 func ContainsRoute(path string) bool {
-	return path == bootstrapRoute || path == deltaRoute
+	return path == bootstrapRoute || path == deltaRoute || path == messagesRoute
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.EscapedPath()
 	switch {
-	case !ContainsRoute(path):
+	case !ContainsRoute(path) || (path == messagesRoute && h.messages == nil):
 		writeError(w, http.StatusNotFound, "HTTP_NOT_FOUND")
 		return
 	case r.Method != http.MethodPost:
@@ -86,6 +100,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
+	if path == messagesRoute {
+		h.readMessages(w, r.Context(), identity, body)
+		return
+	}
 	request, ok := decodeRequest(path, body)
 	if !ok {
 		writeError(w, http.StatusBadRequest, invalidInput)
@@ -93,12 +111,12 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	page, err := h.read(r.Context(), path, conversation.Principal{UserID: identity.UserID()}, request)
 	if err != nil {
-		writeServiceError(w, err)
+		writeSyncError(w, string(conversation.ErrorCode(err)))
 		return
 	}
 	payload, err := json.Marshal(page)
 	if err != nil || len(payload) > conversation.MaxResponseBytes {
-		writeServiceError(w, conversation.Fail(conversation.StorageUnavailable))
+		writeSyncError(w, string(conversation.StorageUnavailable))
 		return
 	}
 	writeJSON(w, http.StatusOK, payload)
@@ -131,8 +149,9 @@ func decodeRequest(path string, body []byte) (readRequest, bool) {
 	} else if len(wire.Checkpoint) != 0 {
 		return readRequest{}, false
 	}
-	if len(wire.Limit) != 0 && (bytes.Equal(bytes.TrimSpace(wire.Limit), []byte("null")) ||
-		jsonv2.Unmarshal(wire.Limit, &request.limit) != nil) {
+	var ok bool
+	request.limit, ok = decodeLimit(wire.Limit)
+	if !ok {
 		return readRequest{}, false
 	}
 	return request, true
@@ -140,6 +159,17 @@ func decodeRequest(path string, body []byte) (readRequest, bool) {
 
 func decodeString(value jsontext.Value, dest *string) bool {
 	return len(value) > 0 && value[0] == '"' && jsonv2.Unmarshal(value, dest) == nil && *dest != ""
+}
+
+func decodeLimit(value jsontext.Value) (int, bool) {
+	var limit int
+	if len(value) == 0 {
+		return 0, true
+	}
+	if bytes.Equal(bytes.TrimSpace(value), []byte("null")) || jsonv2.Unmarshal(value, &limit) != nil {
+		return 0, false
+	}
+	return limit, true
 }
 
 func (h *Handler) read(ctx context.Context, path string, principal conversation.Principal, req readRequest) (conversation.Page, error) {
@@ -198,10 +228,9 @@ func jsonContentType(headers http.Header) bool {
 	return len(encodings) == 0 || (len(encodings) == 1 && strings.EqualFold(strings.TrimSpace(encodings[0]), "identity"))
 }
 
-func writeServiceError(w http.ResponseWriter, err error) {
-	code := conversation.ErrorCode(err)
+func writeSyncError(w http.ResponseWriter, code string) {
 	status := http.StatusServiceUnavailable
-	switch code {
+	switch conversation.Code(code) {
 	case conversation.InvalidCursor, conversation.LimitExceeded:
 		status = http.StatusBadRequest
 	case conversation.Forbidden:
@@ -209,7 +238,7 @@ func writeServiceError(w http.ResponseWriter, err error) {
 	case conversation.CursorExpired:
 		status = http.StatusConflict
 	}
-	writeError(w, status, string(code))
+	writeError(w, status, code)
 }
 
 func writeAuthError(w http.ResponseWriter, status int, code bearerhttp.Code) {

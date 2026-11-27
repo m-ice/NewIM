@@ -195,7 +195,7 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 		if err != nil {
 			return errConfig
 		}
-		conversationRoutes, err = conversationhttp.New(service, auth, gateway.NewProfileBudget(limits.ip, limits.account))
+		conversationRoutes, err = conversationhttp.NewWithMessages(service, messages, auth, gateway.NewProfileBudget(limits.ip, limits.account))
 		if err != nil {
 			return errConfig
 		}

@@ -92,6 +92,9 @@ jobs:
       - name: Exercise authenticated TLS conversation sync and cursor recovery
         timeout-minutes: 12
         run: make sync-http-check sync-http-security sync-http-recovery
+      - name: Exercise authenticated message sequence recovery over TLS
+        timeout-minutes: 12
+        run: make message-delta-http-check message-delta-http-security message-delta-http-recovery
       - name: Exercise idempotent current-token revocation
         timeout-minutes: 12
         run: make auth-logout-check
