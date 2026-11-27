@@ -60,6 +60,10 @@ func testHistoryAndMedia(t *testing.T) {
 	requireDelivered(t, f, stream, visible, visibleText)
 	must(t, stream.CloseNow())
 
+	muted := changeMember(t, f, first, owner, id, lateID, group.MuteMember, 300)
+	if muted.MuteUntil == nil {
+		t.Fatal("expected a timed mute on the membership")
+	}
 	earlyCursor := changes(t, f, second, early, 0, 100).LatestRevision
 	lateCursor := changes(t, f, second, late, 0, 100).LatestRevision
 	leave := changeMember(t, f, second, early, id, "", group.Leave, 0)
@@ -102,6 +106,9 @@ func testHistoryAndMedia(t *testing.T) {
 	if reentered.HistoryAfterSeq != 3 || reentered.DepartedThroughSeq != nil {
 		t.Fatal("rejoining did not clear the previous ending bound and advance the history start")
 	}
+	if reentered.MuteUntil == nil || !reentered.MuteUntil.Equal(*muted.MuteUntil) {
+		t.Fatal("rejoining changed the original mute expiry")
+	}
 	expectWindow(t, f, reader, lateIdentity, id, 0, 3)
 	send(t, f, first, owner, id, "after_reentry", "message after re-entry")
 	expectWindow(t, f, reader, lateIdentity, id, 0, 4, 4)
@@ -110,8 +117,12 @@ func testHistoryAndMedia(t *testing.T) {
 	post[group.View](t, f, first, owner, updateGroupPath, "view", group.UpdateRequest{GroupID: id, HistoryEnabled: &enabled})
 	send(t, f, first, owner, id, "after_enabling_history", "history after enabling the policy")
 	join(t, f, second, late, id, "history_enabled_rejoin", group.Join, "")
-	if got := getGroup(t, f, first, late, id).Membership; got.HistoryAfterSeq != 3 || got.DepartedThroughSeq != nil {
+	got = getGroup(t, f, first, late, id)
+	if got.Membership.HistoryAfterSeq != 3 || got.Membership.DepartedThroughSeq != nil {
 		t.Fatal("rejoining with enabled history lowered the existing start or retained the prior end")
+	}
+	if expiry := got.Membership.MuteUntil; expiry == nil || !expiry.Equal(*muted.MuteUntil) {
+		t.Fatal("leaving and rejoining changed the original mute expiry")
 	}
 	expectWindow(t, f, reader, lateIdentity, id, 0, 5, 4, 5)
 

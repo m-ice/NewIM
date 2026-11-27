@@ -192,7 +192,7 @@ func addMember(ctx context.Context, tx pgx.Tx, state groupRow, userID string) (a
 	member, err := scanMember(tx.QueryRow(ctx, `INSERT INTO newim.im_conversation_members AS member
 		(conversation_id,user_id,group_role,history_after_seq) VALUES ($1,$2,'member',$3)
 		ON CONFLICT (conversation_id,user_id) DO UPDATE
-		SET group_role='member',mute_until=NULL,departed_at=NULL,departed_through_seq=NULL,
+		SET group_role='member',departed_at=NULL,departed_through_seq=NULL,
 			history_after_seq=GREATEST(member.history_after_seq,excluded.history_after_seq)
 		WHERE member.departed_at IS NOT NULL
 		RETURNING `+memberColumns, state.group.GroupID, userID, historyAfter))
