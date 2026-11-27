@@ -121,6 +121,11 @@ def check_catalog(db, target=None):
         'USING btree (user_id, conversation_id) WHERE (departed_at IS NULL)',
     ]
     equal(source_indexes, expected_indexes if target >= 14 else [], 'active projection membership indexes')
+    read_columns = db.sql("SELECT column_name||'|'||data_type||'|'||is_nullable||'|'||COALESCE(column_default,'') "
+                          "FROM information_schema.columns WHERE table_schema='newim' "
+                          "AND table_name='im_read_states' AND column_name='updated_at';").splitlines()
+    equal(read_columns, ['updated_at|timestamp with time zone|YES|'] if target >= 15 else [],
+          'read watermark timestamp is nullable and has no default')
     check_ledger(db, target)
 
 
@@ -1048,6 +1053,53 @@ def source_projection_migration(db, commands):
     print('PASS populated 014 failure/termination rollback and existing projection history', flush=True)
 
 
+def read_watermark_migration(db, commands):
+    db.sql("INSERT INTO newim.im_read_states(conversation_id,user_id,read_seq) "
+           f"VALUES ('room','bob',{MAXIMUM});")
+    scalar(db, "SELECT read_seq>last_seq FROM newim.im_read_states JOIN newim.im_conversations USING(conversation_id) "
+           "WHERE conversation_id='room' AND user_id='bob';",
+           't', 'legacy watermark above the conversation head')
+    watermark_sql = "SELECT conversation_id,user_id,read_seq FROM newim.im_read_states ORDER BY conversation_id,user_id;"
+    keys_sql = ("SELECT oid,conindid,conname,pg_get_constraintdef(oid) FROM pg_constraint "
+                "WHERE conrelid='newim.im_read_states'::regclass AND contype IN ('p','f') ORDER BY conname;")
+    historical = snapshot(db)
+    watermarks = db.sql(watermark_sql)
+    keys = db.sql(keys_sql)
+    with tempfile.TemporaryDirectory(prefix='read-watermark-migration-copy-', dir=commands.directory) as owned:
+        directory = Path(owned)
+        for path in source_migrations():
+            (directory/path.name).write_bytes(path.read_bytes())
+        candidate = directory/'015_read_watermark.sql'
+        original = candidate.read_text()
+        candidate.write_text(original + "\nSELECT 1/0;\n")
+        db.sql(migration_sql(15, directory=directory), error='22012')
+        check_catalog(db, 14)
+        equal(snapshot(db), historical, 'failed 015 preserves exact populated 014 rows')
+        candidate.write_text(original + "\nSELECT pg_sleep(30);\n")
+        held = db.session("SET application_name='newim_read_watermark_migration_interrupt'; " +
+                          migration_sql(15, directory=directory))
+        db.wait_sql("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name="
+                    "'newim_read_watermark_migration_interrupt' AND wait_event='PgSleep');")
+        db.sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+               "WHERE application_name='newim_read_watermark_migration_interrupt';")
+        held.finish(error='57P01')
+        check_catalog(db, 14)
+        equal(snapshot(db), historical, 'terminated 015 preserves exact populated 014 rows')
+    db.sql(migration_sql(15))
+    check_catalog(db, 15)
+    upgraded = snapshot(db)
+    changed_tables = {'im_read_states', 'migrations'}
+    equal({k: v for k, v in upgraded.items() if k not in changed_tables},
+          {k: v for k, v in historical.items() if k not in changed_tables}, '015 preserves every other table')
+    equal(db.sql(watermark_sql), watermarks, '015 preserves all prior watermark values')
+    equal(db.sql(keys_sql), keys, '015 preserves existing read state primary key and membership reference')
+    scalar(db, "SELECT count(*) FROM newim.im_read_states WHERE updated_at IS NOT NULL;",
+           0, '015 does not fabricate timestamps')
+    db.sql("INSERT INTO newim.im_read_states(conversation_id,user_id,read_seq) VALUES ('room','bob',0);",
+           error='23505')
+    print('PASS populated 015 failure/termination rollback and existing read watermarks, timestamps and keys', flush=True)
+
+
 def migrations(db, commands):
     head = len(source_migrations())
     db.sql(migration_sql(1))
@@ -1075,6 +1127,7 @@ def migrations(db, commands):
     group_migration(db)
     account_revocation_migration(db, commands)
     source_projection_migration(db, commands)
+    read_watermark_migration(db, commands)
     after = snapshot(db)
     db.sql(migration_sql())
     equal(snapshot(db), after, 'head replay stable')

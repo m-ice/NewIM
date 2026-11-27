@@ -95,6 +95,9 @@ jobs:
       - name: Exercise authenticated message sequence recovery over TLS
         timeout-minutes: 12
         run: make message-delta-http-check message-delta-http-security message-delta-http-recovery
+      - name: Exercise cross-device conversation read watermarks
+        timeout-minutes: 12
+        run: make read-watermark-check read-watermark-security read-watermark-recovery
       - name: Exercise idempotent current-token revocation
         timeout-minutes: 12
         run: make auth-logout-check

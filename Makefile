@@ -351,6 +351,17 @@ sync-http-security: toolchain
 sync-http-recovery: toolchain
 	python3 -B infra/db/sync_http_suite.py recovery
 
+.PHONY: read-watermark-check read-watermark-security read-watermark-recovery
+read-watermark-check: toolchain
+	python3 -B infra/db/sync_http_suite.py read-watermark-check
+
+read-watermark-security: toolchain
+	go test -race -shuffle=on -count=1 ./server/read ./server/readhttp ./server/storage/read ./server/storage/authsession
+	python3 -B infra/db/sync_http_suite.py read-watermark-security
+
+read-watermark-recovery: toolchain
+	python3 -B infra/db/sync_http_suite.py read-watermark-recovery
+
 .PHONY: message-delta-http-check message-delta-http-security message-delta-http-recovery
 message-delta-http-check: toolchain
 	python3 -B infra/db/message_delta_http_suite.py check

@@ -23,6 +23,8 @@ import (
 	"github.com/m-ice/NewIM/server/media/s3store"
 	"github.com/m-ice/NewIM/server/mediahttp"
 	messageservice "github.com/m-ice/NewIM/server/message"
+	"github.com/m-ice/NewIM/server/read"
+	"github.com/m-ice/NewIM/server/readhttp"
 	"github.com/m-ice/NewIM/server/storage/authsession"
 	"github.com/m-ice/NewIM/server/storage/conversationsync"
 	friendstore "github.com/m-ice/NewIM/server/storage/friend"
@@ -31,6 +33,7 @@ import (
 	messagestore "github.com/m-ice/NewIM/server/storage/message"
 	"github.com/m-ice/NewIM/server/storage/messagesync"
 	"github.com/m-ice/NewIM/server/storage/postgresidentity"
+	readstore "github.com/m-ice/NewIM/server/storage/read"
 	userstore "github.com/m-ice/NewIM/server/storage/user"
 	syncconversation "github.com/m-ice/NewIM/server/sync/conversation"
 	"github.com/m-ice/NewIM/server/sync/conversationhttp"
@@ -99,6 +102,7 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 	var groups *grouphttp.Handler
 	var messageRoutes *gateway.MessageRoutes
 	var conversationRoutes *conversationhttp.Handler
+	var readRoutes *readhttp.Handler
 	var mediaRoutes *mediahttp.Handler
 	var mediaValidator messageservice.MediaValidator
 	if limits := cfg.profiles; limits != nil {
@@ -241,6 +245,24 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 			return errConfig
 		}
 	}
+	if limits := cfg.readWatermark; limits != nil {
+		repository, err := readstore.Open(startup, readstore.Config{
+			DSN: cfg.dsn, AllowLocalSocket: cfg.allowLocalSocket,
+			ApplicationName: "newim-gateway-read", Guard: guard,
+		})
+		if err != nil {
+			return errors.New("newim-gateway read watermark storage unavailable")
+		}
+		defer repository.Close()
+		service, err := read.NewService(repository)
+		if err != nil {
+			return errConfig
+		}
+		readRoutes, err = readhttp.New(service, auth, gateway.NewProfileBudget(limits.ip, limits.account))
+		if err != nil {
+			return errConfig
+		}
+	}
 	routes := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.EscapedPath()
 		switch {
@@ -254,6 +276,8 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 			mediaRoutes.ServeHTTP(w, r)
 		case conversationRoutes != nil && conversationhttp.ContainsRoute(path):
 			conversationRoutes.ServeHTTP(w, r)
+		case readRoutes != nil && readhttp.ContainsRoute(path):
+			readRoutes.ServeHTTP(w, r)
 		case messageRoutes != nil && gateway.ContainsMessageRoute(path):
 			messageRoutes.ServeHTTP(w, r)
 		default:

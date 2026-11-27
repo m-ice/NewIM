@@ -28,6 +28,7 @@ type config struct {
 	privateMessages      *httpLimits
 	projectConversations bool
 	conversationSync     *httpLimits
+	readWatermark        *httpLimits
 	syncKeysFile         string
 	media                *httpLimits
 	mediaRoot            string
@@ -91,6 +92,7 @@ func readConfig(getenv func(string) string) (config, error) {
 	cfg.groups = budget("NEWIM_GROUP_HTTP", "NEWIM_GROUP_IP_ATTEMPTS_PER_MINUTE", "NEWIM_GROUP_ACCOUNT_ATTEMPTS_PER_MINUTE")
 	cfg.privateMessages = budget("NEWIM_TLS_PRIVATE_MESSAGES", "NEWIM_TLS_MESSAGE_IP_ATTEMPTS_PER_MINUTE", "NEWIM_TLS_MESSAGE_ACCOUNT_ATTEMPTS_PER_MINUTE")
 	cfg.conversationSync = budget("NEWIM_CONVERSATION_SYNC", "NEWIM_CONVERSATION_SYNC_IP_ATTEMPTS_PER_MINUTE", "NEWIM_CONVERSATION_SYNC_ACCOUNT_ATTEMPTS_PER_MINUTE")
+	cfg.readWatermark = budget("NEWIM_READ_WATERMARK_HTTP", "NEWIM_READ_WATERMARK_IP_ATTEMPTS_PER_MINUTE", "NEWIM_READ_WATERMARK_ACCOUNT_ATTEMPTS_PER_MINUTE")
 	cfg.media = budget("NEWIM_MEDIA_HTTP", "NEWIM_MEDIA_IP_ATTEMPTS_PER_MINUTE", "NEWIM_MEDIA_ACCOUNT_ATTEMPTS_PER_MINUTE")
 	if cfg.privateMessages != nil && getenv("NEWIM_PRIVATE_MESSAGE_POLICY") != "1" {
 		return config{}, errConfig

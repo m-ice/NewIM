@@ -67,17 +67,51 @@ func (r *Repository) ReserveGatewayHandshake(ctx context.Context, tokenID string
 	}
 	// Recheck after possible unique-key waiting, against the clock that
 	// authorizes pruning. A nonce deleted at expiry cannot be reserved again.
-	var live bool
-	if err = tx.QueryRow(ctx, "SELECT $1::timestamptz > clock_timestamp()", expiry).Scan(&live); err != nil {
-		return false, fixed(err)
-	}
-	if !live {
-		return false, app.Fail(app.AuthTokenExpired)
+	if err = CheckLockedBearerExpiry(ctx, tx, expiry); err != nil {
+		return false, err
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return false, fixed(err)
 	}
 	return inserted.RowsAffected() == 1, nil
+}
+
+// LockVerifiedBearer holds the admitted session and token until the caller's
+// transaction ends. The bearer must already have passed proof verification.
+func LockVerifiedBearer(ctx context.Context, tx pgx.Tx, bearer app.BearerSession) (time.Time, error) {
+	expected := app.SessionBinding{UserID: bearer.UserID(), DeviceID: bearer.DeviceID(), SessionID: bearer.SessionID()}
+	if ctx == nil || tx == nil || !expected.Valid() || !lowerHexTokenID(bearer.TokenID()) || bearer.ExpiresAt().IsZero() {
+		return time.Time{}, app.Fail(app.AuthInvalidInput)
+	}
+	binding, expiry, err := gatewayTokenBinding(ctx, tx, bearer.TokenID())
+	if err != nil {
+		return time.Time{}, err
+	}
+	if binding != expected || !expiry.Equal(bearer.ExpiresAt()) {
+		return time.Time{}, app.Fail(app.AuthForbidden)
+	}
+	if err = verifyAdmittedBinding(ctx, tx, binding); err != nil {
+		return time.Time{}, err
+	}
+	if err = CheckLockedBearerExpiry(ctx, tx, expiry); err != nil {
+		return time.Time{}, err
+	}
+	return expiry, nil
+}
+
+// CheckLockedBearerExpiry uses the database clock after any transaction waits.
+func CheckLockedBearerExpiry(ctx context.Context, tx pgx.Tx, expiry time.Time) error {
+	if ctx == nil || tx == nil || expiry.IsZero() {
+		return app.Fail(app.AuthInvalidInput)
+	}
+	var live bool
+	if err := tx.QueryRow(ctx, "SELECT $1::timestamptz > clock_timestamp()", expiry).Scan(&live); err != nil {
+		return fixed(err)
+	}
+	if !live {
+		return app.Fail(app.AuthTokenExpired)
+	}
+	return nil
 }
 
 func gatewayTokenBinding(ctx context.Context, tx pgx.Tx, tokenID string) (app.SessionBinding, time.Time, error) {

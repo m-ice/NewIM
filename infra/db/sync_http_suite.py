@@ -14,6 +14,9 @@ TESTS = {
     'check': 'TestSyncHTTPCheck',
     'security': 'TestSyncHTTPSecurity',
     'recovery': 'TestSyncHTTPRecovery',
+    'read-watermark-check': 'TestReadWatermarkHTTPCheck',
+    'read-watermark-security': 'TestReadWatermarkHTTPSecurity',
+    'read-watermark-recovery': 'TestReadWatermarkHTTPRecovery',
 }
 
 
@@ -45,21 +48,24 @@ def main():
         env = os.environ.copy()
         env.update(CGO_ENABLED='0', GOOS='linux', GOARCH=platform.split('/')[1], GOTOOLCHAIN='local')
         binary = directory / 'conversationsynchttp.test'
-        servers = ('newim-gateway', 'newim-server', 'newim-sync-backfill')
+        read_watermark = args.suite.startswith('read-watermark-')
+        servers = ('newim-gateway', 'newim-server')
+        if not read_watermark:
+            servers += ('newim-sync-backfill',)
         build(commands, ['go', 'test', '-c', '-tags=integration', '-o', str(binary),
                          './tests/integration/conversationsynchttp'], env, 'sync-http-cross-compile')
         for name in servers:
             build(commands, ['go', 'build', '-o', str(directory / name), './server/cmd/' + name],
                   env, 'sync-http-' + name + '-build')
         with Database(commands, image, platform) as db:
-            db.sql(migration_sql(14))
+            db.sql(migration_sql(15 if read_watermark else 14))
             paths = (binary.name, *servers)
             for name in paths:
                 commands.run(['docker', 'cp', str(directory / name), db.name + ':/tmp/' + name],
                              label='copy-owned-' + name)
             commands.run(['docker', 'exec', db.name, 'chmod', '0755', *('/tmp/' + name for name in paths)],
                          label='make-sync-http-executable')
-            if args.suite == 'recovery':
+            if args.suite.endswith('recovery'):
                 run_test(db, TESTS[args.suite], 'prepare')
                 restart_database(db)
                 run_test(db, TESTS[args.suite], 'restart')
