@@ -1,0 +1,44 @@
+{
+  "repository": "docker.io/chrislusf/seaweedfs",
+  "version": "4.55",
+  "revision": "a98c9e27185cf1003eca095761a39973c60734db",
+  "license": "Apache-2.0",
+  "source": "https://github.com/seaweedfs/seaweedfs",
+  "index": "sha256:7ca46aeae2f223b37e5d91593c17ab37738eec6df6ab69b48a0487f7643342b9",
+  "platforms": {
+    "linux/amd64": {
+      "manifest": "sha256:340bc0cbb1eb0da6472bd45a7225dd9a48bae6d72771c98ead52200b5abd4352",
+      "config": "sha256:2645139b94f93a221f28d7d29704a365c2e836b5f06fc910bbe17752be21576b",
+      "diff_ids": [
+        "sha256:75f1d9657d880da5f75298e8f40e9928bb6e260c50d26f97af196845307e3064",
+        "sha256:9d083e3bd6721f78d772ca1ac94e6788132aa2283e8b41c75a0be67cd108415f",
+        "sha256:eb7e4fa7825516afb5cffab0a3e6ef4099d0231fe1189db58ec6ecaef51287bc",
+        "sha256:d6f96215d0bd8a11364e8073365637881fca38312fbfd4da09ba0d601b67bee7",
+        "sha256:1444cbbab5360122fd5d06aefee24d6334371ec0f539b11e3f49f74bea036694",
+        "sha256:6c5c1d836a53a77e073ec4c6fabdd905cf1cca21a0fa66133d739ee091a2ccf3",
+        "sha256:26e9c41d98d82063846fd29b2c9a4d0ed77df98d416cef93c14ed79ff8dcd47e",
+        "sha256:831ac56a50305f71dc743a3c4360156a54eeb23e2cda9b558e3e0660a5b9e9e5",
+        "sha256:1794b0ef6a615fb08d996c7390224be307e63e2935e0893290dd64713a09a816",
+        "sha256:dc91f8bb5613bf73ffb5628720b88ff090ed8812ba5a6370b5b0cbcc6277fc21",
+        "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef"
+      ]
+    },
+    "linux/arm64/v8": {
+      "manifest": "sha256:1d857dc0ff7f0829e5f0228c7dd8d6907b4d1e7b01b553eb5c05c17c9a9a7b49",
+      "config": "sha256:92e8a2755d9ce667b8bd0f65d62a048901eb74f48bf650d7b15ac41ce2028f7d",
+      "diff_ids": [
+        "sha256:3d971ddbca237031066ab6609a11ae2e9e5b109da24d5c5d94d2e584dd94bd54",
+        "sha256:6b488c25dded84b1889e251b69b22df33ae796daee0bb57429577164eb84390a",
+        "sha256:2a93efdfdf57a28684490739f25513a026ea4abc0af01e506f5be827c96f1dbd",
+        "sha256:c3e30b597aee0862fd90faa7759e215f62138fe297abd906624c78ea52d8fb44",
+        "sha256:fc972fcd119b48f76e9d3a4f304cfd47d4ab029259412ed7c6dc723360774a87",
+        "sha256:b318a31b00b8d362f20ce5764db4a6ce1a0e883468f510e8f9f8bba59f2cf1d6",
+        "sha256:b721dfaf49b0f1f1e611569aa7aee1b4acdfb21f87a7fda30e6662059308c64e",
+        "sha256:633fcfef9ed7a85ec3daa8b2867f87875acd1700f49f46b87f047d4344ed5d2e",
+        "sha256:b0e5ba2c0928a0ebcbf30776c5d0f73bb8fa7c611bc60cf924d7782727216241",
+        "sha256:a0109706512617336a8609f1e4b78ada5257716497fcfffca82835f3a40108be",
+        "sha256:5f70bf18a086007016e948b04aed3b82103a36bea41755b6cddfaf10ace3c6ef"
+      ]
+    }
+  }
+}

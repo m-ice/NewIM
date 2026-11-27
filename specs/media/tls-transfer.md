@@ -31,3 +31,26 @@
 | 503 | `AUTH_UNAVAILABLE`、`MEDIA_STORAGE_UNAVAILABLE` |
 
 已有 TLS 消息网关可用 `NEWIM_MEDIA_HTTP=1` 启用媒体入口。应用迁移 005 后配置 `NEWIM_MEDIA_LOCAL_ROOT` 为绝对路径，目录由网关运行用户持有并设为 0700，且无额外 ACL 授权。多个实例使用同一私有持久目录。对象 I/O 限时 2 分钟，其间每次数据库调用使用原有的短期限。地址、账号的请求预算默认分别为每分钟 120 和 60，可用 `NEWIM_MEDIA_IP_ATTEMPTS_PER_MINUTE` 和 `NEWIM_MEDIA_ACCOUNT_ATTEMPTS_PER_MINUTE` 调整。关闭媒体开关后仍保留对象及元数据。
+
+## S3 兼容存储
+
+通过 `NEWIM_MEDIA_STORAGE=s3` 选择 S3。继续使用同一套上传、发送和下载接口。媒体配置为：
+
+| 变量 | 值 |
+| --- | --- |
+| `NEWIM_MEDIA_S3_BUCKET` | 已创建的专用私有桶 |
+| `NEWIM_MEDIA_S3_REGION` | 对象服务区域 |
+| `NEWIM_MEDIA_S3_ENDPOINT` | 可选。自托管 HTTPS 源地址，使用 path-style 寻址 |
+| `NEWIM_MEDIA_S3_CA_FILE` | 可选。额外受信 CA 的 PEM 文件绝对路径 |
+| `NEWIM_MEDIA_S3_STAGING_ROOT` | 0700 私有临时目录的绝对路径，由网关运行用户持有 |
+| `NEWIM_MEDIA_S3_MAX_TRANSFERS` | 每个网关同时使用临时文件的传输数量，默认 8，范围 1 到 32 |
+
+网关从 AWS SDK 的凭据链取得部署凭据，启动时检查桶是否可访问。桶权限需要在专用桶内读取和条件写入对象，并能识别查询的对象是否存在。可在桶策略要求写请求携带 `If-None-Match: *`。自托管连接校验证书和主机名。每个传输至多暂存 100 MiB，磁盘容量按每进程传输上限乘该值规划。暂存名额或空间不足返回 `503 MEDIA_STORAGE_UNAVAILABLE`。
+
+同一个媒体库需要使用同一后端。切换步骤如下。
+
+1. 排空全部网关的媒体写入。
+2. 把媒体库引用的对象复制到目标后端，核对最终对象集、长度和 SHA-256。
+3. 将全部网关切换到目标后端，确认可以读取对象后恢复写入。
+
+切换后如需回退，按相同步骤把新对象反向复制、核对并同步切换。数据库继续使用已有媒体表。

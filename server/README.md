@@ -142,6 +142,11 @@ TLS 消息网关设置 `NEWIM_MEDIA_HTTP=1` 和绝对路径 `NEWIM_MEDIA_LOCAL_R
 [媒体传输接口](../specs/media/tls-transfer.md)。
 运行 `make media-http-check media-http-security media-http-recovery` 验证。
 
+需使用共享 S3 对象存储时，设置 `NEWIM_MEDIA_STORAGE=s3` 并配置私有桶、区域及临时目录。
+已有部署切换前排空媒体写入并完整复制及校验对象。
+运行 `make media-s3-check media-s3-security media-s3-recovery` 验证。
+[S3 配置与迁移](../specs/media/tls-transfer.md#s3-兼容存储)
+
 Run the root `make build`, `make check`, `make docs-check`, `make api-check`,
 `make api-recovery`, `make api-security`, `make auth-http-check`,
 `make auth-http-security`, `make auth-route-check`, `make auth-logout-check`,

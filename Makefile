@@ -117,6 +117,17 @@ media-http-security: toolchain
 media-http-recovery: toolchain
 	python3 -B infra/db/media_http_suite.py recovery
 
+.PHONY: media-s3-check media-s3-security media-s3-recovery
+media-s3-check: toolchain
+	python3 -B infra/db/media_s3_suite.py check
+
+media-s3-security: toolchain
+	go test -race -shuffle=on -count=1 ./server/media/... ./server/cmd/newim-gateway
+	python3 -B infra/db/media_s3_suite.py security
+
+media-s3-recovery: toolchain
+	python3 -B infra/db/media_s3_suite.py recovery
+
 
 .PHONY: db-prepare db-schema db-migrations db-sequence db-repair
 db-prepare:

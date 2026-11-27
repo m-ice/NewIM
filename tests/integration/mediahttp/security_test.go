@@ -162,11 +162,13 @@ func testPrivateObjects(t *testing.T) {
 		t.Fatal("ready upload retry after expiry changed committed metadata")
 	}
 
-	// Replacing a committed test entry with a same-directory link must never stream its contents.
-	const realName = "stored_fixture_object"
-	must(t, os.Rename(filepath.Join(root, ready.MediaKey), filepath.Join(root, realName)))
-	must(t, os.Symlink(realName, filepath.Join(root, ready.MediaKey)))
-	f.post(g, downloadPath, owner, download).requireError(t, http.StatusServiceUnavailable, "MEDIA_STORAGE_UNAVAILABLE")
+	if f.objects == nil {
+		// Replacing a committed test entry with a same-directory link must never stream its contents.
+		const realName = "stored_fixture_object"
+		must(t, os.Rename(filepath.Join(root, ready.MediaKey), filepath.Join(root, realName)))
+		must(t, os.Symlink(realName, filepath.Join(root, ready.MediaKey)))
+		f.post(g, downloadPath, owner, download).requireError(t, http.StatusServiceUnavailable, "MEDIA_STORAGE_UNAVAILABLE")
+	}
 	g.requireRedacted(t, owner, member, stranger, grant.UploadToken, intent.SHA256, string(content), root)
 }
 

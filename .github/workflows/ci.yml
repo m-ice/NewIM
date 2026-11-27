@@ -107,6 +107,9 @@ jobs:
       - name: Exercise authenticated TLS media transfer and recovery
         timeout-minutes: 15
         run: make media-http-check media-http-security media-http-recovery
+      - name: Exercise private S3 media transfer and recovery
+        timeout-minutes: 15
+        run: make media-s3-check media-s3-security media-s3-recovery
       - name: Exercise durable message send transaction
         timeout-minutes: 10
         run: make message-check

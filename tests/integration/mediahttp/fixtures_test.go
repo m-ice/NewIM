@@ -55,6 +55,7 @@ type fixture struct {
 	cert    string
 	key     string
 	syncKey string
+	objects *s3Fixture
 }
 
 type authObservation struct{}
@@ -95,7 +96,7 @@ func openFixture(t *testing.T) *fixture {
 	}
 	t.Cleanup(transport.CloseIdleConnections)
 	return &fixture{t: t, ctx: ctx, db: db, auth: service, cert: cert, key: key, syncKey: syncKey,
-		client: &http.Client{Transport: transport, Timeout: 40 * time.Second}}
+		objects: readS3Fixture(t), client: &http.Client{Transport: transport, Timeout: 40 * time.Second}}
 }
 
 func fixtureCertificate(t *testing.T, dir string) (string, string, *x509.CertPool) {
@@ -147,7 +148,7 @@ func (l *byteLog) String() string {
 	return l.b.String()
 }
 
-func (f *fixture) gateway(root string, overrides map[string]string) *gateway {
+func (f *fixture) gatewayCommand(ctx context.Context, root string, overrides map[string]string) *exec.Cmd {
 	f.t.Helper()
 	binary := os.Getenv("NEWIM_GATEWAY_BINARY")
 	if !filepath.IsAbs(binary) {
@@ -160,18 +161,36 @@ func (f *fixture) gateway(root string, overrides map[string]string) *gateway {
 		"NEWIM_CONVERSATION_PROJECTION": "1", "NEWIM_CONVERSATION_SYNC": "1", "NEWIM_CONVERSATION_SYNC_KEYS_FILE": f.syncKey,
 	}
 	if root != "" {
-		settings["NEWIM_MEDIA_HTTP"], settings["NEWIM_MEDIA_LOCAL_ROOT"] = "1", root
+		settings["NEWIM_MEDIA_HTTP"] = "1"
+		if f.objects == nil {
+			settings["NEWIM_MEDIA_LOCAL_ROOT"] = root
+		} else {
+			settings["NEWIM_MEDIA_STORAGE"] = "s3"
+			settings["NEWIM_MEDIA_S3_BUCKET"] = f.objects.Bucket
+			settings["NEWIM_MEDIA_S3_REGION"] = f.objects.Region
+			settings["NEWIM_MEDIA_S3_ENDPOINT"] = f.objects.Endpoint
+			settings["NEWIM_MEDIA_S3_CA_FILE"] = f.objects.CAFile
+			settings["NEWIM_MEDIA_S3_STAGING_ROOT"] = filepath.Join(f.t.TempDir(), "staging")
+			settings["AWS_ACCESS_KEY_ID"] = f.objects.AccessKey
+			settings["AWS_SECRET_ACCESS_KEY"] = f.objects.SecretKey
+		}
 	}
 	for k, v := range overrides {
 		settings[k] = v
 	}
 
-	g := &gateway{}
-	cmd := exec.Command(binary)
+	cmd := exec.CommandContext(ctx, binary)
 	cmd.Env = os.Environ()
 	for k, v := range settings {
 		cmd.Env = append(cmd.Env, k+"="+v)
 	}
+	return cmd
+}
+
+func (f *fixture) gateway(root string, overrides map[string]string) *gateway {
+	f.t.Helper()
+	g := &gateway{}
+	cmd := f.gatewayCommand(context.Background(), root, overrides)
 	cmd.Stdout, cmd.Stderr = &g.log, &g.log
 	must(f.t, cmd.Start())
 	done := make(chan struct{})

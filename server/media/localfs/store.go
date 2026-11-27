@@ -6,10 +6,8 @@ package localfs
 import (
 	"context"
 	"crypto/rand"
-	"crypto/sha256"
 	"encoding/hex"
 	"errors"
-	"hash"
 	"io"
 	"io/fs"
 	"os"
@@ -17,11 +15,8 @@ import (
 	"strings"
 
 	app "github.com/m-ice/NewIM/server/media"
+	"github.com/m-ice/NewIM/server/media/internal/objectio"
 )
-
-const maxObjectBytes = int64(app.MaxMediaSize)
-
-var errObjectTooLarge = errors.New("media object too large")
 
 // Store owns one mode-0700 root and publishes immutable objects below it.
 // Store 持有一个 mode-0700 根，并在其下发布不可变对象。
@@ -35,32 +30,40 @@ type Store struct {
 // Open creates or validates an owned mode-0700 object root.
 // Open 创建或校验归当前用户所有的 mode-0700 对象根。
 func Open(path string) (*Store, error) {
+	root, absolute, err := openRoot(path)
+	if err != nil {
+		return nil, err
+	}
+	return &Store{root: root, rootPath: absolute}, nil
+}
+
+func openRoot(path string) (*os.Root, string, error) {
 	if strings.TrimSpace(path) == "" {
-		return nil, app.Fail(app.MediaInvalidInput)
+		return nil, "", app.Fail(app.MediaInvalidInput)
 	}
 	absolute, err := filepath.Abs(path)
 	if err != nil {
-		return nil, app.Fail(app.MediaStorageUnavailable)
+		return nil, "", app.Fail(app.MediaStorageUnavailable)
 	}
 	info, statErr := os.Lstat(absolute)
 	if errors.Is(statErr, fs.ErrNotExist) {
 		if err = os.MkdirAll(absolute, 0o700); err != nil {
-			return nil, app.Fail(app.MediaStorageUnavailable)
+			return nil, "", app.Fail(app.MediaStorageUnavailable)
 		}
 		info, statErr = os.Lstat(absolute)
 	}
 	if statErr != nil || !info.IsDir() || info.Mode().Perm() != 0o700 {
-		return nil, app.Fail(app.MediaStorageUnavailable)
+		return nil, "", app.Fail(app.MediaStorageUnavailable)
 	}
 	root, err := os.OpenRoot(absolute)
 	if err != nil {
-		return nil, app.Fail(app.MediaStorageUnavailable)
+		return nil, "", app.Fail(app.MediaStorageUnavailable)
 	}
 	if err := checkOpenedRoot(root, info); err != nil {
 		_ = root.Close()
-		return nil, err
+		return nil, "", err
 	}
-	return &Store{root: root, rootPath: absolute}, nil
+	return root, absolute, nil
 }
 
 func checkOpenedRoot(root *os.Root, before os.FileInfo) error {
@@ -89,7 +92,7 @@ func (s *Store) Close() error {
 // PutImmutable creates one object atomically or verifies an identical one.
 // PutImmutable 原子创建一个对象，或校验已有对象完全一致。
 func (s *Store) PutImmutable(ctx context.Context, key string, content io.Reader, expected app.ObjectInfo) (app.ObjectInfo, error) {
-	if s == nil || s.root == nil || ctx == nil || !validObjectKey(key) || content == nil || !app.ValidObjectInfo(expected) {
+	if s == nil || s.root == nil || ctx == nil || !objectio.ValidKey(key) || content == nil || !app.ValidObjectInfo(expected) {
 		return app.ObjectInfo{}, app.Fail(app.MediaInvalidInput)
 	}
 	if err := ctx.Err(); err != nil {
@@ -98,14 +101,14 @@ func (s *Store) PutImmutable(ctx context.Context, key string, content io.Reader,
 	if exists, err := s.objectExists(key); err != nil {
 		return app.ObjectInfo{}, app.Fail(app.MediaStorageUnavailable)
 	} else if exists {
-		if incoming, inspectErr := inspectBounded(ctx, content); inspectErr != nil {
+		if incoming, inspectErr := objectio.Inspect(ctx, io.Discard, content); inspectErr != nil {
 			return app.ObjectInfo{}, mapReadError(inspectErr)
 		} else if incoming != expected {
 			return app.ObjectInfo{}, app.Fail(app.MediaConflict)
 		}
 		return s.verifyExistingDurable(ctx, key, expected)
 	}
-	tempName, temp, err := s.createTemp()
+	tempName, temp, err := createTemp(s.root, os.O_WRONLY)
 	if err != nil {
 		return app.ObjectInfo{}, app.Fail(app.MediaStorageUnavailable)
 	}
@@ -116,12 +119,10 @@ func (s *Store) PutImmutable(ctx context.Context, key string, content io.Reader,
 			_ = s.root.Remove(tempName)
 		}
 	}()
-	hasher := sha256.New()
-	size, err := copyBounded(ctx, io.MultiWriter(temp, hasher), content)
+	actual, err := objectio.Inspect(ctx, temp, content)
 	if err != nil {
 		return app.ObjectInfo{}, mapReadError(err)
 	}
-	actual := app.ObjectInfo{Size: size, SHA256: finishDigest(hasher)}
 	if actual != expected {
 		return app.ObjectInfo{}, app.Fail(app.MediaInvalidInput)
 	}
@@ -159,7 +160,7 @@ func (s *Store) PutImmutable(ctx context.Context, key string, content io.Reader,
 
 // OpenVerified 验证已提交的文件，并返回从文件开头读取的同一描述符。
 func (s *Store) OpenVerified(ctx context.Context, key string, expected app.ObjectInfo) (io.ReadCloser, error) {
-	if s == nil || s.root == nil || ctx == nil || !validObjectKey(key) || !app.ValidObjectInfo(expected) {
+	if s == nil || s.root == nil || ctx == nil || !objectio.ValidKey(key) || !app.ValidObjectInfo(expected) {
 		return nil, app.Fail(app.MediaInvalidInput)
 	}
 	file, err := s.openVerified(ctx, key, expected)
@@ -226,7 +227,7 @@ func (s *Store) verifyOpened(ctx context.Context, key string, before os.FileInfo
 	if !opened.Mode().IsRegular() || !os.SameFile(before, opened) {
 		return app.Fail(app.MediaConflict)
 	}
-	actual, err := inspectBounded(ctx, file)
+	actual, err := objectio.Inspect(ctx, io.Discard, file)
 	if ctx.Err() != nil {
 		return app.Fail(app.MediaStorageUnavailable)
 	}
@@ -241,23 +242,14 @@ func (s *Store) verifyOpened(ctx context.Context, key string, before os.FileInfo
 	return nil
 }
 
-func inspectBounded(ctx context.Context, content io.Reader) (app.ObjectInfo, error) {
-	hasher := sha256.New()
-	size, err := copyBounded(ctx, hasher, content)
-	if err != nil {
-		return app.ObjectInfo{}, err
-	}
-	return app.ObjectInfo{Size: size, SHA256: finishDigest(hasher)}, nil
-}
-
-func (s *Store) createTemp() (string, *os.File, error) {
+func createTemp(root *os.Root, access int) (string, *os.File, error) {
 	for attempt := 0; attempt < 32; attempt++ {
 		var raw [16]byte
 		if _, err := io.ReadFull(rand.Reader, raw[:]); err != nil {
 			return "", nil, err
 		}
 		name := ".tmp-" + hex.EncodeToString(raw[:])
-		file, err := s.root.OpenFile(name, os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0o600)
+		file, err := root.OpenFile(name, access|os.O_CREATE|os.O_EXCL, 0o600)
 		if errors.Is(err, fs.ErrExist) {
 			continue
 		}
@@ -266,47 +258,11 @@ func (s *Store) createTemp() (string, *os.File, error) {
 	return "", nil, fs.ErrExist
 }
 
-func copyBounded(ctx context.Context, destination io.Writer, source io.Reader) (int64, error) {
-	limited := &io.LimitedReader{R: source, N: maxObjectBytes + 1}
-	buffer := make([]byte, 32*1024)
-	var total int64
-	for {
-		if err := ctx.Err(); err != nil {
-			return 0, err
-		}
-		count, err := limited.Read(buffer)
-		if count > 0 {
-			if total > maxObjectBytes-int64(count) {
-				return 0, errObjectTooLarge
-			}
-			if _, writeErr := destination.Write(buffer[:count]); writeErr != nil {
-				return 0, writeErr
-			}
-			total += int64(count)
-		}
-		if errors.Is(err, io.EOF) {
-			return total, nil
-		}
-		if err != nil {
-			return 0, err
-		}
-		if limited.N <= 0 {
-			return 0, errObjectTooLarge
-		}
-	}
-}
-
 func mapReadError(err error) error {
-	if errors.Is(err, errObjectTooLarge) {
+	if errors.Is(err, objectio.ErrTooLarge) {
 		return app.Fail(app.MediaInvalidInput)
 	}
 	return app.Fail(app.MediaStorageUnavailable)
-}
-
-func finishDigest(hasher hash.Hash) [32]byte {
-	var digest [32]byte
-	copy(digest[:], hasher.Sum(nil))
-	return digest
 }
 
 func (s *Store) syncRoot() error {
@@ -322,18 +278,4 @@ func (s *Store) syncRoot() error {
 		return err
 	}
 	return nil
-}
-
-func validObjectKey(key string) bool {
-	if len(key) == 0 || len(key) > 128 {
-		return false
-	}
-	for i := 0; i < len(key); i++ {
-		ch := key[i]
-		if !((ch >= 'A' && ch <= 'Z') || (ch >= 'a' && ch <= 'z') ||
-			(ch >= '0' && ch <= '9') || ch == '_' || ch == '-') {
-			return false
-		}
-	}
-	return true
 }

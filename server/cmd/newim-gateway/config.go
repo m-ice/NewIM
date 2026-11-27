@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/m-ice/NewIM/server/gateway"
+	"github.com/m-ice/NewIM/server/media/s3store"
 )
 
 var errConfig = errors.New("invalid gateway configuration")
@@ -30,6 +31,7 @@ type config struct {
 	syncKeysFile         string
 	media                *httpLimits
 	mediaRoot            string
+	mediaS3              *s3store.Config
 }
 
 type httpLimits struct {
@@ -97,8 +99,28 @@ func readConfig(getenv func(string) string) (config, error) {
 		return config{}, errConfig
 	}
 	if cfg.media != nil {
-		cfg.mediaRoot = getenv("NEWIM_MEDIA_LOCAL_ROOT")
-		if cfg.privateMessages == nil || !filepath.IsAbs(cfg.mediaRoot) {
+		if cfg.privateMessages == nil {
+			return config{}, errConfig
+		}
+		switch getenv("NEWIM_MEDIA_STORAGE") {
+		case "", "localfs":
+			cfg.mediaRoot = getenv("NEWIM_MEDIA_LOCAL_ROOT")
+			if !filepath.IsAbs(cfg.mediaRoot) {
+				return config{}, errConfig
+			}
+		case "s3":
+			cfg.mediaS3 = &s3store.Config{
+				Region: getenv("NEWIM_MEDIA_S3_REGION"), Bucket: getenv("NEWIM_MEDIA_S3_BUCKET"),
+				Endpoint: getenv("NEWIM_MEDIA_S3_ENDPOINT"), CAFile: getenv("NEWIM_MEDIA_S3_CA_FILE"),
+				StagingRoot:  getenv("NEWIM_MEDIA_S3_STAGING_ROOT"),
+				MaxTransfers: limit("NEWIM_MEDIA_S3_MAX_TRANSFERS", 8, 1, 32),
+			}
+			if invalidLimit || cfg.mediaS3.Region == "" || cfg.mediaS3.Bucket == "" ||
+				!filepath.IsAbs(cfg.mediaS3.StagingRoot) ||
+				(cfg.mediaS3.CAFile != "" && !filepath.IsAbs(cfg.mediaS3.CAFile)) {
+				return config{}, errConfig
+			}
+		default:
 			return config{}, errConfig
 		}
 	}

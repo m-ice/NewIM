@@ -20,6 +20,7 @@ import (
 	"github.com/m-ice/NewIM/server/grouphttp"
 	"github.com/m-ice/NewIM/server/media"
 	"github.com/m-ice/NewIM/server/media/localfs"
+	"github.com/m-ice/NewIM/server/media/s3store"
 	"github.com/m-ice/NewIM/server/mediahttp"
 	messageservice "github.com/m-ice/NewIM/server/message"
 	"github.com/m-ice/NewIM/server/storage/authsession"
@@ -138,7 +139,7 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 		}
 	}
 	if limits := cfg.media; limits != nil {
-		objects, err := localfs.Open(cfg.mediaRoot)
+		objects, err := openMediaObjects(startup, cfg)
 		if err != nil {
 			return errors.New("newim-gateway media object storage unavailable")
 		}
@@ -314,6 +315,19 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 	}
 	<-pruned
 	return result
+}
+
+type mediaObjects interface {
+	media.ObjectStore
+	media.ObjectReader
+	Close() error
+}
+
+func openMediaObjects(ctx context.Context, cfg config) (mediaObjects, error) {
+	if cfg.mediaS3 != nil {
+		return s3store.Open(ctx, *cfg.mediaS3)
+	}
+	return localfs.Open(cfg.mediaRoot)
 }
 
 func prune(ctx context.Context, repo *authsession.Repository, logger *log.Logger) {

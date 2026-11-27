@@ -146,9 +146,10 @@ def image_identity(commands: Commands, *, prepare=False):
 
 
 class Database:
-    def __init__(self, commands: Commands, image, target):
+    def __init__(self, commands: Commands, image, target, *, network='none'):
         self.commands = commands
         self.image, self.target = image, target
+        self.network = network
         self.run_id = uuid.uuid4().hex
         self.name = 'newim-db-'+self.run_id
         self.volume = self.name+'-data'
@@ -164,7 +165,7 @@ class Database:
                                self.volume], label='create-owned-volume')
             result = self.commands.run([
                 'docker', 'run', '-d', '--name', self.name, '--label', 'newim.db-run='+self.run_id,
-                '--pull', 'never', '--platform', self.target, '--network', 'none',
+                '--pull', 'never', '--platform', self.target, '--network', self.network,
                 '--memory', '512m', '--cpus', '2', '--pids-limit', '128', '--stop-timeout', '10',
                 '--mount', 'type=volume,source='+self.volume+',target=/var/lib/postgresql',
                 '-e', 'POSTGRES_HOST_AUTH_METHOD=trust', '-e', 'POSTGRES_USER=newim_test',
