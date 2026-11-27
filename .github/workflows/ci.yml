@@ -89,6 +89,9 @@ jobs:
       - name: Exercise conversation source writes and online backfill
         timeout-minutes: 12
         run: make sync-source-check sync-source-security sync-source-recovery
+      - name: Exercise authenticated TLS conversation sync and cursor recovery
+        timeout-minutes: 12
+        run: make sync-http-check sync-http-security sync-http-recovery
       - name: Exercise idempotent current-token revocation
         timeout-minutes: 12
         run: make auth-logout-check

@@ -318,6 +318,17 @@ sync-source-security: toolchain
 sync-source-recovery: toolchain
 	python3 -B infra/db/sync_source_suite.py recovery
 
+.PHONY: sync-http-check sync-http-security sync-http-recovery
+sync-http-check: toolchain
+	python3 -B infra/db/sync_http_suite.py check
+
+sync-http-security: toolchain
+	go test -race -shuffle=on -count=1 ./server/credentialfile ./server/auth/login ./server/sync/conversationhttp
+	python3 -B infra/db/sync_http_suite.py security
+
+sync-http-recovery: toolchain
+	python3 -B infra/db/sync_http_suite.py recovery
+
 .PHONY: message-check message-recovery message-errors
 message-check: toolchain
 	python3 -B infra/db/message_suite.py check

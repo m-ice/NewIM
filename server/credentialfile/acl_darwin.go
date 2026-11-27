@@ -1,4 +1,4 @@
-package login
+package credentialfile
 
 import (
 	"syscall"
@@ -6,7 +6,7 @@ import (
 )
 
 // A macOS ACL can grant access independently of the POSIX permission bits.
-func issuerACLIsRestricted(fd int) bool {
+func aclIsRestricted(fd int) bool {
 	const (
 		attrBitMapCount  = 5
 		extendedSecurity = 0x00400000

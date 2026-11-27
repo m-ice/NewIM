@@ -128,6 +128,11 @@ and the [lifecycle specification](../specs/observability/server-message-lifecycl
 [会话投影回填](../specs/sync/conversation-backfill.md)。
 运行 `make sync-source-check sync-source-security sync-source-recovery` 验证。
 
+会话源就绪后，在 TLS 网关配置 `NEWIM_CONVERSATION_SYNC=1` 和
+`NEWIM_CONVERSATION_SYNC_KEYS_FILE`，可启用客户端会话 bootstrap 和 delta。
+[会话同步接口](../specs/sync/conversation-http.md)。
+运行 `make sync-http-check sync-http-security sync-http-recovery` 验证。
+
 Run the root `make build`, `make check`, `make docs-check`, `make api-check`,
 `make api-recovery`, `make api-security`, `make auth-http-check`,
 `make auth-http-security`, `make auth-route-check`, `make auth-logout-check`,

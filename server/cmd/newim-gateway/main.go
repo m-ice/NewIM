@@ -20,12 +20,15 @@ import (
 	"github.com/m-ice/NewIM/server/grouphttp"
 	messageservice "github.com/m-ice/NewIM/server/message"
 	"github.com/m-ice/NewIM/server/storage/authsession"
+	"github.com/m-ice/NewIM/server/storage/conversationsync"
 	friendstore "github.com/m-ice/NewIM/server/storage/friend"
 	groupstore "github.com/m-ice/NewIM/server/storage/group"
 	messagestore "github.com/m-ice/NewIM/server/storage/message"
 	"github.com/m-ice/NewIM/server/storage/messagesync"
 	"github.com/m-ice/NewIM/server/storage/postgresidentity"
 	userstore "github.com/m-ice/NewIM/server/storage/user"
+	syncconversation "github.com/m-ice/NewIM/server/sync/conversation"
+	"github.com/m-ice/NewIM/server/sync/conversationhttp"
 	syncmessage "github.com/m-ice/NewIM/server/sync/message"
 	"github.com/m-ice/NewIM/server/user"
 	"github.com/m-ice/NewIM/server/userhttp"
@@ -90,6 +93,7 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 	var friends *friendhttp.Handler
 	var groups *grouphttp.Handler
 	var messageRoutes *gateway.MessageRoutes
+	var conversationRoutes *conversationhttp.Handler
 	if limits := cfg.profiles; limits != nil {
 		profileRepo, err := userstore.Open(startup, userstore.Config{
 			DSN: cfg.dsn, AllowLocalSocket: cfg.allowLocalSocket,
@@ -169,6 +173,33 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 			return errConfig
 		}
 	}
+	if limits := cfg.conversationSync; limits != nil {
+		repository, err := conversationsync.Open(startup, conversationsync.Config{
+			DSN: cfg.dsn, AllowLocalSocket: cfg.allowLocalSocket,
+			ApplicationName: "newim-gateway-sync", Guard: guard, RequireSourceReady: true,
+		})
+		if err != nil {
+			return errors.New("newim-gateway conversation sync storage unavailable")
+		}
+		defer repository.Close()
+		activeKeyID, keys, err := conversationhttp.LoadKeyring(cfg.syncKeysFile)
+		if err != nil {
+			return errConfig
+		}
+		service, err := syncconversation.NewService(repository, syncconversation.Config{
+			ActiveKeyID: activeKeyID, Keys: keys,
+		})
+		for _, key := range keys {
+			clear(key)
+		}
+		if err != nil {
+			return errConfig
+		}
+		conversationRoutes, err = conversationhttp.New(service, auth, gateway.NewProfileBudget(limits.ip, limits.account))
+		if err != nil {
+			return errConfig
+		}
+	}
 	routes := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.EscapedPath()
 		switch {
@@ -178,6 +209,8 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 			friends.ServeHTTP(w, r)
 		case groups != nil && grouphttp.ContainsRoute(path):
 			groups.ServeHTTP(w, r)
+		case conversationRoutes != nil && conversationhttp.ContainsRoute(path):
+			conversationRoutes.ServeHTTP(w, r)
 		case messageRoutes != nil && gateway.ContainsMessageRoute(path):
 			messageRoutes.ServeHTTP(w, r)
 		default:

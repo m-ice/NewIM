@@ -26,6 +26,8 @@ type config struct {
 	groups               *httpLimits
 	privateMessages      *httpLimits
 	projectConversations bool
+	conversationSync     *httpLimits
+	syncKeysFile         string
 }
 
 type httpLimits struct {
@@ -84,6 +86,7 @@ func readConfig(getenv func(string) string) (config, error) {
 	cfg.friends = budget("NEWIM_FRIEND_HTTP", "NEWIM_FRIEND_IP_ATTEMPTS_PER_MINUTE", "NEWIM_FRIEND_ACCOUNT_ATTEMPTS_PER_MINUTE")
 	cfg.groups = budget("NEWIM_GROUP_HTTP", "NEWIM_GROUP_IP_ATTEMPTS_PER_MINUTE", "NEWIM_GROUP_ACCOUNT_ATTEMPTS_PER_MINUTE")
 	cfg.privateMessages = budget("NEWIM_TLS_PRIVATE_MESSAGES", "NEWIM_TLS_MESSAGE_IP_ATTEMPTS_PER_MINUTE", "NEWIM_TLS_MESSAGE_ACCOUNT_ATTEMPTS_PER_MINUTE")
+	cfg.conversationSync = budget("NEWIM_CONVERSATION_SYNC", "NEWIM_CONVERSATION_SYNC_IP_ATTEMPTS_PER_MINUTE", "NEWIM_CONVERSATION_SYNC_ACCOUNT_ATTEMPTS_PER_MINUTE")
 	if cfg.privateMessages != nil && getenv("NEWIM_PRIVATE_MESSAGE_POLICY") != "1" {
 		return config{}, errConfig
 	}
@@ -96,6 +99,12 @@ func readConfig(getenv func(string) string) (config, error) {
 		cfg.projectConversations = true
 	default:
 		return config{}, errConfig
+	}
+	if cfg.conversationSync != nil {
+		cfg.syncKeysFile = getenv("NEWIM_CONVERSATION_SYNC_KEYS_FILE")
+		if !filepath.IsAbs(cfg.syncKeysFile) || (cfg.privateMessages != nil && !cfg.projectConversations) {
+			return config{}, errConfig
+		}
 	}
 	return cfg, nil
 }
