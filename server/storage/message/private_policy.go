@@ -115,7 +115,7 @@ func (r *Repository) checkSendPolicy(ctx context.Context, tx pgx.Tx, senderID st
 			if r.directOnly {
 				return app.PersistedMessage{}, false, app.Fail(app.SendUnauthorized)
 			}
-			receipt, found, err := loadReceipt(ctx, tx, senderID, request)
+			receipt, found, err := r.loadReceipt(ctx, tx, senderID, request)
 			if found || err != nil {
 				return receipt, found, err
 			}
@@ -128,7 +128,7 @@ func (r *Repository) checkSendPolicy(ctx context.Context, tx pgx.Tx, senderID st
 
 	strictDirect := r.directOnly || r.managedGroups
 	if !strictDirect {
-		receipt, found, err := loadReceipt(ctx, tx, senderID, request)
+		receipt, found, err := r.loadReceipt(ctx, tx, senderID, request)
 		if found || err != nil {
 			return receipt, found, err
 		}
@@ -192,7 +192,7 @@ func (r *Repository) checkPrivateSend(ctx context.Context, tx pgx.Tx, senderID s
 		return app.PersistedMessage{}, false, err
 	}
 	if !strictDirect {
-		receipt, found, err := loadReceipt(ctx, tx, senderID, request)
+		receipt, found, err := r.loadReceipt(ctx, tx, senderID, request)
 		if found || err != nil {
 			return receipt, found, err
 		}
@@ -202,7 +202,7 @@ func (r *Repository) checkPrivateSend(ctx context.Context, tx pgx.Tx, senderID s
 	}
 	if strictDirect {
 		// Verify the stored direct pair before replaying even an existing receipt.
-		receipt, found, err := loadReceipt(ctx, tx, senderID, request)
+		receipt, found, err := r.loadReceipt(ctx, tx, senderID, request)
 		if found || err != nil {
 			return receipt, found, err
 		}

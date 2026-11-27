@@ -54,6 +54,9 @@
     "senderId": {
       "type": "string",
       "pattern": "^[A-Za-z0-9_-]{1,128}$"
+    },
+    "senderType": {
+      "enum": ["HUMAN", "BOT", "SYSTEM", "AI_AGENT"]
     }
   },
   "additionalProperties": true,

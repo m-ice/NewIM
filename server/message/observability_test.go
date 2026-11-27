@@ -18,6 +18,7 @@ import (
 
 type lifecycleStore struct {
 	replay       bool
+	senderType   protocol.SenderType
 	conflict     bool
 	validation   error
 	persistedAt  time.Time
@@ -42,6 +43,7 @@ func (s *lifecycleStore) Persist(_ context.Context, principal conversation.Princ
 	s.persistedAt = time.Now()
 	return PersistedMessage{
 		ClientMsgID: request.ClientMsgID, ConversationID: request.ConversationID, SenderID: principal.UserID,
+		SenderType:  s.senderType,
 		ServerMsgID: generated.ServerMsgID, ConversationSeq: 7, ServerTime: generated.ServerTime, Replayed: s.replay,
 	}, nil
 }
@@ -134,6 +136,22 @@ func TestMessageLifecycleCommitACKOrderingAndTrace(t *testing.T) {
 	}
 	if !containsSample(snapshot, api.MetricMessageSendIdempotency, map[string]string{"outcome": "new"}) {
 		t.Fatalf("idempotency new metric missing: %+v", snapshot)
+	}
+}
+
+func TestSendACKUsesPersistedActorType(t *testing.T) {
+	for _, replay := range []bool{false, true} {
+		store := &lifecycleStore{replay: replay, senderType: protocol.SenderBot}
+		service, err := NewService(store, Config{
+			IDs: &lifecycleIDs{}, Clock: ClockFunc(time.Now),
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		frame, err := service.Send(context.Background(), mustIdentity(t, "bot"), mustSend("client", "conversation"))
+		if err != nil || frame.Ack == nil || frame.Ack.SenderID != "bot" || frame.Ack.SenderType != protocol.SenderBot {
+			t.Fatalf("replay %t: unexpected ACK or error (%v)", replay, err)
+		}
 	}
 }
 

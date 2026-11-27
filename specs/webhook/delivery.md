@@ -20,6 +20,9 @@ schema version（与持久消息的 `version` 一致），`protocolVersion` 是�
 消费者必须忽略未来新增字段。该映射由 `make webhook-protocol` 的真实 HTTP receiver
 测试验证，不允许实现端另建未登记的私有事件格式。
 
+非人类发布者的载荷可带 `senderType`，值来自 [持久账号分类](../bot/identity.md)。
+完整载荷与省略正文的载荷使用同一分类，并遵守原 envelope 大小限制。
+
 若完整消息 payload 加上信封元数据会超过 Webhook v1 的 65,536-byte 或 depth-32 上限，
 worker 使用同一 schema 的 bounded fallback：内层 `payload` 置为 `{}`，并新增
 `payloadOmitted=true`、`payloadSha256` 和 `payloadSize`（十进制字符串）。事件身份、

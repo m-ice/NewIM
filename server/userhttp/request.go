@@ -12,21 +12,40 @@ import (
 const BodyLimit = 16 << 10
 
 func DecodeProvision(raw []byte) (string, user.Patch, bool) {
-	fields, ok := readObject(raw)
-	if !ok {
-		return "", user.Patch{}, false
-	}
-	id, ok := readString(fields["userId"])
-	if !ok || !user.ValidID(id) {
-		return "", user.Patch{}, false
-	}
-	delete(fields, "userId")
-	patch, ok := readPatch(fields)
+	id, patch, _, ok := DecodeProvisionBody(raw, false)
 	return id, patch, ok
 }
 
+// DecodeProvisionBody accepts actorType only for the enabled trusted endpoint.
+func DecodeProvisionBody(raw []byte, allowActor bool) (string, user.Patch, user.ActorType, bool) {
+	maxFields := 4
+	if allowActor {
+		maxFields++
+	}
+	fields, ok := readObject(raw, maxFields)
+	if !ok {
+		return "", user.Patch{}, "", false
+	}
+	id, ok := readString(fields["userId"])
+	if !ok || !user.ValidID(id) {
+		return "", user.Patch{}, "", false
+	}
+	delete(fields, "userId")
+	var actor user.ActorType
+	if rawActor, exists := fields["actorType"]; exists {
+		value, ok := readString(rawActor)
+		actor = user.ActorType(value)
+		if !allowActor || !ok || !actor.Valid() {
+			return "", user.Patch{}, "", false
+		}
+		delete(fields, "actorType")
+	}
+	patch, ok := readPatch(fields)
+	return id, patch, actor, ok
+}
+
 func decodeUpdate(raw []byte) (user.Patch, bool) {
-	fields, ok := readObject(raw)
+	fields, ok := readObject(raw, 4)
 	if !ok {
 		return user.Patch{}, false
 	}
@@ -35,7 +54,7 @@ func decodeUpdate(raw []byte) (user.Patch, bool) {
 }
 
 func decodeLookup(raw []byte) ([]string, bool) {
-	fields, ok := readObject(raw)
+	fields, ok := readObject(raw, 4)
 	if !ok || len(fields) != 1 {
 		return nil, false
 	}
@@ -75,7 +94,7 @@ func readString(raw []byte) (string, bool) {
 	return value, true
 }
 
-func readObject(raw []byte) (map[string]json.RawMessage, bool) {
+func readObject(raw []byte, maxFields int) (map[string]json.RawMessage, bool) {
 	if len(raw) == 0 || len(raw) > BodyLimit || !utf8.Valid(raw) {
 		return nil, false
 	}
@@ -84,11 +103,11 @@ func readObject(raw []byte) (map[string]json.RawMessage, bool) {
 	if err != nil || first != json.Delim('{') {
 		return nil, false
 	}
-	fields := make(map[string]json.RawMessage, 4)
+	fields := make(map[string]json.RawMessage, maxFields)
 	for decoder.More() {
 		token, err := decoder.Token()
 		key, ok := token.(string)
-		if err != nil || !ok || len(fields) == 4 {
+		if err != nil || !ok || len(fields) == maxFields {
 			return nil, false
 		}
 		if _, exists := fields[key]; exists {

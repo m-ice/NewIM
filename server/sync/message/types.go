@@ -6,6 +6,8 @@ import (
 	"context"
 	"errors"
 	"time"
+
+	protocol "github.com/m-ice/NewIM/core/protocol/go"
 )
 
 // Code is a stable internal sync error without storage or identity details.
@@ -86,6 +88,7 @@ type Item struct {
 	ServerMsgID     string
 	ClientMsgID     string
 	SenderID        string
+	SenderType      protocol.SenderType
 	ConversationID  string
 	ConversationSeq int64
 	ProtocolVersion uint32

@@ -4,13 +4,9 @@ package tlsmessage_test
 
 import (
 	"bytes"
-	"crypto/rand"
-	"encoding/hex"
 	"encoding/json"
-	"net"
 	"net/http"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -34,35 +30,7 @@ func (f *fixture) strangerGateway(overrides map[string]string) *process {
 
 func (f *fixture) strangerLoopback() *process {
 	f.t.Helper()
-	api, err := net.Listen("tcp4", "127.0.0.1:0")
-	must(f.t, err)
-	defer api.Close()
-	ops, err := net.Listen("tcp4", "127.0.0.1:0")
-	must(f.t, err)
-	defer ops.Close()
-	apiAddr, opsAddr := api.Addr().String(), ops.Addr().String()
-	must(f.t, api.Close())
-	must(f.t, ops.Close())
-
-	issuerFile := filepath.Join(f.t.TempDir(), "issuer-key")
-	var key [32]byte
-	_, err = rand.Read(key[:])
-	must(f.t, err)
-	must(f.t, os.WriteFile(issuerFile, []byte(hex.EncodeToString(key[:])), 0o600))
-	clear(key[:])
-	settings := map[string]string{
-		"NEWIM_MESSAGE_HTTP":            "1",
-		"NEWIM_PRIVATE_MESSAGE_POLICY":  "1",
-		"NEWIM_STRANGER_MESSAGE_POLICY": "1",
-		"NEWIM_AUTH_ISSUER_TOKEN_FILE":  issuerFile,
-		"NEWIM_AUTH_ISSUER_TTL_SECONDS": "120",
-	}
-	p := startProcess(f.t, os.Getenv("NEWIM_SERVER_BINARY"), "", settings, "--api-addr", apiAddr, "--ops-addr", opsAddr)
-	p.url = "http://" + apiAddr
-	waitForStartup(f.t, p, func() bool {
-		r := f.call(p, http.MethodGet, "/api/v1/health", "", nil, nil)
-		return r.err == nil && r.status == http.StatusOK
-	})
+	p, _ := f.messageLoopback(map[string]string{"NEWIM_STRANGER_MESSAGE_POLICY": "1"})
 	return p
 }
 

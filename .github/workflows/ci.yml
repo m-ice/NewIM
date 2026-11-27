@@ -164,3 +164,6 @@ jobs:
       - name: Exercise webhook endpoint management and delivery replay
         timeout-minutes: 15
         run: make webhook-api webhook-api-security
+      - name: Exercise actor identity through message and webhook delivery
+        timeout-minutes: 15
+        run: make message-actor-check message-actor-delivery

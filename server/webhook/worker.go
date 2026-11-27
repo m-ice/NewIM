@@ -372,6 +372,9 @@ func buildEnvelope(event Event) ([]byte, error) {
 	if event.ID == "" || event.ServerMsgID == "" || event.ClientMsgID == "" || event.SenderID == "" || event.ConversationID == "" || event.MessageType == "" || len(event.Payload) == 0 {
 		return nil, Fail(CodeProtocolInvalid)
 	}
+	if !event.SenderType.IsZero() && !event.SenderType.Valid() {
+		return nil, Fail(CodeProtocolInvalid)
+	}
 	payload, err := marshalWebhookPayload(messagePayload(event, false))
 	if err != nil {
 		return nil, Fail(CodeProtocolInvalid)
@@ -415,25 +418,27 @@ func messagePayload(event Event, omitBody bool) any {
 		payload = event.Payload
 	}
 	return struct {
-		ClientMsgID     string          `json:"clientMsgId"`
-		ServerMsgID     string          `json:"serverMsgId"`
-		ConversationID  string          `json:"conversationId"`
-		ConversationSeq string          `json:"conversationSeq"`
-		SenderID        string          `json:"senderId"`
-		ProtocolVersion int             `json:"protocolVersion"`
-		SchemaVersion   int             `json:"version"`
-		Type            string          `json:"type"`
-		ServerTime      string          `json:"serverTime"`
-		Payload         json.RawMessage `json:"payload"`
-		PayloadOmitted  bool            `json:"payloadOmitted,omitempty"`
-		PayloadSHA256   string          `json:"payloadSha256,omitempty"`
-		PayloadSize     string          `json:"payloadSize,omitempty"`
+		ClientMsgID     string              `json:"clientMsgId"`
+		ServerMsgID     string              `json:"serverMsgId"`
+		ConversationID  string              `json:"conversationId"`
+		ConversationSeq string              `json:"conversationSeq"`
+		SenderID        string              `json:"senderId"`
+		SenderType      protocol.SenderType `json:"senderType,omitzero"`
+		ProtocolVersion int                 `json:"protocolVersion"`
+		SchemaVersion   int                 `json:"version"`
+		Type            string              `json:"type"`
+		ServerTime      string              `json:"serverTime"`
+		Payload         json.RawMessage     `json:"payload"`
+		PayloadOmitted  bool                `json:"payloadOmitted,omitempty"`
+		PayloadSHA256   string              `json:"payloadSha256,omitempty"`
+		PayloadSize     string              `json:"payloadSize,omitempty"`
 	}{
 		ClientMsgID:     event.ClientMsgID,
 		ServerMsgID:     event.ServerMsgID,
 		ConversationID:  event.ConversationID,
 		ConversationSeq: strconv.FormatInt(event.ConversationSeq, 10),
 		SenderID:        event.SenderID,
+		SenderType:      event.SenderType,
 		ProtocolVersion: event.ProtocolVersion,
 		SchemaVersion:   event.SchemaVersion,
 		Type:            event.MessageType,

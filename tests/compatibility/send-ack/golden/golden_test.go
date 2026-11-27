@@ -39,6 +39,19 @@ func TestSharedFrames(t *testing.T) {
 				if e != nil {
 					return
 				}
+
+				if f.SenderType != nil {
+					var got p.SenderType
+					switch {
+					case s.Ack != nil:
+						got = s.Ack.SenderType
+					case s.Message != nil:
+						got = s.Message.SenderType
+					}
+					if string(got) != *f.SenderType {
+						t.Fatalf("sender type = %q, want %q", got, *f.SenderType)
+					}
+				}
 				encoded, e := p.EncodeServerFrame(s)
 				c.Error(t, e, nil)
 				round, e := p.DecodeServerFrame(encoded)

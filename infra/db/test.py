@@ -43,6 +43,7 @@ GROUP_TABLES = {'im_groups', 'im_group_requests', 'im_group_sync_accounts', 'im_
 ACCOUNT_REVOCATION_TABLES = {'im_account_revocation_requests'}
 CONVERSATION_ACCOUNT_TABLES = {'im_conversation_account_settings'}
 WEBHOOK_MANAGEMENT_TABLES = {'im_webhook_management_audit'}
+ACTOR_TYPE_TABLES = {'im_user_actor_types'}
 
 
 def source_migrations():
@@ -76,6 +77,7 @@ def check_catalog(db, target=None):
     expected |= ACCOUNT_REVOCATION_TABLES if target >= 13 else set()
     expected |= CONVERSATION_ACCOUNT_TABLES if target >= 18 else set()
     expected |= WEBHOOK_MANAGEMENT_TABLES if target >= 19 else set()
+    expected |= ACTOR_TYPE_TABLES if target >= 20 else set()
     actual_tables = set(db.sql("SELECT tablename FROM pg_tables WHERE schemaname='newim';").splitlines())
     if actual_tables != expected:
         raise Failure('exact catalog table set: missing='+repr(sorted(expected-actual_tables))+
@@ -1397,6 +1399,44 @@ def webhook_management_migration(db, commands):
     print('PASS populated 019 failure/termination rollback and webhook audit constraints', flush=True)
 
 
+def actor_type_migration(db, commands):
+    historical = snapshot(db)
+    with tempfile.TemporaryDirectory(prefix='actor-type-migration-copy-', dir=commands.directory) as owned:
+        directory = Path(owned)
+        for path in source_migrations():
+            (directory/path.name).write_bytes(path.read_bytes())
+        candidate = directory/'020_message_actor_kind.sql'
+        original = candidate.read_text()
+        candidate.write_text(original + "\nSELECT 1/0;\n")
+        db.sql(migration_sql(20, directory=directory), error='22012')
+        check_catalog(db, 19)
+        equal(snapshot(db), historical, 'failed 020 preserves populated 019')
+        candidate.write_text(original + "\nSELECT pg_sleep(30);\n")
+        held = db.session("SET application_name='newim_actor_type_migration_interrupt'; " +
+                          migration_sql(20, directory=directory))
+        db.wait_sql("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name="
+                    "'newim_actor_type_migration_interrupt' AND wait_event='PgSleep');")
+        db.sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+               "WHERE application_name='newim_actor_type_migration_interrupt';")
+        held.finish(error='57P01')
+        check_catalog(db, 19)
+        equal(snapshot(db), historical, 'terminated 020 preserves populated 019')
+    db.sql(migration_sql(20))
+    check_catalog(db, 20)
+    added = ACTOR_TYPE_TABLES | {'migrations'}
+    equal({k: v for k, v in snapshot(db).items() if k not in added},
+          {k: v for k, v in historical.items() if k not in added}, '020 preserves all historical accounts and messages')
+    scalar(db, 'SELECT count(*) FROM newim.im_user_actor_types;', 0, 'legacy account types use the absent default')
+    db.sql("INSERT INTO newim.im_users(user_id) VALUES ('fixture_actor_bot');")
+    insert = 'INSERT INTO newim.im_user_actor_types(user_id,actor_type) VALUES '
+    db.sql(insert+"('fixture_actor_bot','BOT');")
+    db.sql(insert+"('fixture_actor_bot','SYSTEM');", error='23505')
+    db.sql(insert+"('fixture_actor_missing','AI_AGENT');", error='23503')
+    db.sql(insert+"('alice','HUMAN');", error='23514')
+    db.sql(insert+"('alice','ADMIN');", error='23514')
+    print('PASS populated 020 failure/termination rollback and actor types', flush=True)
+
+
 def migrations(db, commands):
     head = len(source_migrations())
     db.sql(migration_sql(1))
@@ -1429,6 +1469,7 @@ def migrations(db, commands):
     conversation_read_sync_migration(db, commands)
     conversation_account_settings_migration(db, commands)
     webhook_management_migration(db, commands)
+    actor_type_migration(db, commands)
     after = snapshot(db)
     db.sql(migration_sql())
     equal(snapshot(db), after, 'head replay stable')

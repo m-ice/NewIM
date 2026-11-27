@@ -37,6 +37,7 @@ type Message struct {
 	ConversationID  string          `json:"conversationId"`
 	ConversationSeq string          `json:"conversationSeq"`
 	SenderID        string          `json:"senderId"`
+	SenderType      SenderType      `json:"senderType,omitzero"`
 	Type            string          `json:"type"`
 	ServerTime      string          `json:"serverTime"`
 	Payload         json.RawMessage `json:"payload"`
@@ -109,6 +110,11 @@ func decodeMessage(wire []byte, semantics bool) (Message, error) {
 			return Message{}, InvalidMessage
 		}
 	}
+	senderType, err := senderTypeField(fields)
+	if err != nil {
+		return Message{}, err
+	}
+	m.SenderType = senderType
 	for key, dest := range map[string]*uint32{"protocolVersion": &m.ProtocolVersion, "version": &m.Version} {
 		raw, ok := fields[key]
 		if !ok || !decimal(string(raw), "2147483647") || string(raw) == "0" {
@@ -161,7 +167,7 @@ func validateKnownPayload(messageType string, version uint32, raw []byte) error 
 func Encode(m Message) ([]byte, error) {
 	// Bound raw public values before allocating their encoded representation.
 	total := 0
-	for _, size := range []int{len(m.ClientMsgID), len(m.ServerMsgID), len(m.ConversationID), len(m.ConversationSeq), len(m.SenderID), len(m.Type), len(m.ServerTime), len(m.Payload)} {
+	for _, size := range []int{len(m.ClientMsgID), len(m.ServerMsgID), len(m.ConversationID), len(m.ConversationSeq), len(m.SenderID), len(m.SenderType), len(m.Type), len(m.ServerTime), len(m.Payload)} {
 		if size > MaxBytes-total {
 			return nil, TooLarge
 		}
@@ -172,7 +178,11 @@ func Encode(m Message) ([]byte, error) {
 	out.WriteString(strconv.FormatUint(uint64(m.ProtocolVersion), 10))
 	out.WriteString(`,"version":`)
 	out.WriteString(strconv.FormatUint(uint64(m.Version), 10))
-	for _, pair := range [][2]string{{"clientMsgId", m.ClientMsgID}, {"serverMsgId", m.ServerMsgID}, {"conversationId", m.ConversationID}, {"conversationSeq", m.ConversationSeq}, {"senderId", m.SenderID}, {"type", m.Type}, {"serverTime", m.ServerTime}} {
+	fields := [][2]string{{"clientMsgId", m.ClientMsgID}, {"serverMsgId", m.ServerMsgID}, {"conversationId", m.ConversationID}, {"conversationSeq", m.ConversationSeq}, {"senderId", m.SenderID}, {"type", m.Type}, {"serverTime", m.ServerTime}}
+	if !m.SenderType.IsZero() {
+		fields = append(fields, [2]string{"senderType", string(m.SenderType)})
+	}
+	for _, pair := range fields {
 		out.WriteByte(',')
 		out.WriteByte('"')
 		out.WriteString(pair[0])

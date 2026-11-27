@@ -117,6 +117,9 @@ func validateRows(conversationID string, afterSeq int64, result ReadResult) erro
 		if row.ConversationID != conversationID || !identifier(row.ServerMsgID) || !identifier(row.ClientMsgID) || !identifier(row.SenderID) || !identifier(row.ConversationID) {
 			return Fail(StorageUnavailable)
 		}
+		if !row.SenderType.IsZero() && !row.SenderType.Valid() {
+			return Fail(StorageUnavailable)
+		}
 		if row.ConversationSeq <= afterSeq || row.ConversationSeq > result.LatestSeq {
 			return Fail(StorageUnavailable)
 		}
@@ -137,7 +140,11 @@ func validateRows(conversationID string, afterSeq int64, result ReadResult) erro
 }
 
 func itemCost(item Item) int {
-	return len(item.Payload) + len(item.ServerMsgID) + len(item.ClientMsgID) + len(item.SenderID) + len(item.ConversationID) + len(item.MessageType) + itemOverhead
+	cost := len(item.Payload) + len(item.ServerMsgID) + len(item.ClientMsgID) + len(item.SenderID) + len(item.ConversationID) + len(item.MessageType) + itemOverhead
+	if !item.SenderType.IsZero() {
+		cost += len(`,"senderType":""`) + len(item.SenderType)
+	}
+	return cost
 }
 
 func cloneItem(item Item) Item {

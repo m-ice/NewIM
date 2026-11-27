@@ -9,6 +9,9 @@ pub mod media;
 pub mod message_delta;
 mod scan;
 pub mod send;
+mod sender_type;
+
+pub use sender_type::SenderType;
 
 use std::collections::BTreeMap;
 use std::fmt;
@@ -66,6 +69,7 @@ pub struct Message {
     pub conversation_id: String,
     pub conversation_seq: String,
     pub sender_id: String,
+    pub sender_type: Option<SenderType>,
     pub message_type: String,
     pub server_time: String,
     pub payload: Box<RawValue>,
@@ -170,6 +174,7 @@ fn decode_shape(text: &str) -> Result<Message, Error> {
         conversation_id,
         conversation_seq,
         sender_id,
+        sender_type: sender_type::decode(&fields)?,
         message_type,
         server_time,
         payload,
@@ -255,6 +260,7 @@ pub fn encode(message: &Message) -> Result<Vec<u8>, Error> {
             serde_json::value::to_raw_value(&value).map_err(|_| Error::InvalidMessage)?,
         );
     }
+    sender_type::insert(&mut fields, message.sender_type)?;
     fields.insert("payload", message.payload.clone());
     let encoded = serde_json::to_vec(&fields).map_err(|_| Error::InvalidJson)?;
     decode(&encoded)?;

@@ -11,12 +11,15 @@
 
 用户标识沿用现有 1 至 128 字节的标识规则。昵称、头像和扩展字符串最长分别为 128、2048 和 4096 个 UTF-8 字节，字段禁止空字符。查询单次接收 1 至 50 个标识，请求体上限为 16 KiB。请求字段精确匹配，拒绝重复字段和查询串。账号更新目标来自已核验会话。
 
+部署启用账号分类预配后，可信预配请求可携带 `actorType`。赋值、幂等和消息表现见 [机器人账号与消息身份](../bot/identity.md)。
+
 | 状态 | 错误码 |
 | --- | --- |
 | 400 | `USER_INVALID_INPUT` |
 | 401 | `AUTH_INVALID_TOKEN` |
 | 404 | `USER_NOT_FOUND` |
 | 405 | `HTTP_METHOD_NOT_ALLOWED` |
+| 409 | `USER_ACTOR_TYPE_CONFLICT` |
 | 413 | `HTTP_BODY_TOO_LARGE` |
 | 415 | `HTTP_UNSUPPORTED_MEDIA_TYPE` |
 | 429 | `USER_RATE_LIMITED` |

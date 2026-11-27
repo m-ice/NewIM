@@ -4,7 +4,9 @@ use std::{collections::BTreeMap, fmt};
 use serde_json::value::{RawValue, to_raw_value};
 
 pub use crate::intent::{compare_results, correlate, same_intent, same_message_payload};
-use crate::{Message, Object, decimal, field, id, object, scan, string, version};
+use crate::{
+    Message, Object, SenderType, decimal, field, id, object, scan, sender_type, string, version,
+};
 
 pub const MAX_FRAME_BYTES: usize = 66_048;
 pub const MAX_SEND_BYTES: usize = 61_440;
@@ -67,6 +69,7 @@ pub struct Ack {
     pub client_msg_id: String,
     pub conversation_id: String,
     pub sender_id: String,
+    pub sender_type: Option<SenderType>,
     pub server_msg_id: String,
     pub conversation_seq: String,
     pub server_time: String,
@@ -172,6 +175,7 @@ fn ack_shape(fields: &Object) -> Result<Ack, Error> {
         client_msg_id: string(fields, "clientMsgId")?,
         conversation_id: string(fields, "conversationId")?,
         sender_id: string(fields, "senderId")?,
+        sender_type: sender_type::decode(fields)?,
         server_msg_id: string(fields, "serverMsgId")?,
         conversation_seq: string(fields, "conversationSeq")?,
         server_time: string(fields, "serverTime")?,
@@ -334,9 +338,8 @@ pub fn encode_send(send: &Send) -> Result<Vec<u8>, Error> {
 /// 重验结果字段；编码成功不证明服务端提交 / Revalidate fields; encoding never proves commit.
 pub fn encode_server_frame(frame: &ServerFrame) -> Result<Vec<u8>, Error> {
     let (kind, body) = match frame {
-        ServerFrame::Ack(ack) => (
-            "send_ack",
-            strings(
+        ServerFrame::Ack(ack) => {
+            let mut body = strings(
                 &[
                     ("status", "SERVER_PERSISTED"),
                     ("clientMsgId", &ack.client_msg_id),
@@ -347,8 +350,10 @@ pub fn encode_server_frame(frame: &ServerFrame) -> Result<Vec<u8>, Error> {
                     ("serverTime", &ack.server_time),
                 ],
                 MAX_RESULT_BYTES,
-            )?,
-        ),
+            )?;
+            sender_type::insert(&mut body, ack.sender_type)?;
+            ("send_ack", body)
+        }
         ServerFrame::Error(error) => (
             "send_error",
             strings(

@@ -12,7 +12,7 @@ func EncodeServerFrame(item Item) ([]byte, error) {
 		ProtocolVersion: item.ProtocolVersion, Version: item.SchemaVersion,
 		ClientMsgID: item.ClientMsgID, ServerMsgID: item.ServerMsgID,
 		ConversationID: item.ConversationID, ConversationSeq: strconv.FormatInt(item.ConversationSeq, 10),
-		SenderID: item.SenderID, Type: item.MessageType, ServerTime: strconv.FormatInt(item.ServerTime, 10),
+		SenderID: item.SenderID, SenderType: item.SenderType, Type: item.MessageType, ServerTime: strconv.FormatInt(item.ServerTime, 10),
 		Payload: item.Payload,
 	}
 	return protocol.EncodeServerFrame(protocol.ServerFrame{Message: &msg})

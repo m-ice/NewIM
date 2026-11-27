@@ -59,6 +59,7 @@ type Repository struct {
 	projectConversations bool
 	projectReadState     bool
 	accountSettings      bool
+	actorTypes           bool
 }
 
 // Open requires verified TLS for TCP or explicitly enabled local sockets.
@@ -142,6 +143,11 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 		pool.Close()
 		return nil, app.Fail(app.SendStorageUnavailable)
 	}
+	actorTypes, err := ActorTypesAvailable(ctx, pool)
+	if err != nil {
+		pool.Close()
+		return nil, err
+	}
 	repository := &Repository{
 		pool: pool, authorizer: conversationAuthorizer{},
 		privatePolicy: config.PrivatePolicy, strangerPolicy: config.StrangerPolicy,
@@ -149,6 +155,7 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 		projectConversations: config.ProjectConversations,
 		projectReadState:     config.ProjectReadState,
 		accountSettings:      accountSettings,
+		actorTypes:           actorTypes,
 	}
 	if repository.managedGroups {
 		if err = repository.checkManagedGroupSchema(ctx); err != nil {
@@ -254,7 +261,7 @@ func (r *Repository) Persist(ctx context.Context, principal conversation.Princip
 	if !validGenerated(generated) {
 		return app.PersistedMessage{}, app.Fail(app.SendInvalidInput)
 	}
-	stored, err := persistMessage(ctx, tx, principal.UserID, request, generated)
+	stored, err := r.persistMessage(ctx, tx, principal.UserID, request, generated)
 	if err != nil {
 		return app.PersistedMessage{}, mapStorageError(err)
 	}
@@ -286,9 +293,12 @@ func (r *Repository) Persist(ctx context.Context, principal conversation.Princip
 	return persisted, nil
 }
 
-func loadReceipt(ctx context.Context, tx pgx.Tx, senderID string, request protocol.Send) (app.PersistedMessage, bool, error) {
-	existing, found, err := loadMessage(ctx, tx, senderID, request.ClientMsgID)
-	if err != nil || !found {
+func (r *Repository) loadReceipt(ctx context.Context, tx pgx.Tx, senderID string, request protocol.Send) (app.PersistedMessage, bool, error) {
+	existing, err := r.loadMessage(ctx, tx, senderID, request.ClientMsgID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return app.PersistedMessage{}, false, nil
+	}
+	if err != nil {
 		return app.PersistedMessage{}, false, mapStorageError(err)
 	}
 	same, err := protocol.SameIntent(existing.intent(), request)
@@ -306,36 +316,49 @@ func loadReceipt(ctx context.Context, tx pgx.Tx, senderID string, request protoc
 	return receipt, true, nil
 }
 
-func loadMessage(ctx context.Context, tx pgx.Tx, senderID, clientMsgID string) (storedRow, bool, error) {
-	var stored storedRow
-	err := tx.QueryRow(ctx, `SELECT server_msg_id,client_msg_id,sender_id,conversation_id,conversation_seq,protocol_version,schema_version,message_type,server_time_ms,payload_bytes
-FROM newim.im_messages WHERE sender_id=$1 AND client_msg_id=$2`, senderID, clientMsgID).Scan(
-		&stored.ServerMsgID, &stored.ClientMsgID, &stored.SenderID, &stored.ConversationID,
-		&stored.ConversationSeq, &stored.ProtocolVersion, &stored.SchemaVersion,
-		&stored.MessageType, &stored.ServerTime, &stored.Payload,
+func (r *Repository) loadMessage(ctx context.Context, tx pgx.Tx, senderID, clientMsgID string) (storedRow, error) {
+	return r.scanStoredMessage(
+		tx.QueryRow(ctx, r.selectStoredMessage("newim.im_messages")+
+			" WHERE sender_id=$1 AND client_msg_id=$2", senderID, clientMsgID),
 	)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return storedRow{}, false, nil
-	}
-	if err != nil {
-		return storedRow{}, false, err
-	}
-	return stored, true, nil
 }
 
-func persistMessage(ctx context.Context, tx pgx.Tx, senderID string, request protocol.Send, generated app.Generated) (storedRow, error) {
-	var stored storedRow
-	err := tx.QueryRow(ctx, `SELECT server_msg_id,client_msg_id,sender_id,conversation_id,conversation_seq,protocol_version,schema_version,message_type,server_time_ms,payload_bytes
-FROM newim.persist_message($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
+func (r *Repository) persistMessage(ctx context.Context, tx pgx.Tx, senderID string, request protocol.Send, generated app.Generated) (storedRow, error) {
+	row := tx.QueryRow(ctx, r.selectStoredMessage("newim.persist_message($1,$2,$3,$4,$5,$6,$7,$8,$9)"),
 		senderID, request.ClientMsgID, request.ConversationID, generated.ServerMsgID,
 		request.Type, int(request.Version), generated.ServerTime, []byte(request.Payload), generated.EventID,
-	).Scan(
+	)
+	return r.scanStoredMessage(row)
+}
+
+func (r *Repository) selectStoredMessage(source string) string {
+	const columns = "server_msg_id,client_msg_id,sender_id,conversation_id,conversation_seq,protocol_version,schema_version,message_type,server_time_ms,payload_bytes"
+	if !r.actorTypes {
+		return "SELECT " + columns + " FROM " + source
+	}
+	return "SELECT " + columns + ",a.actor_type FROM " + source +
+		" AS m LEFT JOIN newim.im_user_actor_types a ON a.user_id=m.sender_id"
+}
+
+func (r *Repository) scanStoredMessage(row pgx.Row) (storedRow, error) {
+	var stored storedRow
+	var actor *string
+	dest := []any{
 		&stored.ServerMsgID, &stored.ClientMsgID, &stored.SenderID, &stored.ConversationID,
 		&stored.ConversationSeq, &stored.ProtocolVersion, &stored.SchemaVersion,
 		&stored.MessageType, &stored.ServerTime, &stored.Payload,
-	)
-	if err != nil {
+	}
+	if r.actorTypes {
+		dest = append(dest, &actor)
+	}
+	if err := row.Scan(dest...); err != nil {
 		return storedRow{}, err
+	}
+	if actor != nil {
+		stored.SenderType = protocol.SenderType(*actor)
+		if !stored.SenderType.Valid() || stored.SenderType.IsZero() {
+			return storedRow{}, app.Fail(app.SendStorageUnavailable)
+		}
 	}
 	return stored, nil
 }
@@ -344,6 +367,7 @@ type storedRow struct {
 	ServerMsgID     string
 	ClientMsgID     string
 	SenderID        string
+	SenderType      protocol.SenderType
 	ConversationID  string
 	ConversationSeq int64
 	ProtocolVersion int32
@@ -369,6 +393,7 @@ func (s storedRow) persisted() app.PersistedMessage {
 		ClientMsgID:     s.ClientMsgID,
 		ConversationID:  s.ConversationID,
 		SenderID:        s.SenderID,
+		SenderType:      s.SenderType,
 		ServerMsgID:     s.ServerMsgID,
 		ConversationSeq: s.ConversationSeq,
 		ServerTime:      s.ServerTime,

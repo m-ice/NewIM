@@ -21,6 +21,7 @@ type Code string
 const (
 	InvalidInput       Code = "USER_INVALID_INPUT"
 	NotFound           Code = "USER_NOT_FOUND"
+	ActorTypeConflict  Code = "USER_ACTOR_TYPE_CONFLICT"
 	StorageUnavailable Code = "USER_STORAGE_UNAVAILABLE"
 )
 
@@ -43,6 +44,25 @@ type Profile struct {
 	Nickname string `json:"nickname"`
 	FaceURL  string `json:"faceUrl"`
 	Ex       string `json:"ex"`
+}
+
+// ActorType classifies the account for internal provisioning and message attribution.
+type ActorType string
+
+const (
+	ActorHuman   ActorType = "HUMAN"
+	ActorBot     ActorType = "BOT"
+	ActorSystem  ActorType = "SYSTEM"
+	ActorAIAgent ActorType = "AI_AGENT"
+)
+
+func (a ActorType) Valid() bool {
+	switch a {
+	case ActorHuman, ActorBot, ActorSystem, ActorAIAgent:
+		return true
+	default:
+		return false
+	}
 }
 
 // Patch distinguishes an absent value from an explicitly cleared value.
@@ -85,6 +105,12 @@ type Store interface {
 	Lookup(context.Context, []string) ([]Profile, error)
 }
 
+// ActorStore assigns a type only when the account is first provisioned.
+type ActorStore interface {
+	Store
+	ProvisionWithActor(context.Context, string, Patch, ActorType) (Profile, error)
+}
+
 type Service struct {
 	store Store
 }
@@ -103,6 +129,19 @@ func (s *Service) Provision(ctx context.Context, id string, profile Patch) (Prof
 	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
 	defer cancel()
 	return s.store.Provision(ctx, id, profile)
+}
+
+func (s *Service) ProvisionWithActor(ctx context.Context, id string, profile Patch, actor ActorType) (Profile, error) {
+	if ctx == nil || !ValidID(id) || !profile.Valid() || !actor.Valid() {
+		return Profile{}, Fail(InvalidInput)
+	}
+	store, ok := s.store.(ActorStore)
+	if !ok {
+		return Profile{}, Fail(StorageUnavailable)
+	}
+	ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+	defer cancel()
+	return store.ProvisionWithActor(ctx, id, profile, actor)
 }
 
 func (s *Service) Get(ctx context.Context, id string) (Profile, error) {

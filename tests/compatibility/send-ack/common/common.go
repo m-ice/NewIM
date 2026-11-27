@@ -12,11 +12,12 @@ import (
 )
 
 type FrameCase struct {
-	ID        string  `json:"id"`
-	Wire      string  `json:"wire"`
-	WireHex   string  `json:"wireHex"`
-	Direction string  `json:"direction"`
-	Error     *string `json:"error"`
+	ID         string  `json:"id"`
+	Wire       string  `json:"wire"`
+	WireHex    string  `json:"wireHex"`
+	Direction  string  `json:"direction"`
+	SenderType *string `json:"senderType"`
+	Error      *string `json:"error"`
 }
 type IntentCase struct {
 	ID    string  `json:"id"`

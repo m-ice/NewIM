@@ -17,6 +17,8 @@ TESTS = {
     'stranger-send-check': 'TestStrangerSendCheck',
     'stranger-send-security': 'TestStrangerSendSecurity',
     'stranger-send-recovery': 'TestStrangerSendRecovery',
+    'actor-check': 'TestMessageActorCheck',
+    'actor-delivery': 'TestMessageActorDelivery',
 }
 
 
@@ -48,14 +50,15 @@ def main():
         env.update(CGO_ENABLED='0', GOOS='linux', GOARCH=platform.split('/')[1], GOTOOLCHAIN='local')
         binary = directory / 'tlsmessage.test'
         stranger = args.suite.startswith('stranger-send-')
-        servers = ('newim-gateway', 'newim-server') if stranger else ('newim-gateway',)
+        actor = args.suite.startswith('actor-')
+        servers = ('newim-gateway', 'newim-server') if stranger or actor else ('newim-gateway',)
         build(commands, ['go', 'test', '-c', '-tags=integration', '-o', str(binary),
                          './tests/integration/tlsmessage'], env, 'tls-message-cross-compile')
         for name in servers:
             build(commands, ['go', 'build', '-o', str(directory / name), './server/cmd/' + name],
                   env, 'tls-message-' + name + '-build')
         with Database(commands, image, platform) as db:
-            db.sql(migration_sql(16 if stranger else 11))
+            db.sql(migration_sql(20 if actor else 16 if stranger else 11))
             paths = (binary.name, *servers)
             for name in paths:
                 commands.run(['docker', 'cp', str(directory / name), db.name + ':/tmp/' + name],

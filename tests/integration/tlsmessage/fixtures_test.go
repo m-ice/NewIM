@@ -10,6 +10,7 @@ import (
 	"crypto/rand"
 	"crypto/tls"
 	"crypto/x509"
+	"encoding/hex"
 	"encoding/json"
 	"encoding/pem"
 	"io"
@@ -248,6 +249,43 @@ func (f *fixture) gateway(enabled string, settings map[string]string) *process {
 		return false
 	})
 	return p
+}
+
+func (f *fixture) messageLoopback(overrides map[string]string) (*process, string) {
+	f.t.Helper()
+	api, err := net.Listen("tcp4", "127.0.0.1:0")
+	must(f.t, err)
+	defer api.Close()
+	ops, err := net.Listen("tcp4", "127.0.0.1:0")
+	must(f.t, err)
+	defer ops.Close()
+	apiAddr, opsAddr := api.Addr().String(), ops.Addr().String()
+	must(f.t, api.Close())
+	must(f.t, ops.Close())
+
+	issuerFile := filepath.Join(f.t.TempDir(), "issuer-key")
+	var key [32]byte
+	_, err = rand.Read(key[:])
+	must(f.t, err)
+	credential := hex.EncodeToString(key[:])
+	must(f.t, os.WriteFile(issuerFile, []byte(credential), 0o600))
+	clear(key[:])
+	settings := map[string]string{
+		"NEWIM_MESSAGE_HTTP":            "1",
+		"NEWIM_PRIVATE_MESSAGE_POLICY":  "1",
+		"NEWIM_AUTH_ISSUER_TOKEN_FILE":  issuerFile,
+		"NEWIM_AUTH_ISSUER_TTL_SECONDS": "120",
+	}
+	for key, value := range overrides {
+		settings[key] = value
+	}
+	p := startProcess(f.t, os.Getenv("NEWIM_SERVER_BINARY"), "", settings, "--api-addr", apiAddr, "--ops-addr", opsAddr)
+	p.url = "http://" + apiAddr
+	waitForStartup(f.t, p, func() bool {
+		r := f.call(p, http.MethodGet, "/api/v1/health", "", nil, nil)
+		return r.err == nil && r.status == http.StatusOK
+	})
+	return p, credential
 }
 
 type response struct {

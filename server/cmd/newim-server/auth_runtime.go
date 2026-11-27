@@ -48,6 +48,7 @@ const (
 	authMaxPerPlatformEnv      = "NEWIM_AUTH_MAX_DEVICES_PER_PLATFORM"
 	authSingleDeviceEnv        = "NEWIM_AUTH_SINGLE_DEVICE"
 	userProfileEnv             = "NEWIM_USER_PROFILE"
+	actorProvisionEnv          = "NEWIM_ACTOR_PROVISION"
 	messageHTTPApplicationName = "newim-message-http"
 )
 
@@ -80,6 +81,12 @@ func newAuthRuntimeFromEnv(ctx context.Context, cfg api.Config, logger *slog.Log
 	if profileValue != "" && profileValue != "0" && !profileEnabled {
 		return nil, nil, api.ErrInvalidAuthConfig
 	}
+	actorValue := os.Getenv(actorProvisionEnv)
+	actorProvision := actorValue == "1"
+	if actorValue != "" && actorValue != "0" && !actorProvision {
+		return nil, nil, api.ErrInvalidAuthConfig
+	}
+	profileEnabled = profileEnabled || actorProvision
 	tokenFile, ttlConfig := os.Getenv(authIssuerTokenFileEnv), os.Getenv(authIssuerTTLEnv)
 	if tokenFile == "" && ttlConfig == "" {
 		if admission || profileEnabled {
@@ -126,7 +133,16 @@ func newAuthRuntimeFromEnv(ctx context.Context, cfg api.Config, logger *slog.Log
 		routes = append(routes, trustedPOSTRoute("auth_revoke_account", login.AccountRevocationRoute, revocation, login.IssuerBodyLimit))
 	}
 	if profileEnabled {
-		provision, err := login.NewUserProvisionHandler(handler, runtime.profileRepo)
+		var provision *login.UserProvisionHandler
+		if actorProvision {
+			if err := runtime.profileRepo.CheckActorProvisionSchema(ctx); err != nil {
+				runtime.Close()
+				return nil, nil, api.ErrInvalidAuthConfig
+			}
+			provision, err = login.NewActorProvisionHandler(handler, runtime.profileRepo)
+		} else {
+			provision, err = login.NewUserProvisionHandler(handler, runtime.profileRepo)
+		}
 		if err != nil {
 			runtime.Close()
 			return nil, nil, api.ErrInvalidAuthConfig

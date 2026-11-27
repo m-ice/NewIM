@@ -188,6 +188,8 @@ func WriteServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusBadRequest, string(user.InvalidInput))
 	case user.NotFound:
 		writeError(w, http.StatusNotFound, string(user.NotFound))
+	case user.ActorTypeConflict:
+		writeError(w, http.StatusConflict, string(user.ActorTypeConflict))
 	default:
 		writeError(w, http.StatusServiceUnavailable, string(user.StorageUnavailable))
 	}

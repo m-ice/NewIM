@@ -105,6 +105,7 @@ type PersistedMessage struct {
 	ClientMsgID     string
 	ConversationID  string
 	SenderID        string
+	SenderType      protocol.SenderType
 	ServerMsgID     string
 	ConversationSeq int64
 	ServerTime      int64

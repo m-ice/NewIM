@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	protocol "github.com/m-ice/NewIM/core/protocol/go"
 	session "github.com/m-ice/NewIM/server/auth/session"
 )
 
@@ -38,6 +39,32 @@ func item(seq int64) Item {
 		MessageType:     "text",
 		ServerTime:      seq,
 		Payload:         []byte(`{"text":"hello"}`),
+	}
+}
+
+func TestReadFrameCarriesPersistedSenderType(t *testing.T) {
+	human := item(1)
+	bot := item(2)
+	bot.SenderType = protocol.SenderBot
+	service, err := NewService(storeFunc(func(context.Context, string, ReadRequest) (ReadResult, error) {
+		return ReadResult{LatestSeq: 2, Limit: 2, Rows: []Item{human, bot}}, nil
+	}), Config{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	page, err := service.ReadAfterSeq(context.Background(), identity(t), ReadRequest{ConversationID: "conversation", Limit: 2})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []protocol.SenderType{"", protocol.SenderBot} {
+		wire, err := EncodeServerFrame(page.Items[i])
+		if err != nil {
+			t.Fatal(err)
+		}
+		frame, err := protocol.DecodeServerFrame(wire)
+		if err != nil || frame.Message == nil || frame.Message.SenderType != want {
+			t.Fatalf("item %d did not preserve its sender type: %v", i, err)
+		}
 	}
 }
 

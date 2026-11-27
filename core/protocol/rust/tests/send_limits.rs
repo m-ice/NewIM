@@ -312,6 +312,7 @@ fn maximum_send_reserves_space_for_authoritative_result_fields() {
         conversation_id: send.conversation_id.clone(),
         conversation_seq: i64::MAX.to_string(),
         sender_id: sender.clone(),
+        sender_type: None,
         message_type: send.message_type.clone(),
         server_time: i64::MAX.to_string(),
         payload: send.payload.clone(),

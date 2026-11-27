@@ -35,7 +35,10 @@ type Config struct {
 
 // Repository owns a bounded pgx pool and webhook persistence operations.
 // Repository 持有有界 pgx 池和 Webhook 持久化操作。
-type Repository struct{ pool *pgxpool.Pool }
+type Repository struct {
+	pool       *pgxpool.Pool
+	actorTypes bool
+}
 
 // AcquireWorkerLock enforces one webhook worker process per database.
 // AcquireWorkerLock 强制每个数据库只有一个 Webhook worker 进程。
@@ -193,7 +196,19 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 		pool.Close()
 		return nil, app.Fail(app.CodeStorageUnavailable)
 	}
-	return &Repository{pool: pool}, nil
+	// Older schemas can still deliver v1 messages without an actor classification.
+	var actorTypes bool
+	if err = pool.QueryRow(poolCtx, `SELECT to_regclass('newim.im_user_actor_types') IS NOT NULL`).Scan(&actorTypes); err != nil {
+		pool.Close()
+		return nil, app.Fail(app.CodeStorageUnavailable)
+	}
+	if actorTypes {
+		if _, err = pool.Exec(poolCtx, `SELECT user_id,actor_type FROM newim.im_user_actor_types LIMIT 0`); err != nil {
+			pool.Close()
+			return nil, app.Fail(app.CodeStorageUnavailable)
+		}
+	}
+	return &Repository{pool: pool, actorTypes: actorTypes}, nil
 }
 
 // Close releases all pool resources after callers finish their transactions.
@@ -409,10 +424,14 @@ SET status='retry', next_attempt_at=clock_timestamp(), lease_owner=NULL, lease_t
 WHERE status='leased' AND lease_expires_at <= clock_timestamp()`); err != nil {
 		return nil, mapStorageError(err)
 	}
+	senderType := "''::text"
+	if r.actorTypes {
+		senderType = `COALESCE((SELECT a.actor_type FROM newim.im_user_actor_types a WHERE a.user_id=m.sender_id),'')`
+	}
 	rows, err := tx.Query(ctx, `SELECT d.delivery_id,d.attempts,d.destination_id,d.endpoint_revision,
 	r.url,r.key_id,r.secret_nonce,r.secret_ciphertext,
 o.event_id,m.server_msg_id,m.client_msg_id,m.sender_id,m.conversation_id,m.conversation_seq,
-m.server_time_ms,m.protocol_version,m.schema_version,m.message_type,m.payload_bytes
+m.server_time_ms,m.protocol_version,m.schema_version,m.message_type,m.payload_bytes,`+senderType+`
 FROM newim.im_webhook_deliveries d
 JOIN newim.im_webhook_endpoint_revisions r ON r.destination_id=d.destination_id AND r.revision=d.endpoint_revision
 JOIN newim.im_webhook_endpoints e ON e.destination_id=d.destination_id
@@ -434,7 +453,7 @@ LIMIT $1 FOR UPDATE OF d SKIP LOCKED`, limit)
 			&delivery.Event.ID, &delivery.Event.ServerMsgID, &delivery.Event.ClientMsgID,
 			&delivery.Event.SenderID, &delivery.Event.ConversationID, &delivery.Event.ConversationSeq,
 			&delivery.Event.ServerTime, &delivery.Event.ProtocolVersion, &delivery.Event.SchemaVersion,
-			&delivery.Event.MessageType, &payload); err != nil {
+			&delivery.Event.MessageType, &payload, &delivery.Event.SenderType); err != nil {
 			rows.Close()
 			return nil, mapStorageError(err)
 		}

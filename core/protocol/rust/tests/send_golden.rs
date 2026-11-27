@@ -1,5 +1,6 @@
 mod send_common;
 
+use newim_protocol::SenderType;
 use newim_protocol::send::*;
 use send_common::*;
 
@@ -42,6 +43,20 @@ fn shared_frame_golden_roundtrips_without_payload_mutation() {
                 };
                 let encoded = encode_server_frame(&first).unwrap();
                 let second = decode_server_frame(&encoded).unwrap();
+                if let Some(expected) = case["senderType"].as_str() {
+                    for frame in [&first, &second] {
+                        let sender_type = match frame {
+                            ServerFrame::Ack(ack) => ack.sender_type,
+                            ServerFrame::Message(message) => message.sender_type,
+                            ServerFrame::Error(_) => None,
+                        };
+                        assert_eq!(
+                            sender_type.map(SenderType::as_str),
+                            Some(expected),
+                            "{name}"
+                        );
+                    }
+                }
                 if let (Some(payload), ServerFrame::Message(a), ServerFrame::Message(b)) =
                     (payload, &first, &second)
                 {
@@ -88,4 +103,47 @@ fn shared_exact_intent_equality_is_symmetric_and_preserves_tokens() {
             );
         }
     }
+}
+
+#[test]
+fn human_sender_type_preserves_legacy_frame_bytes() {
+    for case in cases("frames") {
+        let id = case["id"].as_str().unwrap();
+        if id != "ack" && id != "message" {
+            continue;
+        }
+        let wire = String::from_utf8(bytes(&case)).unwrap();
+        let legacy = decode_server_frame(wire.as_bytes()).unwrap();
+        let human = wire.replacen(r#""senderId":"#, r#""senderType":"HUMAN","senderId":"#, 1);
+        let frame = decode_server_frame(human.as_bytes()).unwrap();
+        let sender_type = match &frame {
+            ServerFrame::Ack(ack) => ack.sender_type,
+            ServerFrame::Message(message) => message.sender_type,
+            ServerFrame::Error(_) => panic!("unexpected frame kind"),
+        };
+        assert_eq!(sender_type, Some(SenderType::Human));
+        assert_eq!(
+            encode_server_frame(&frame).unwrap(),
+            encode_server_frame(&legacy).unwrap(),
+            "{id}"
+        );
+    }
+}
+
+#[test]
+fn sender_type_counts_against_message_byte_limit() {
+    use newim_protocol::{Error, MAX_WIRE_BYTES, encode};
+    use serde_json::value::RawValue;
+
+    let ServerFrame::Message(mut message) = message() else {
+        panic!("expected message frame");
+    };
+    message.sender_type = Some(SenderType::AiAgent);
+    message.payload = RawValue::from_string(r#"{"n":""}"#.into()).unwrap();
+    let count = MAX_WIRE_BYTES - encode(&message).unwrap().len();
+    message.payload = RawValue::from_string(format!(r#"{{"n":"{}"}}"#, "a".repeat(count))).unwrap();
+    assert_eq!(encode(&message).unwrap().len(), MAX_WIRE_BYTES);
+    message.payload =
+        RawValue::from_string(format!(r#"{{"n":"{}"}}"#, "a".repeat(count + 1))).unwrap();
+    assert_eq!(encode(&message), Err(Error::MessageTooLarge));
 }

@@ -1,6 +1,7 @@
 package webhook
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -485,6 +486,46 @@ func TestBuildEnvelopePayloadContract(t *testing.T) {
 	var size string
 	if err = json.Unmarshal(payload["payloadSize"], &size); err != nil || size != strconv.Itoa(len(originalPayload)) {
 		t.Fatalf("payloadSize is not a decimal string: %q, %v", size, err)
+	}
+}
+
+func TestBuildEnvelopeSenderTypeUsesV1Budget(t *testing.T) {
+	event := testDelivery(nil).Event
+	event.Payload = json.RawMessage(`{"text":""}`)
+	empty, err := buildEnvelope(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	event.Payload = json.RawMessage(`{"text":"` +
+		strings.Repeat("x", protocol.WebhookMaxEnvelopeBytes-len(empty)) + `"}`)
+	legacy, err := buildEnvelope(event)
+	if err != nil || len(legacy) != protocol.WebhookMaxEnvelopeBytes {
+		t.Fatalf("legacy envelope size = %d, err = %v", len(legacy), err)
+	}
+	event.SenderType = protocol.SenderHuman
+	human, err := buildEnvelope(event)
+	if err != nil || !bytes.Equal(human, legacy) {
+		t.Fatalf("explicit HUMAN changed the v1 envelope: %v", err)
+	}
+	event.SenderType = protocol.SenderBot
+	classified, err := buildEnvelope(event)
+	if err != nil {
+		t.Fatal(err)
+	}
+	envelope, err := protocol.DecodeWebhookEnvelope(classified)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var payload struct {
+		SenderType     protocol.SenderType `json:"senderType"`
+		PayloadOmitted bool                `json:"payloadOmitted"`
+		Payload        json.RawMessage     `json:"payload"`
+	}
+	if err := json.Unmarshal(envelope.Payload, &payload); err != nil {
+		t.Fatal(err)
+	}
+	if payload.SenderType != protocol.SenderBot || !payload.PayloadOmitted || string(payload.Payload) != "{}" {
+		t.Fatal("compact envelope did not retain the classified sender")
 	}
 }
 

@@ -53,6 +53,7 @@ pub fn ack() -> Ack {
         client_msg_id: "c1".into(),
         conversation_id: "room1".into(),
         sender_id: "u1".into(),
+        sender_type: None,
         server_msg_id: "m1".into(),
         conversation_seq: "8".into(),
         server_time: "99".into(),

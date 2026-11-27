@@ -328,6 +328,14 @@ tls-message-security: toolchain
 tls-message-recovery: toolchain
 	python3 -B infra/db/tls_message_suite.py recovery
 
+.PHONY: message-actor-check message-actor-delivery
+message-actor-check: toolchain
+	python3 -B infra/db/tls_message_suite.py actor-check
+
+message-actor-delivery: toolchain
+	python3 -B infra/db/tls_message_suite.py actor-delivery
+	python3 -B infra/db/webhook_suite.py actor-delivery
+
 .PHONY: stranger-send-check stranger-send-security stranger-send-recovery
 stranger-send-check: toolchain
 	python3 -B infra/db/tls_message_suite.py stranger-send-check

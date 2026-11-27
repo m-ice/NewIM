@@ -155,7 +155,8 @@ func (s *Service) Send(ctx context.Context, identity session.ConnectionIdentity,
 		return protocol.ServerFrame{}, redactedError(persistErr)
 	}
 	if persisted.ClientMsgID != request.ClientMsgID || persisted.ConversationID != request.ConversationID ||
-		persisted.SenderID != identity.UserID() || persisted.ConversationSeq < 0 || persisted.ServerTime < 0 {
+		persisted.SenderID != identity.UserID() || persisted.ConversationSeq < 0 || persisted.ServerTime < 0 ||
+		(!persisted.SenderType.IsZero() && !persisted.SenderType.Valid()) {
 		return protocol.ServerFrame{}, Fail(SendStorageUnavailable)
 	}
 	s.emitLifecycle(traceID, LifecyclePersisted, LifecycleResultSuccess, LifecycleCodePersisted, persisted.Replayed, started)
@@ -166,6 +167,7 @@ func (s *Service) Send(ctx context.Context, identity session.ConnectionIdentity,
 		ClientMsgID:     persisted.ClientMsgID,
 		ConversationID:  persisted.ConversationID,
 		SenderID:        persisted.SenderID,
+		SenderType:      persisted.SenderType,
 		ServerMsgID:     persisted.ServerMsgID,
 		ConversationSeq: strconv.FormatInt(persisted.ConversationSeq, 10),
 		ServerTime:      strconv.FormatInt(persisted.ServerTime, 10),

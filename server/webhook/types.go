@@ -10,6 +10,7 @@ import (
 	"math"
 	"time"
 
+	protocol "github.com/m-ice/NewIM/core/protocol/go"
 	"github.com/m-ice/NewIM/server/api"
 )
 
@@ -109,6 +110,7 @@ type Event struct {
 	ServerMsgID     string
 	ClientMsgID     string
 	SenderID        string
+	SenderType      protocol.SenderType
 	ConversationID  string
 	ConversationSeq int64
 	ServerTime      int64

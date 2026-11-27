@@ -36,12 +36,13 @@ type Send struct {
 
 // Ack is a result shape; producers must already have committed. 仅已提交结果可产生此确认。
 type Ack struct {
-	ClientMsgID     string `json:"clientMsgId"`
-	ConversationID  string `json:"conversationId"`
-	SenderID        string `json:"senderId"`
-	ServerMsgID     string `json:"serverMsgId"`
-	ConversationSeq string `json:"conversationSeq"`
-	ServerTime      string `json:"serverTime"`
+	ClientMsgID     string     `json:"clientMsgId"`
+	ConversationID  string     `json:"conversationId"`
+	SenderID        string     `json:"senderId"`
+	SenderType      SenderType `json:"senderType,omitzero"`
+	ServerMsgID     string     `json:"serverMsgId"`
+	ConversationSeq string     `json:"conversationSeq"`
+	ServerTime      string     `json:"serverTime"`
 }
 
 // SendError carries a correlated stable code without diagnostics. 关联错误不携带敏感诊断。
@@ -172,6 +173,11 @@ func ackShape(f map[string]json.RawMessage) (Ack, error) {
 		}
 		*d = v
 	}
+	senderType, e := senderTypeField(f)
+	if e != nil {
+		return a, e
+	}
+	a.SenderType = senderType
 	status, e := stringField(f, "status")
 	if e != nil || status != "SERVER_PERSISTED" {
 		return a, InvalidMessage
@@ -390,10 +396,14 @@ func EncodeServerFrame(f ServerFrame) ([]byte, error) {
 	kind := ""
 	if a := f.Ack; a != nil {
 		kind = "send_ack"
-		if e = lowerBound(MaxResultBytes, len(a.ClientMsgID), len(a.ConversationID), len(a.SenderID), len(a.ServerMsgID), len(a.ConversationSeq), len(a.ServerTime)); e != nil {
+		if e = lowerBound(MaxResultBytes, len(a.ClientMsgID), len(a.ConversationID), len(a.SenderID), len(a.SenderType), len(a.ServerMsgID), len(a.ConversationSeq), len(a.ServerTime)); e != nil {
 			return nil, e
 		}
-		body = stringObject([2]string{"status", "SERVER_PERSISTED"}, [2]string{"clientMsgId", a.ClientMsgID}, [2]string{"conversationId", a.ConversationID}, [2]string{"senderId", a.SenderID}, [2]string{"serverMsgId", a.ServerMsgID}, [2]string{"conversationSeq", a.ConversationSeq}, [2]string{"serverTime", a.ServerTime})
+		fields := [][2]string{{"status", "SERVER_PERSISTED"}, {"clientMsgId", a.ClientMsgID}, {"conversationId", a.ConversationID}, {"senderId", a.SenderID}, {"serverMsgId", a.ServerMsgID}, {"conversationSeq", a.ConversationSeq}, {"serverTime", a.ServerTime}}
+		if !a.SenderType.IsZero() {
+			fields = append(fields, [2]string{"senderType", string(a.SenderType)})
+		}
+		body = stringObject(fields...)
 	}
 	if v := f.Error; v != nil {
 		kind = "send_error"

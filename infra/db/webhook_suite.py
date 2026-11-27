@@ -37,19 +37,24 @@ SUITES = {
         'tests': ('TestWebhookManagementSecurity',),
         'auth_database': True,
     },
+    'actor-delivery': {
+        'package': './tests/integration/webhook',
+        'tests': ('TestWebhookActorDelivery',),
+        'legacy_tests': ('TestWebhookActorLegacySchema',),
+    },
 }
 
 
-def run_tests(db, tests):
+def run_tests(db, tests, suffix=''):
     expression = '^('+'|'.join(tests)+')$'
     argv = ['docker', 'exec', db.name, '/tmp/webhook.test']
-    listing = db.commands.run(argv+['-test.list', expression], label='list-webhook')
+    listing = db.commands.run(argv+['-test.list', expression], label='list-webhook'+suffix)
     if set(listing.stdout.decode().splitlines()) != set(tests):
         raise Failure('webhook integration discovery did not match the configured test set')
     result = db.commands.run(argv+['-test.v', '-test.count=1', '-test.timeout=180s',
                                   '-test.run', expression], timeout=195,
-                             label='webhook-integration', check=False)
-    (db.commands.directory/'test.log').write_bytes(result.stdout+result.stderr)
+                             label='webhook-integration'+suffix, check=False)
+    (db.commands.directory/('test'+suffix+'.log')).write_bytes(result.stdout+result.stderr)
     print(result.stdout.decode(), end='', flush=True)
     combined = result.stdout + result.stderr
     if (result.returncode or b'--- SKIP:' in combined or
@@ -96,13 +101,17 @@ def main():
             print(result.stderr.decode(), end='')
             raise Failure('webhook integration cross compilation failed')
         with Database(commands, image, platform) as db:
-            db.sql(migration_sql())
+            legacy_tests = suite.get('legacy_tests')
+            db.sql(migration_sql(19 if legacy_tests else None))
             if suite.get('auth_database'):
                 # Keep authenticated loopback routes mounted without sharing worker state.
                 db.sql('CREATE DATABASE newim_webhook_auth')
                 db.sql(migration_sql(), database='newim_webhook_auth')
             commands.run(['docker', 'cp', str(binary), db.name+':/tmp/webhook.test'],
                          label='copy-owned-webhook-test-binary')
+            if legacy_tests:
+                run_tests(db, legacy_tests, suffix='-legacy')
+                db.sql(migration_sql())
             run_tests(db, suite['tests'])
         print('Webhook suite passed; command records: '+str(directory))
     except (Failure, OSError) as exc:

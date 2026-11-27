@@ -41,7 +41,7 @@ type Repository struct {
 	projectReadState     bool
 }
 
-var _ app.Store = (*Repository)(nil)
+var _ app.ActorStore = (*Repository)(nil)
 
 // Open verifies transport and checks that the profile schema is ready.
 // Open 验证数据库传输配置并检查资料表是否就绪。
@@ -129,9 +129,33 @@ func (r *Repository) Close() {
 	}
 }
 
+// CheckActorProvisionSchema verifies the live schema before enabling typed provisioning.
+func (r *Repository) CheckActorProvisionSchema(ctx context.Context) error {
+	if r == nil || r.pool == nil || ctx == nil {
+		return app.Fail(app.StorageUnavailable)
+	}
+	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+	if _, err := r.pool.Exec(ctx, `SELECT user_id,actor_type FROM newim.im_user_actor_types LIMIT 0`); err != nil {
+		return app.Fail(app.StorageUnavailable)
+	}
+	return nil
+}
+
 // Provision creates a user and their initial profile in one transaction.
 // Provision 在同一事务创建账号和初始资料，重复调用返回当前资料。
 func (r *Repository) Provision(ctx context.Context, userID string, patch app.Patch) (app.Profile, error) {
+	return r.provision(ctx, userID, patch, "")
+}
+
+func (r *Repository) ProvisionWithActor(ctx context.Context, userID string, patch app.Patch, actor app.ActorType) (app.Profile, error) {
+	if !actor.Valid() {
+		return app.Profile{}, app.Fail(app.InvalidInput)
+	}
+	return r.provision(ctx, userID, patch, actor)
+}
+
+func (r *Repository) provision(ctx context.Context, userID string, patch app.Patch, actor app.ActorType) (app.Profile, error) {
 	if ctx == nil || !app.ValidID(userID) || !patch.Valid() {
 		return app.Profile{}, app.Fail(app.InvalidInput)
 	}
@@ -150,6 +174,11 @@ func (r *Repository) Provision(ctx context.Context, userID string, patch app.Pat
 		return app.Profile{}, app.Fail(app.StorageUnavailable)
 	}
 	newUser := created.RowsAffected() == 1
+	if actor != "" {
+		if err = assignActor(ctx, tx, userID, actor, newUser); err != nil {
+			return app.Profile{}, err
+		}
+	}
 	var profile app.Profile
 	if newUser {
 		profile, err = scanProfile(tx.QueryRow(ctx, `INSERT INTO newim.im_user_profiles(user_id, nickname, face_url, ex)
@@ -175,6 +204,31 @@ func (r *Repository) Provision(ctx context.Context, userID string, patch app.Pat
 		return app.Profile{}, app.Fail(app.StorageUnavailable)
 	}
 	return profile, nil
+}
+
+func assignActor(ctx context.Context, tx pgx.Tx, userID string, actor app.ActorType, newUser bool) error {
+	if newUser {
+		if actor != app.ActorHuman {
+			if _, err := tx.Exec(ctx, `INSERT INTO newim.im_user_actor_types(user_id,actor_type)
+VALUES ($1,$2)`, userID, string(actor)); err != nil {
+				return app.Fail(app.StorageUnavailable)
+			}
+		}
+		return nil
+	}
+
+	// Read in a fresh statement after INSERT has waited for the account winner.
+	var current string
+	err := tx.QueryRow(ctx, `SELECT COALESCE((
+SELECT actor_type FROM newim.im_user_actor_types WHERE user_id=$1
+),'HUMAN')`, userID).Scan(&current)
+	if err != nil || !app.ActorType(current).Valid() {
+		return app.Fail(app.StorageUnavailable)
+	}
+	if app.ActorType(current) != actor {
+		return app.Fail(app.ActorTypeConflict)
+	}
+	return nil
 }
 
 // Get reads the public profile of an existing account.
