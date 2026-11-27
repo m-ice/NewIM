@@ -99,7 +99,7 @@ func (r *Repository) Admit(ctx context.Context, request app.AdmissionRequest, ge
 		return app.AdmissionResult{}, fixed(err)
 	}
 	now := issued.IssuedAt()
-	if err = revokeAdmissionSessions(ctx, tx, sessions, now); err != nil {
+	if _, err = revokeLockedSessions(ctx, tx, sessions, now, app.RevocationReasonDeviceLimit); err != nil {
 		return app.AdmissionResult{}, err
 	}
 	current, err = admitDeviceSession(ctx, tx, request, current, now)
@@ -233,28 +233,35 @@ func lockAdmissionSessions(ctx context.Context, tx pgx.Tx, request app.Admission
 	return current, victimsSessions, fixed(rows.Err())
 }
 
-func revokeAdmissionSessions(ctx context.Context, tx pgx.Tx, sessions []string, now time.Time) error {
+// revokeLockedSessions records events for the caller's already locked sessions.
+func revokeLockedSessions(ctx context.Context, tx pgx.Tx, sessions []string, now time.Time, reason string) (int64, error) {
 	if len(sessions) == 0 {
-		return nil
+		return 0, nil
 	}
 	if _, err := tx.Exec(ctx, `SELECT 1 FROM newim.im_auth_tokens
 		WHERE session_id=ANY($1::text[]) AND revoked_at IS NULL
 		ORDER BY session_id, token_id FOR UPDATE`, sessions); err != nil {
-		return fixed(err)
+		return 0, fixed(err)
 	}
-	if _, err := tx.Exec(ctx, `WITH revoked AS (
-		UPDATE newim.im_sessions SET revoked_at=$2
+	// Preserve the original timestamp for existing device-limit evictions.
+	clampSessionTime := reason != app.RevocationReasonDeviceLimit
+	tag, err := tx.Exec(ctx, `WITH revoked AS (
+		UPDATE newim.im_sessions
+		SET revoked_at=CASE WHEN $3 THEN GREATEST(created_at,$2) ELSE $2 END
 		WHERE session_id=ANY($1::text[]) AND revoked_at IS NULL
 		RETURNING user_id, device_id, session_id, revoked_at
 	)
 	INSERT INTO newim.im_session_revocation_events (user_id, device_id, session_id, revoked_at, reason)
-	SELECT user_id, device_id, session_id, revoked_at, $3 FROM revoked ORDER BY session_id`,
-		sessions, now, app.RevocationReasonDeviceLimit); err != nil {
-		return fixed(err)
+	SELECT user_id, device_id, session_id, revoked_at, $4 FROM revoked ORDER BY session_id`,
+		sessions, now, clampSessionTime, reason)
+	if err != nil {
+		return 0, fixed(err)
 	}
-	_, err := tx.Exec(ctx, `UPDATE newim.im_auth_tokens SET revoked_at=GREATEST(created_at,$2)
-		WHERE session_id=ANY($1::text[]) AND revoked_at IS NULL`, sessions, now)
-	return fixed(err)
+	if _, err = tx.Exec(ctx, `UPDATE newim.im_auth_tokens SET revoked_at=GREATEST(created_at,$2)
+		WHERE session_id=ANY($1::text[]) AND revoked_at IS NULL`, sessions, now); err != nil {
+		return 0, fixed(err)
+	}
+	return tag.RowsAffected(), nil
 }
 
 func admitDeviceSession(ctx context.Context, tx pgx.Tx, request app.AdmissionRequest, current string, now time.Time) (string, error) {

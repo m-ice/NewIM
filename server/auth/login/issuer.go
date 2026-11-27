@@ -124,13 +124,13 @@ func (h *IssuerHandler) readTrustedRequestWithLimit(w http.ResponseWriter, r *ht
 }
 
 func writeSessionActionError(w http.ResponseWriter, err error) {
-	switch app.ErrorCode(err) {
+	switch code := app.ErrorCode(err); code {
 	case app.AuthInvalidInput:
 		writeIssuerError(w, http.StatusBadRequest, string(app.AuthInvalidInput))
 	case app.AuthForbidden, app.AuthSessionNotFound, app.AuthSessionRevoked:
 		writeIssuerError(w, http.StatusForbidden, codeSessionNotEligible)
-	case app.AuthDeviceLimitExceeded:
-		writeIssuerError(w, http.StatusConflict, string(app.AuthDeviceLimitExceeded))
+	case app.AuthDeviceLimitExceeded, app.AuthRevocationConflict:
+		writeIssuerError(w, http.StatusConflict, string(code))
 	default:
 		writeIssuerError(w, http.StatusServiceUnavailable, string(bearerhttp.CodeUnavailable))
 	}

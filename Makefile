@@ -242,6 +242,16 @@ auth-issuer-check: toolchain
 auth-admission-check: toolchain
 	python3 -B infra/db/auth_suite.py admission
 
+.PHONY: auth-account-revoke-check auth-account-revoke-security auth-account-revoke-recovery
+auth-account-revoke-check: toolchain
+	python3 -B infra/db/account_revocation_suite.py check
+
+auth-account-revoke-security: toolchain
+	python3 -B infra/db/account_revocation_suite.py security
+
+auth-account-revoke-recovery: toolchain
+	python3 -B infra/db/account_revocation_suite.py recovery
+
 auth-logout-check: toolchain
 	python3 -B infra/db/auth_suite.py --self-test
 	python3 -B infra/db/auth_suite.py logout

@@ -118,6 +118,11 @@ and the [lifecycle specification](../specs/observability/server-message-lifecycl
 `NEWIM_GROUP_IP_ATTEMPTS_PER_MINUTE` 和 `NEWIM_GROUP_ACCOUNT_ATTEMPTS_PER_MINUTE` 调整。
 [小群接口](../specs/group/membership.md)。运行 `make group-check group-security group-recovery` 验证。
 
+应用迁移 013 后，在已配置应用发行凭证及设备准入的回环服务设置
+`NEWIM_AUTH_ACCOUNT_REVOCATION=1`，可接收可信应用提交的账号级会话撤销。
+[撤销接口](../specs/auth/account-revocation.md)。
+运行 `make auth-account-revoke-check auth-account-revoke-security auth-account-revoke-recovery` 验证。
+
 Run the root `make build`, `make check`, `make docs-check`, `make api-check`,
 `make api-recovery`, `make api-security`, `make auth-http-check`,
 `make auth-http-security`, `make auth-route-check`, `make auth-logout-check`,

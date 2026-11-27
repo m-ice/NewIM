@@ -40,6 +40,7 @@ USER_PROFILE_TABLES = {'im_user_profiles'}
 FRIEND_TABLES = {'im_friend_edges', 'im_friend_applications', 'im_friend_sync_accounts',
                  'im_friend_sync_changes'}
 GROUP_TABLES = {'im_groups', 'im_group_requests', 'im_group_sync_accounts', 'im_group_sync_changes'}
+ACCOUNT_REVOCATION_TABLES = {'im_account_revocation_requests'}
 
 
 def source_migrations():
@@ -70,6 +71,7 @@ def check_catalog(db, target=None):
     expected |= USER_PROFILE_TABLES if target >= 10 else set()
     expected |= FRIEND_TABLES if target >= 11 else set()
     expected |= GROUP_TABLES if target >= 12 else set()
+    expected |= ACCOUNT_REVOCATION_TABLES if target >= 13 else set()
     actual_tables = set(db.sql("SELECT tablename FROM pg_tables WHERE schemaname='newim';").splitlines())
     if actual_tables != expected:
         raise Failure('exact catalog table set: missing='+repr(sorted(expected-actual_tables))+
@@ -296,6 +298,7 @@ def schema(db, commands):
     equal(snapshot(db), before, 'negative writes preserve database')
     sync_constraints(db)
     auth_constraints(db)
+    account_revocation_constraints(db)
     gateway_handshake_constraints(db)
     user_profile_constraints(db)
     friend_constraints(db)
@@ -410,6 +413,50 @@ def auth_constraints(db):
     equal(snapshot(db), before, 'auth constraint failures preserve state')
     print(f'PASS auth schema constraints: {len(negatives)} rejected writes', flush=True)
 
+
+
+def account_revocation_constraints(db):
+    scalar(db, "SELECT string_agg(column_name||'|'||is_nullable,',' ORDER BY ordinal_position) "
+           "FROM information_schema.columns WHERE table_schema='newim' AND table_name='im_account_revocation_requests';",
+           'user_id|NO,request_id|NO,reason|NO,revoked_sessions|NO,recorded_at|NO', 'exact account revocation receipt columns')
+    scalar(db, "SELECT data_type FROM information_schema.columns WHERE table_schema='newim' "
+           "AND table_name='im_account_revocation_requests' AND column_name='revoked_sessions';",
+           'bigint', 'revocation receipt count uses BIGINT')
+    db.sql("INSERT INTO newim.im_users(user_id) VALUES ('revocation_other'); "
+           "INSERT INTO newim.im_devices(user_id,device_id) VALUES ('alice','revocation_device'); "
+           "INSERT INTO newim.im_sessions(session_id,user_id,device_id) VALUES "
+           "('reason_device','alice','revocation_device'),('reason_password','alice','revocation_device'),"
+           "('reason_logout','alice','revocation_device'),('reason_block','alice','revocation_device'); "
+           "INSERT INTO newim.im_session_revocation_events(user_id,device_id,session_id,revoked_at,reason) VALUES "
+           "('alice','revocation_device','reason_device',clock_timestamp(),'device_limit'),"
+           "('alice','revocation_device','reason_password',clock_timestamp(),'password_changed'),"
+           "('alice','revocation_device','reason_logout',clock_timestamp(),'signed_out_all'),"
+           "('alice','revocation_device','reason_block',clock_timestamp(),'account_blocked'); "
+           "INSERT INTO newim.im_account_revocation_requests(user_id,request_id,reason,revoked_sessions) VALUES "
+           "('alice','account_action','password_changed',0),"
+           "('bob','other_action','account_blocked',1),"
+           f"('revocation_other','account_action','signed_out_all',{MAXIMUM});")
+    scalar(db, "SELECT count(*) FROM newim.im_account_revocation_requests WHERE request_id='account_action';",
+           2, 'identical receipt keys are independent across accounts')
+    scalar(db, "SELECT count(DISTINCT reason) FROM newim.im_session_revocation_events WHERE device_id='revocation_device';",
+           4, 'legacy and account revocation event reasons coexist')
+    negatives = [
+        ("UPDATE newim.im_session_revocation_events SET reason='unknown' WHERE session_id='reason_logout';", '23514'),
+        ("UPDATE newim.im_account_revocation_requests SET reason='device_limit' WHERE user_id='alice';", '23514'),
+        ("UPDATE newim.im_account_revocation_requests SET reason='unknown' WHERE user_id='alice';", '23514'),
+        ("UPDATE newim.im_account_revocation_requests SET revoked_sessions=-1 WHERE user_id='alice';", '23514'),
+        ("UPDATE newim.im_account_revocation_requests SET recorded_at='infinity' WHERE user_id='alice';", '23514'),
+        ("INSERT INTO newim.im_account_revocation_requests(user_id,request_id,reason,revoked_sessions) "
+         "VALUES ('alice','account_action','signed_out_all',1);", '23505'),
+        ("INSERT INTO newim.im_account_revocation_requests(user_id,request_id,reason,revoked_sessions) "
+         "VALUES ('missing_account','account_action','signed_out_all',0);", '23503'),
+        ("DELETE FROM newim.im_users WHERE user_id='revocation_other';", '23503'),
+    ]
+    before = snapshot(db)
+    for sql, error in negatives:
+        db.sql(sql, error=error)
+    equal(snapshot(db), before, 'account revocation constraint failures preserve state')
+    print(f'PASS account revocation schema constraints: {len(negatives)} rejected writes', flush=True)
 
 
 def gateway_handshake_constraints(db):
@@ -898,6 +945,50 @@ def group_migration(db):
     print('PASS populated 012 preserves group/direct membership, historical messages, media and reads', flush=True)
 
 
+def account_revocation_migration(db, commands):
+    db.sql("INSERT INTO newim.im_devices(user_id,device_id) VALUES ('alice','migration_limited_device'); "
+           "INSERT INTO newim.im_sessions(session_id,user_id,device_id,created_at,revoked_at) VALUES "
+           "('migration_limited_session','alice','migration_limited_device','2026-01-01 00:00:00+00','2026-01-01 00:30:00+00'); "
+           "INSERT INTO newim.im_auth_tokens(token_id,token_digest,session_id,created_at,expires_at,revoked_at) VALUES "
+           "(repeat('c',32),decode(repeat('c3',32),'hex'),'migration_limited_session',"
+           "'2026-01-01 00:00:00+00','2026-01-01 01:00:00+00','2026-01-01 00:30:00+00'); "
+           "INSERT INTO newim.im_session_revocation_events(user_id,device_id,session_id,revoked_at,reason) VALUES "
+           "('alice','migration_limited_device','migration_limited_session','2026-01-01 00:30:00+00','device_limit');")
+    sequence_sql = "SELECT last_value||'|'||is_called FROM newim.im_session_revocation_events_event_id_seq;"
+    historical_sequence = db.sql(sequence_sql)
+    historical = snapshot(db)
+    with tempfile.TemporaryDirectory(prefix='account-revocation-migration-copy-', dir=commands.directory) as owned:
+        directory = Path(owned)
+        for path in source_migrations():
+            (directory/path.name).write_bytes(path.read_bytes())
+        candidate = directory/'013_account_revocation.sql'
+        original = candidate.read_text()
+        candidate.write_text(original + "\nSELECT 1/0;\n")
+        db.sql(migration_sql(13, directory=directory), error='22012')
+        check_catalog(db, 12)
+        equal(snapshot(db), historical, 'failed 013 preserves exact populated 012 rows')
+        db.sql("UPDATE newim.im_session_revocation_events SET reason='password_changed' "
+               "WHERE session_id='migration_limited_session';", error='23514')
+        candidate.write_text(original + "\nSELECT pg_sleep(30);\n")
+        held = db.session("SET application_name='newim_account_revocation_migration_interrupt'; "+
+                          migration_sql(13, directory=directory))
+        db.wait_sql("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name="
+                    "'newim_account_revocation_migration_interrupt' AND wait_event='PgSleep');")
+        db.sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+               "WHERE application_name='newim_account_revocation_migration_interrupt';")
+        held.finish(error='57P01')
+        check_catalog(db, 12)
+        equal(snapshot(db), historical, 'terminated 013 preserves exact populated 012 rows')
+    db.sql(migration_sql(13))
+    check_catalog(db, 13)
+    upgraded = snapshot(db)
+    equal({k: v for k, v in upgraded.items() if k not in ACCOUNT_REVOCATION_TABLES | {'migrations'}},
+          {k: v for k, v in historical.items() if k != 'migrations'}, '013 preserves existing auth events and all old rows')
+    equal(db.sql(sequence_sql), historical_sequence, '013 preserves the existing event sequence and call state')
+    scalar(db, "SELECT count(*) FROM newim.im_account_revocation_requests;", 0, '013 does not invent historical receipts')
+    print('PASS populated 013 preserves device revocations and previous data after failure and termination', flush=True)
+
+
 def migrations(db, commands):
     head = len(source_migrations())
     db.sql(migration_sql(1))
@@ -923,6 +1014,7 @@ def migrations(db, commands):
     user_profile_migration(db)
     friend_migration(db)
     group_migration(db)
+    account_revocation_migration(db, commands)
     after = snapshot(db)
     db.sql(migration_sql())
     equal(snapshot(db), after, 'head replay stable')

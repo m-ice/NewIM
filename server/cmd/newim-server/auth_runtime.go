@@ -40,6 +40,7 @@ const (
 	authIssuerTokenFileEnv     = "NEWIM_AUTH_ISSUER_TOKEN_FILE"
 	authIssuerTTLEnv           = "NEWIM_AUTH_ISSUER_TTL_SECONDS"
 	authAdmissionEnv           = "NEWIM_AUTH_DEVICE_ADMISSION"
+	authAccountRevocationEnv   = "NEWIM_AUTH_ACCOUNT_REVOCATION"
 	authMaxDevicesEnv          = "NEWIM_AUTH_MAX_DEVICES"
 	authMaxPerPlatformEnv      = "NEWIM_AUTH_MAX_DEVICES_PER_PLATFORM"
 	authSingleDeviceEnv        = "NEWIM_AUTH_SINGLE_DEVICE"
@@ -65,6 +66,11 @@ func newAuthRuntimeFromEnv(ctx context.Context, cfg api.Config, logger *slog.Log
 	limits, admission, err := deviceAdmissionConfig()
 	if err != nil {
 		return nil, nil, err
+	}
+	revocationValue := os.Getenv(authAccountRevocationEnv)
+	accountRevocation := revocationValue == "1"
+	if (accountRevocation && !admission) || (revocationValue != "" && revocationValue != "0" && !accountRevocation) {
+		return nil, nil, api.ErrInvalidAuthConfig
 	}
 	profileValue := os.Getenv(userProfileEnv)
 	profileEnabled := profileValue == "1"
@@ -103,6 +109,18 @@ func newAuthRuntimeFromEnv(ctx context.Context, cfg api.Config, logger *slog.Log
 			return nil, nil, api.ErrInvalidAuthConfig
 		}
 		routes = append(routes, trustedPOSTRoute("auth_admission", login.AdmissionRoute, admit, login.IssuerBodyLimit))
+	}
+	if accountRevocation {
+		if err := runtime.repo.CheckAccountRevocationSchema(ctx); err != nil {
+			runtime.Close()
+			return nil, nil, api.ErrInvalidAuthConfig
+		}
+		revocation, err := login.NewAccountRevocationHandler(handler, runtime.service)
+		if err != nil {
+			runtime.Close()
+			return nil, nil, api.ErrInvalidAuthConfig
+		}
+		routes = append(routes, trustedPOSTRoute("auth_revoke_account", login.AccountRevocationRoute, revocation, login.IssuerBodyLimit))
 	}
 	if profileEnabled {
 		provision, err := login.NewUserProvisionHandler(handler, runtime.profileRepo)

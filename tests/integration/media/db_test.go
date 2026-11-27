@@ -8,14 +8,14 @@ import (
 
 func TestMediaDB(t *testing.T) {
 	f := openFixture(t)
-	if got := f.scalarInt64("SELECT count(*) FROM newim_meta.migrations"); got != 12 {
-		t.Fatalf("migration ledger got %d want 12", got)
+	if got := f.scalarInt64("SELECT count(*) FROM newim_meta.migrations"); got != 13 {
+		t.Fatalf("migration ledger got %d want 13", got)
 	}
-	if got := f.scalarInt64("SELECT max(version) FROM newim_meta.migrations"); got != 12 {
-		t.Fatalf("migration head got %d want 12", got)
+	if got := f.scalarInt64("SELECT max(version) FROM newim_meta.migrations"); got != 13 {
+		t.Fatalf("migration head got %d want 13", got)
 	}
-	if got := f.scalarInt64("SELECT count(*) FROM pg_tables WHERE schemaname='newim'"); got != 29 {
-		t.Fatalf("table count got %d want 29", got)
+	if got := f.scalarInt64("SELECT count(*) FROM pg_tables WHERE schemaname='newim'"); got != 30 {
+		t.Fatalf("table count got %d want 30", got)
 	}
 	if got := f.scalarInt64("SELECT count(*) FROM pg_tables WHERE schemaname='newim' AND tablename='im_media_assets'"); got != 1 {
 		t.Fatalf("media table count got %d want 1", got)

@@ -68,6 +68,9 @@ jobs:
       - name: Exercise durable device admission and session revocation
         timeout-minutes: 12
         run: make auth-admission-check
+      - name: Exercise trusted account-wide session revocation
+        timeout-minutes: 12
+        run: make auth-account-revoke-check auth-account-revoke-security auth-account-revoke-recovery
       - name: Exercise authenticated realtime gateway and durable resume
         timeout-minutes: 12
         run: make gateway-check gateway-security gateway-recovery
