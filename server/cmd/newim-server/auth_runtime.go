@@ -23,6 +23,7 @@ import (
 	store "github.com/m-ice/NewIM/server/storage/authsession"
 	messagestore "github.com/m-ice/NewIM/server/storage/message"
 	"github.com/m-ice/NewIM/server/storage/postgresidentity"
+	userstore "github.com/m-ice/NewIM/server/storage/user"
 )
 
 type messageConfigError struct{}
@@ -42,19 +43,19 @@ const (
 	authMaxDevicesEnv          = "NEWIM_AUTH_MAX_DEVICES"
 	authMaxPerPlatformEnv      = "NEWIM_AUTH_MAX_DEVICES_PER_PLATFORM"
 	authSingleDeviceEnv        = "NEWIM_AUTH_SINGLE_DEVICE"
+	userProfileEnv             = "NEWIM_USER_PROFILE"
 	messageHTTPApplicationName = "newim-message-http"
 )
 
-// authRuntime owns the optional session/revoke routes and, when explicitly
-// enabled, the exact loopback message-send route with its independent pool.
-// authRuntime 持有可选的 session/revoke 路由；显式启用时还持有精确 loopback
-// 消息发送路由及其独立连接池。
+// authRuntime owns the loopback auth routes and optional message and profile pools.
+// authRuntime 持有回环鉴权路由，以及可选的消息和资料连接池。
 type authRuntime struct {
 	repo         *store.Repository
 	service      *app.Service
 	handler      *bearerhttp.SessionHandler
 	tokenRevoker *bearerhttp.TokenRevocationHandler
 	messageRepo  *messagestore.Repository
+	profileRepo  *userstore.Repository
 	guard        *postgresidentity.Guard
 	terminal     *terminalState
 	closer       *orderedCloser
@@ -65,19 +66,24 @@ func newAuthRuntimeFromEnv(ctx context.Context, cfg api.Config, logger *slog.Log
 	if err != nil {
 		return nil, nil, err
 	}
+	profileValue := os.Getenv(userProfileEnv)
+	profileEnabled := profileValue == "1"
+	if profileValue != "" && profileValue != "0" && !profileEnabled {
+		return nil, nil, api.ErrInvalidAuthConfig
+	}
 	tokenFile, ttlConfig := os.Getenv(authIssuerTokenFileEnv), os.Getenv(authIssuerTTLEnv)
 	if tokenFile == "" && ttlConfig == "" {
-		if admission {
+		if admission || profileEnabled {
 			return nil, nil, api.ErrInvalidAuthConfig
 		}
-		return newAuthAndMessageRuntime(ctx, cfg, false, logger)
+		return newAuthAndMessageRuntime(ctx, cfg, false, false, logger)
 	}
 	seconds, err := strconv.ParseInt(ttlConfig, 10, 32)
 	if err != nil || seconds < int64(app.MinTTL/time.Second) || seconds > int64(app.MaxTTL/time.Second) ||
 		!filepath.IsAbs(tokenFile) || !loopbackAPIAddress(cfg.APIAddr) || strings.TrimSpace(os.Getenv(authDSNEnv)) == "" {
 		return nil, nil, api.ErrInvalidAuthConfig
 	}
-	runtime, routes, err := newAuthAndMessageRuntime(ctx, cfg, admission, logger)
+	runtime, routes, err := newAuthAndMessageRuntime(ctx, cfg, admission, profileEnabled, logger)
 	if err != nil {
 		if errors.Is(err, errInvalidMessageConfig) {
 			return nil, nil, err
@@ -89,24 +95,32 @@ func newAuthRuntimeFromEnv(ctx context.Context, cfg api.Config, logger *slog.Log
 		runtime.Close()
 		return nil, nil, api.ErrInvalidAuthConfig
 	}
-	routes = append(routes, trustedSessionRoute("auth_issuer", login.IssuerRoute, handler))
+	routes = append(routes, trustedPOSTRoute("auth_issuer", login.IssuerRoute, handler, login.IssuerBodyLimit))
 	if admission {
 		admit, err := login.NewAdmissionHandler(handler, runtime.service, limits)
 		if err != nil {
 			runtime.Close()
 			return nil, nil, api.ErrInvalidAuthConfig
 		}
-		routes = append(routes, trustedSessionRoute("auth_admission", login.AdmissionRoute, admit))
+		routes = append(routes, trustedPOSTRoute("auth_admission", login.AdmissionRoute, admit, login.IssuerBodyLimit))
+	}
+	if profileEnabled {
+		provision, err := login.NewUserProvisionHandler(handler, runtime.profileRepo)
+		if err != nil {
+			runtime.Close()
+			return nil, nil, api.ErrInvalidAuthConfig
+		}
+		routes = append(routes, trustedPOSTRoute("user_provision", login.UserProvisionRoute, provision, login.UserProvisionBodyLimit))
 	}
 	return runtime, routes, nil
 }
 
-func trustedSessionRoute(name, path string, handler http.Handler) api.APIRoute {
+func trustedPOSTRoute(name, path string, handler http.Handler, bodyLimit int64) api.APIRoute {
 	return api.APIRoute{
 		Name:           name,
 		Path:           path,
 		AllowedMethods: []string{http.MethodPost},
-		MaxBodyBytes:   login.IssuerBodyLimit,
+		MaxBodyBytes:   bodyLimit,
 		RejectQuery:    true,
 		Handler:        handler,
 	}
@@ -143,7 +157,7 @@ func configuredDeviceLimit(raw string, defaultValue int) (int, bool) {
 	return int(value), err == nil && value > 0
 }
 
-func newAuthAndMessageRuntime(ctx context.Context, cfg api.Config, admission bool, logger *slog.Logger) (*authRuntime, []api.APIRoute, error) {
+func newAuthAndMessageRuntime(ctx context.Context, cfg api.Config, admission, profileEnabled bool, logger *slog.Logger) (*authRuntime, []api.APIRoute, error) {
 	dsn := strings.TrimSpace(os.Getenv(authDSNEnv))
 	allowLocalSocket := os.Getenv(authAllowLocalSocketEnv) == "1"
 	messageEnabled := os.Getenv(messageHTTPEnv) == "1"
@@ -154,24 +168,50 @@ func newAuthAndMessageRuntime(ctx context.Context, cfg api.Config, admission boo
 		return nil, nil, errInvalidMessageConfig
 	}
 
-	if !messageEnabled {
+	if !messageEnabled && !profileEnabled {
 		if dsn == "" {
 			return nil, nil, nil
 		}
 		return newAuthRuntimeWithGuard(ctx, cfg, dsn, allowLocalSocket, admission, nil, logger)
 	}
-	if err := validateMessageRuntimeConfig(cfg, dsn, allowLocalSocket); err != nil {
-		return nil, nil, err
+	guardError := api.ErrInvalidAuthConfig
+	if messageEnabled {
+		if err := validateMessageRuntimeConfig(cfg, dsn, allowLocalSocket); err != nil {
+			return nil, nil, err
+		}
+		guardError = errInvalidMessageConfig
 	}
 
 	terminal := newTerminalState()
-	guard := postgresidentity.NewGuard(func(error) { terminal.Trip(errInvalidMessageConfig) })
+	guard := postgresidentity.NewGuard(func(error) { terminal.Trip(guardError) })
 	runtime, routes, err := newAuthRuntimeWithGuard(ctx, cfg, dsn, allowLocalSocket, admission, guard, logger)
 	if err != nil {
-		return nil, nil, messageStartupError(guard, err)
+		if messageEnabled {
+			return nil, nil, messageStartupError(guard, err)
+		}
+		return nil, nil, api.ErrInvalidAuthConfig
 	}
 	runtime.guard = guard
 	runtime.terminal = terminal
+	if profileEnabled {
+		runtime.profileRepo, err = userstore.Open(ctx, userstore.Config{
+			DSN:              dsn,
+			AllowLocalSocket: allowLocalSocket,
+			ApplicationName:  "newim-profile-http",
+			Guard:            guard,
+		})
+		if guard.Tripped() != nil {
+			runtime.Close()
+			return nil, nil, guardError
+		}
+		if err != nil {
+			runtime.Close()
+			return nil, nil, api.ErrInvalidAuthConfig
+		}
+	}
+	if !messageEnabled {
+		return runtime, routes, nil
+	}
 
 	messageRepo, err := messagestore.Open(ctx, messagestore.Config{
 		DSN:              dsn,
@@ -189,7 +229,6 @@ func newAuthAndMessageRuntime(ctx context.Context, cfg api.Config, admission boo
 		return nil, nil, messageStartupError(guard, err)
 	}
 	runtime.messageRepo = messageRepo
-	runtime.closer = newOrderedCloser(messageRepo.Close, runtime.repo.Close)
 
 	messageService, err := messageservice.NewService(messageRepo, messageservice.Config{
 		IDs:      messageservice.NewCSPRNGIDGenerator(),
@@ -281,7 +320,10 @@ func newAuthRuntimeWithGuard(ctx context.Context, cfg api.Config, dsn string, al
 		handler:      handler,
 		tokenRevoker: tokenRevoker,
 	}
-	runtime.closer = newOrderedCloser(nil, repo.Close)
+	runtime.closer = newOrderedCloser(func() {
+		runtime.profileRepo.Close()
+		runtime.messageRepo.Close()
+	}, repo.Close)
 	return runtime, []api.APIRoute{
 		{Name: "session", Path: bearerhttp.Route, Handler: handler},
 		{Name: "session_token_revoke", Path: bearerhttp.TokenRoute, AllowedMethods: []string{http.MethodDelete}, Handler: tokenRevoker},
@@ -330,8 +372,8 @@ func (r *authRuntime) TerminalErr() error {
 	return r.terminal.Err()
 }
 
-// Close releases the message pool before the auth pool and is idempotent.
-// Close 先释放 message pool 再释放 auth pool，且幂等。
+// Close releases the profile and message pools before the auth pool.
+// Close 先释放资料、消息连接池，再释放鉴权连接池。
 func (r *authRuntime) Close() {
 	if r != nil && r.closer != nil {
 		r.closer.Close()

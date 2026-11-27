@@ -66,12 +66,16 @@ func (h *IssuerHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 }
 
 func (h *IssuerHandler) readTrustedRequest(w http.ResponseWriter, r *http.Request, route string) ([]byte, bool) {
+	return h.readTrustedRequestWithLimit(w, r, route, IssuerBodyLimit, string(app.AuthInvalidInput))
+}
+
+func (h *IssuerHandler) readTrustedRequestWithLimit(w http.ResponseWriter, r *http.Request, route string, bodyLimit int64, invalidInputCode string) ([]byte, bool) {
 	if h == nil || h.issue == nil {
 		writeIssuerError(w, http.StatusServiceUnavailable, string(bearerhttp.CodeUnavailable))
 		return nil, false
 	}
 	if r == nil {
-		writeIssuerError(w, http.StatusBadRequest, string(app.AuthInvalidInput))
+		writeIssuerError(w, http.StatusBadRequest, invalidInputCode)
 		return nil, false
 	}
 	if r.URL == nil || r.URL.EscapedPath() != route {
@@ -87,7 +91,7 @@ func (h *IssuerHandler) readTrustedRequest(w http.ResponseWriter, r *http.Reques
 		writeIssuerError(w, http.StatusBadRequest, "HTTP_INVALID_QUERY")
 		return nil, false
 	}
-	if r.ContentLength > IssuerBodyLimit {
+	if r.ContentLength > bodyLimit {
 		writeIssuerError(w, http.StatusRequestEntityTooLarge, "HTTP_BODY_TOO_LARGE")
 		return nil, false
 	}
@@ -101,10 +105,10 @@ func (h *IssuerHandler) readTrustedRequest(w http.ResponseWriter, r *http.Reques
 		return nil, false
 	}
 	if r.Body == nil {
-		writeIssuerError(w, http.StatusBadRequest, string(app.AuthInvalidInput))
+		writeIssuerError(w, http.StatusBadRequest, invalidInputCode)
 		return nil, false
 	}
-	body := http.MaxBytesReader(w, r.Body, IssuerBodyLimit)
+	body := http.MaxBytesReader(w, r.Body, bodyLimit)
 	defer body.Close()
 	raw, err := io.ReadAll(body)
 	if err != nil {
@@ -112,7 +116,7 @@ func (h *IssuerHandler) readTrustedRequest(w http.ResponseWriter, r *http.Reques
 		if errors.As(err, &tooLarge) {
 			writeIssuerError(w, http.StatusRequestEntityTooLarge, "HTTP_BODY_TOO_LARGE")
 		} else {
-			writeIssuerError(w, http.StatusBadRequest, string(app.AuthInvalidInput))
+			writeIssuerError(w, http.StatusBadRequest, invalidInputCode)
 		}
 		return nil, false
 	}

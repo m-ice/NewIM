@@ -17,7 +17,10 @@ import (
 	"github.com/m-ice/NewIM/server/storage/authsession"
 	"github.com/m-ice/NewIM/server/storage/messagesync"
 	"github.com/m-ice/NewIM/server/storage/postgresidentity"
+	userstore "github.com/m-ice/NewIM/server/storage/user"
 	syncmessage "github.com/m-ice/NewIM/server/sync/message"
+	"github.com/m-ice/NewIM/server/user"
+	"github.com/m-ice/NewIM/server/userhttp"
 )
 
 func main() {
@@ -61,7 +64,6 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 		return errors.New("newim-gateway message storage unavailable")
 	}
 	defer messageRepo.Close()
-	cancelStartup()
 
 	auth, err := session.NewService(authRepo, session.Config{Clock: session.ClockFunc(time.Now), Observer: authObserver{}})
 	if err != nil {
@@ -76,6 +78,34 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 		return errConfig
 	}
 
+	var routes http.Handler = handler
+	if limits := cfg.profiles; limits != nil {
+		profileRepo, err := userstore.Open(startup, userstore.Config{
+			DSN: cfg.dsn, AllowLocalSocket: cfg.allowLocalSocket,
+			ApplicationName: "newim-gateway-profiles", Guard: guard,
+		})
+		if err != nil {
+			return errors.New("newim-gateway profile storage unavailable")
+		}
+		defer profileRepo.Close()
+		service, err := user.NewService(profileRepo)
+		if err != nil {
+			return errConfig
+		}
+		profiles, err := userhttp.New(service, auth, gateway.NewProfileBudget(limits.ip, limits.account))
+		if err != nil {
+			return errConfig
+		}
+		routes = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			if userhttp.ContainsRoute(r.URL.EscapedPath()) {
+				profiles.ServeHTTP(w, r)
+				return
+			}
+			handler.ServeHTTP(w, r)
+		})
+	}
+	cancelStartup()
+
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.addr)
 	if err != nil {
 		return errors.New("newim-gateway listener unavailable")
@@ -88,7 +118,7 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 	protocols := new(http.Protocols)
 	protocols.SetHTTP1(true)
 	server := &http.Server{
-		Handler: handler, ConnContext: gateway.ConnContext, Protocols: protocols,
+		Handler: routes, ConnContext: gateway.ConnContext, Protocols: protocols,
 		ReadHeaderTimeout: 5 * time.Second, ReadTimeout: 5 * time.Second,
 		WriteTimeout: 10 * time.Second, IdleTimeout: 15 * time.Second,
 		MaxHeaderBytes: 8192,

@@ -261,6 +261,13 @@ gateway-security: toolchain
 gateway-recovery: toolchain
 	python3 -B infra/db/gateway_suite.py recovery
 
+.PHONY: user-check user-security
+user-check: toolchain
+	python3 -B infra/db/user_suite.py check
+
+user-security: toolchain
+	python3 -B infra/db/user_suite.py security
+
 .PHONY: message-check message-recovery message-errors
 message-check: toolchain
 	python3 -B infra/db/message_suite.py check

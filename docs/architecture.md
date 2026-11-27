@@ -17,7 +17,10 @@ The public network realtime gateway runs as a separate TLS process. Native
 clients authenticate with a bearer token, then subscribe to committed messages
 after their durable conversation sequence. See [ADR 0025](adr/0025-wss-gateway.md)
 and the [gateway specification](../specs/gateway/websocket.md).
-The public HTTP API, UI, push delivery, complete credential verification, client
+The TLS gateway also serves authenticated user profile HTTP endpoints.
+The trusted application provisions accounts through the loopback server.
+See [ADR 0026](adr/0026-user-profile.md).
+Public HTTP message and sync endpoints, UI, push delivery, complete credential verification, client
 lifecycle integration, retention/moderation/account erasure, and platform
 wrappers remain future work. A
 bearer-session HTTP handler validates already-issued tokens when an explicit

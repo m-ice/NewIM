@@ -5,9 +5,27 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"testing"
 )
+
+func TestAPIRouteCapacity(t *testing.T) {
+	routes := make([]APIRoute, 13)
+	for i := range routes {
+		suffix := strconv.Itoa(i)
+		routes[i] = APIRoute{
+			Name: "route_" + suffix, Path: "/api/v1/route/" + suffix,
+			Handler: http.HandlerFunc(func(http.ResponseWriter, *http.Request) {}),
+		}
+	}
+	if got, err := validateAPIRoutes(routes[:12]); err != nil || len(got) != 12 {
+		t.Fatalf("12 routes: accepted=%d error=%v", len(got), err)
+	}
+	if _, err := validateAPIRoutes(routes); codeOf(err) != CodeInvalidConfig {
+		t.Fatalf("13 routes: error=%v want %s", err, CodeInvalidConfig)
+	}
+}
 
 func TestAPIRouteComposition(t *testing.T) {
 	sessionHandler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

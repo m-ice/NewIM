@@ -36,6 +36,7 @@ MEDIA_TABLES = {'im_media_assets'}
 WEBHOOK_TABLES = {'im_webhook_endpoints', 'im_webhook_endpoint_revisions'}
 ADMISSION_TABLES = {'im_session_revocation_events'}
 GATEWAY_TABLES = {'im_gateway_handshakes'}
+USER_PROFILE_TABLES = {'im_user_profiles'}
 
 
 def source_migrations():
@@ -63,6 +64,7 @@ def check_catalog(db, target=None):
     expected |= WEBHOOK_TABLES if target >= 6 else set()
     expected |= ADMISSION_TABLES if target >= 8 else set()
     expected |= GATEWAY_TABLES if target >= 9 else set()
+    expected |= USER_PROFILE_TABLES if target >= 10 else set()
     actual_tables = set(db.sql("SELECT tablename FROM pg_tables WHERE schemaname='newim';").splitlines())
     if actual_tables != expected:
         raise Failure('exact catalog table set: missing='+repr(sorted(expected-actual_tables))+
@@ -284,6 +286,7 @@ def schema(db, commands):
     sync_constraints(db)
     auth_constraints(db)
     gateway_handshake_constraints(db)
+    user_profile_constraints(db)
     media_constraints(db)
     webhook_constraints(db)
     print(f'PASS schema catalogs and {len(negatives)} negative writes', flush=True)
@@ -423,6 +426,32 @@ def gateway_handshake_constraints(db):
         db.sql(sql, error=error)
     equal(snapshot(db), before, 'gateway replay constraint failures preserve state')
     print(f'PASS gateway replay schema constraints: {len(negatives)} rejected writes', flush=True)
+
+
+def user_profile_constraints(db):
+    scalar(db, "SELECT string_agg(column_name||'|'||is_nullable,',' ORDER BY ordinal_position) "
+           "FROM information_schema.columns WHERE table_schema='newim' AND table_name='im_user_profiles';",
+           'user_id|NO,nickname|NO,face_url|NO,ex|NO', 'exact profile columns')
+    db.sql("INSERT INTO newim.im_users(user_id) VALUES ('profile_user'); "
+           "INSERT INTO newim.im_user_profiles(user_id) VALUES ('profile_user');")
+    scalar(db, "SELECT nickname||'|'||face_url||'|'||ex FROM newim.im_user_profiles;", '||',
+           'profile default fields are empty strings')
+    db.sql("UPDATE newim.im_user_profiles "
+           "SET nickname=repeat('a',128),face_url=repeat('b',2048),ex=repeat('c',4096);")
+    negatives = [
+        ("INSERT INTO newim.im_user_profiles(user_id) VALUES ('profile_user');", '23505'),
+        ("INSERT INTO newim.im_user_profiles(user_id) VALUES ('missing');", '23503'),
+        ("DELETE FROM newim.im_users WHERE user_id='profile_user';", '23503'),
+        ("UPDATE newim.im_user_profiles SET nickname=NULL;", '23502'),
+        ("UPDATE newim.im_user_profiles SET nickname=repeat(chr(20320),43);", '23514'),
+        ("UPDATE newim.im_user_profiles SET face_url=repeat(chr(20320),683);", '23514'),
+        ("UPDATE newim.im_user_profiles SET ex=repeat(chr(20320),1366);", '23514'),
+    ]
+    before = snapshot(db)
+    for sql, error in negatives:
+        db.sql(sql, error=error)
+    equal(snapshot(db), before, 'profile constraint failures preserve state')
+    print(f'PASS user profile schema constraints: {len(negatives)} rejected writes', flush=True)
 
 
 def media_constraints(db):
@@ -713,6 +742,17 @@ def gateway_handshake_migration(db):
     print('PASS populated 009 preserves historical data and leaves replay storage empty', flush=True)
 
 
+def user_profile_migration(db):
+    historical = snapshot(db)
+    db.sql(migration_sql(10))
+    check_catalog(db, 10)
+    upgraded = snapshot(db)
+    equal({k: v for k, v in upgraded.items() if k not in {'migrations', 'im_user_profiles'}},
+          {k: v for k, v in historical.items() if k != 'migrations'}, '010 preserves all historical rows')
+    scalar(db, "SELECT count(*) FROM newim.im_user_profiles;", 0, '010 leaves historical profiles unset')
+    print('PASS populated 010 preserves historical users, devices, sessions and tokens', flush=True)
+
+
 def migrations(db, commands):
     head = len(source_migrations())
     db.sql(migration_sql(1))
@@ -735,6 +775,7 @@ def migrations(db, commands):
     direct_policy_migration(db)
     device_admission_migration(db)
     gateway_handshake_migration(db)
+    user_profile_migration(db)
     after = snapshot(db)
     db.sql(migration_sql())
     equal(snapshot(db), after, 'head replay stable')

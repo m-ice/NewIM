@@ -127,12 +127,19 @@ func (g *Gateway) allowDevice(key deviceKey) bool {
 }
 
 func (g *Gateway) advanceWindow() {
-	window := time.Now().UTC().Truncate(time.Minute)
-	if !window.Equal(g.window) {
-		g.window = window
+	if newRateWindow(&g.window) {
 		clear(g.addresses)
 		clear(g.devices)
 	}
+}
+
+func newRateWindow(previous *time.Time) bool {
+	now := time.Now().UTC().Truncate(time.Minute)
+	if now.Equal(*previous) {
+		return false
+	}
+	*previous = now
+	return true
 }
 
 func countAttempt[K comparable](entries map[K]int, key K, limit int) bool {

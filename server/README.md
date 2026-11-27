@@ -94,6 +94,13 @@ and the [lifecycle specification](../specs/observability/server-message-lifecycl
 [接入规范](../specs/gateway/websocket.md) · [ADR 0025](../docs/adr/0025-wss-gateway.md)。
 在 PostgreSQL 测试环境运行 `make gateway-check gateway-security gateway-recovery`。
 
+应用迁移 010 后，可在 `newim-server` 和 `newim-gateway` 启用
+`NEWIM_USER_PROFILE=1`。前者在可信应用鉴权后预配账号，后者提供已登录用户的资料查询和自助更新。
+资料请求按直接连接地址及账号独立限流。每进程每分钟默认分别为 120 和 60 次，可用
+`NEWIM_USER_PROFILE_IP_ATTEMPTS_PER_MINUTE` 和 `NEWIM_USER_PROFILE_ACCOUNT_ATTEMPTS_PER_MINUTE` 调整。
+数据库角色需具备账号和资料读取权限，按进程用途授予账号插入或资料写入权限。
+[资料接口](../specs/user/profile.md)。运行 `make user-check user-security` 验证。
+
 Run the root `make build`, `make check`, `make docs-check`, `make api-check`,
 `make api-recovery`, `make api-security`, `make auth-http-check`,
 `make auth-http-security`, `make auth-route-check`, `make auth-logout-check`,

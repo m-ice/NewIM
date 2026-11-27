@@ -21,6 +21,11 @@ type config struct {
 	allowLocalSocket bool
 	drainTimeout     time.Duration
 	gateway          gateway.Config
+	profiles         *profileLimits
+}
+
+type profileLimits struct {
+	ip, account int
 }
 
 func readConfig(getenv func(string) string) (config, error) {
@@ -60,6 +65,16 @@ func readConfig(getenv func(string) string) (config, error) {
 		WriteTimeout:     time.Duration(limit("NEWIM_GATEWAY_WRITE_TIMEOUT_MS", 3000, 100, 5000)) * time.Millisecond,
 	}
 	cfg.drainTimeout = time.Duration(limit("NEWIM_GATEWAY_DRAIN_TIMEOUT_MS", 12000, 100, 15000)) * time.Millisecond
+	switch getenv("NEWIM_USER_PROFILE") {
+	case "", "0":
+	case "1":
+		cfg.profiles = &profileLimits{
+			ip:      limit("NEWIM_USER_PROFILE_IP_ATTEMPTS_PER_MINUTE", 120, 1, 4096),
+			account: limit("NEWIM_USER_PROFILE_ACCOUNT_ATTEMPTS_PER_MINUTE", 60, 1, 4096),
+		}
+	default:
+		return config{}, errConfig
+	}
 	if invalidLimit {
 		return config{}, errConfig
 	}

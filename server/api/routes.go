@@ -5,6 +5,8 @@ import (
 	"strings"
 )
 
+const maxTrustedAPIRoutes = 12
+
 // APIRoute is a bounded exact route supplied by a trusted process composer.
 // AllowedMethods is omitted or nil for the backward-compatible GET default.
 // MaxBodyBytes zero preserves bodyless routes; a positive limit is valid only
@@ -21,7 +23,7 @@ type APIRoute struct {
 }
 
 func validateAPIRoutes(routes []APIRoute) (map[string]APIRoute, error) {
-	if len(routes) > 8 {
+	if len(routes) > maxTrustedAPIRoutes {
 		return nil, fail(CodeInvalidConfig)
 	}
 	result := make(map[string]APIRoute, len(routes))

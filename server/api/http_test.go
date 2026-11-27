@@ -647,9 +647,9 @@ func TestImportBoundary(t *testing.T) {
 			}
 			for _, imported := range file.Imports {
 				value := strings.Trim(imported.Path.Value, `"`)
-				issuerComposer := dir == "../cmd/newim-server" && entry.Name() == "auth_runtime.go" &&
-					value == "github.com/m-ice/NewIM/server/auth/login"
-				if strings.Contains(value, ".") && !allowedModule[value] && !issuerComposer {
+				authComposer := dir == "../cmd/newim-server" && entry.Name() == "auth_runtime.go" &&
+					(value == "github.com/m-ice/NewIM/server/auth/login" || value == "github.com/m-ice/NewIM/server/storage/user")
+				if strings.Contains(value, ".") && !allowedModule[value] && !authComposer {
 					t.Fatalf("%s imports forbidden module %q", path, value)
 				}
 			}
