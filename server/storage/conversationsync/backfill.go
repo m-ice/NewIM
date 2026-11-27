@@ -4,10 +4,13 @@ import (
 	"context"
 	"errors"
 	"slices"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	app "github.com/m-ice/NewIM/server/sync/conversation"
 )
+
+const sourceBackfillLock int64 = 0x4e494d53594e4301
 
 type sourceBackfillState struct {
 	epoch int64
@@ -141,26 +144,100 @@ func lockBackfillConversations(ctx context.Context, tx pgx.Tx, keys []string) er
 	return nil
 }
 
-// NextSourceAccount finds the next account still needing a backfill.
-// NextSourceAccount 按账号键继续查找尚未就绪的账号。
-func (r *Repository) NextSourceAccount(ctx context.Context, after string) (string, error) {
-	if ctx == nil || r == nil || !r.requireSourceReady {
-		return "", app.Fail(app.StorageUnavailable)
+// NextSourceAccounts examines at most one directory page, including ready accounts.
+// NextSourceAccounts 每次检查一页账号，游标也会越过已就绪账号。
+func (r *Repository) NextSourceAccounts(ctx context.Context, after string) (next string, pending []string, err error) {
+	if ctx == nil || r == nil || r.pool == nil || !r.requireSourceReady {
+		return "", nil, app.Fail(app.StorageUnavailable)
 	}
 	if after != "" && !identifier(after) {
-		return "", app.Fail(app.InvalidCursor)
+		return "", nil, app.Fail(app.InvalidCursor)
 	}
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	var user string
-	err := r.pool.QueryRow(ctx, `SELECT u.user_id FROM newim.im_users u
-		LEFT JOIN newim.im_conversation_sync_accounts a USING (user_id)
-		WHERE u.user_id>$1::text AND a.source_ready IS DISTINCT FROM true
-		ORDER BY u.user_id LIMIT 1`, after).Scan(&user)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return "", nil
+	rows, err := r.pool.Query(ctx, `SELECT page.user_id,COALESCE((
+		SELECT a.source_ready FROM newim.im_conversation_sync_accounts a WHERE a.user_id=page.user_id
+	), false)
+	FROM (SELECT user_id FROM newim.im_users WHERE user_id>$1::text ORDER BY user_id LIMIT $2) page
+	ORDER BY page.user_id`, after, app.MaxPageItems)
+	if err != nil {
+		return "", nil, fixed(err)
 	}
-	return user, fixed(err)
+	defer rows.Close()
+	for rows.Next() {
+		var ready bool
+		if err = rows.Scan(&next, &ready); err != nil {
+			return "", nil, fixed(err)
+		}
+		if !ready {
+			pending = append(pending, next)
+		}
+	}
+	if err = rows.Err(); err != nil {
+		return "", nil, fixed(err)
+	}
+	return next, pending, nil
+}
+
+// RunSourceBackfill completes the account directory under a lock shared with reset.
+// RunSourceBackfill 在与重置互斥的锁下遍历全部账号。
+func (r *Repository) RunSourceBackfill(ctx context.Context, limit int) (err error) {
+	if ctx == nil || r == nil || r.pool == nil || !r.requireSourceReady || r.pool.Config().MaxConns < 2 {
+		return app.Fail(app.StorageUnavailable)
+	}
+	if limit < 1 || limit > app.MaxPageItems {
+		return app.Fail(app.LimitExceeded)
+	}
+	lockCtx, cancel := context.WithTimeout(ctx, requestTimeout)
+	defer cancel()
+	conn, err := r.pool.Acquire(lockCtx)
+	if err != nil {
+		return fixed(err)
+	}
+	var locked bool
+	err = conn.QueryRow(lockCtx, "SELECT pg_catalog.pg_try_advisory_lock($1)", sourceBackfillLock).Scan(&locked)
+	if err != nil {
+		_ = conn.Hijack().Close(lockCtx)
+		return fixed(err)
+	}
+	if !locked {
+		conn.Release()
+		return app.Fail(app.NotReady)
+	}
+	defer func() {
+		unlockCtx, cancel := context.WithTimeout(context.Background(), time.Second)
+		defer cancel()
+		var unlocked bool
+		unlockErr := conn.QueryRow(unlockCtx, "SELECT pg_catalog.pg_advisory_unlock($1)", sourceBackfillLock).Scan(&unlocked)
+		if unlockErr != nil || !unlocked {
+			_ = conn.Hijack().Close(unlockCtx)
+			if err == nil {
+				err = app.Fail(app.StorageUnavailable)
+			}
+			return
+		}
+		conn.Release()
+	}()
+
+	var after string
+	for {
+		next, pending, err := r.NextSourceAccounts(ctx, after)
+		if err != nil || next == "" {
+			return err
+		}
+		for _, userID := range pending {
+			for {
+				ready, err := r.BackfillStep(ctx, userID, limit)
+				if err != nil {
+					return err
+				}
+				if ready {
+					break
+				}
+			}
+		}
+		after = next
+	}
 }
 
 // ResetSourceAccount invalidates an account's cursors before rebuilding it.
@@ -179,6 +256,13 @@ func (r *Repository) ResetSourceAccount(ctx context.Context, userID string) erro
 		return err
 	}
 	defer rollback(tx)
+	var locked bool
+	if err = tx.QueryRow(ctx, "SELECT pg_catalog.pg_try_advisory_xact_lock($1)", sourceBackfillLock).Scan(&locked); err != nil {
+		return fixed(err)
+	}
+	if !locked {
+		return app.Fail(app.NotReady)
+	}
 	if err = userExists(ctx, tx, userID); err != nil {
 		return err
 	}

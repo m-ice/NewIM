@@ -22,6 +22,6 @@ newim-sync-backfill step --user example_user --limit 20
 newim-sync-backfill reset --user example_user
 ```
 
-`run` 继续所有待回填账号，全部就绪时输出 `SYNC_SOURCE_COMPLETE`。`step` 提交一个账号的一批数据，输出 `SYNC_SOURCE_PENDING` 或 `SYNC_SOURCE_READY`。批次上限为 100。失败输出稳定错误码，可继续执行。
+`run` 按固定的账号目录页继续所有待回填账号，全部就绪时输出 `SYNC_SOURCE_COMPLETE`。`step` 提交一个账号的一批数据，输出 `SYNC_SOURCE_PENDING` 或 `SYNC_SOURCE_READY`。批次上限为 100。失败输出稳定错误码，可继续执行。
 
-回退到旧写进程前先停止对外读取，并使用 `reset` 对受影响的账号推进代际，使原游标过期。数据和持久修订保留。重新启用双写后运行回填再恢复读取。
+回退到旧写进程前先停止对外读取，并使用 `reset` 对受影响的账号推进代际，使原游标过期。数据和持久修订保留。全量回填和重置互斥，运行期间重置返回 `SYNC_NOT_READY`。重新启用双写后运行回填再恢复读取。

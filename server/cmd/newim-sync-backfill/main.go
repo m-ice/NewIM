@@ -50,7 +50,7 @@ func run(ctx context.Context, args []string) int {
 		AllowLocalSocket:   os.Getenv("NEWIM_AUTH_ALLOW_LOCAL_SOCKET") == "1",
 		ApplicationName:    "newim-sync-backfill",
 		RequireSourceReady: true,
-		MaxConnections:     1,
+		MaxConnections:     2,
 		Guard:              postgresidentity.NewGuard(nil),
 	})
 	if err != nil {
@@ -75,32 +75,12 @@ func run(ctx context.Context, args []string) int {
 			fmt.Println("SYNC_SOURCE_PENDING")
 		}
 	case "run":
-		if err = runAll(ctx, repository, limit); err != nil {
+		if err = repository.RunSourceBackfill(ctx, limit); err != nil {
 			return reportError(err)
 		}
 		fmt.Println("SYNC_SOURCE_COMPLETE")
 	}
 	return 0
-}
-
-func runAll(ctx context.Context, repository *conversationsync.Repository, limit int) error {
-	var after string
-	for {
-		userID, err := repository.NextSourceAccount(ctx, after)
-		if err != nil || userID == "" {
-			return err
-		}
-		for {
-			ready, err := repository.BackfillStep(ctx, userID, limit)
-			if err != nil {
-				return err
-			}
-			if ready {
-				break
-			}
-		}
-		after = userID
-	}
 }
 
 func invalidArguments() int {

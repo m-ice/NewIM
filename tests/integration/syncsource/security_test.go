@@ -19,6 +19,8 @@ func TestSyncSourceSecurity(t *testing.T) {
 	t.Run("source-and-projection-rollback-together", testAtomicSource)
 	t.Run("unpublished-membership-removal-and-readiness", testUnpublishedRemoval)
 	t.Run("backfill-command-boundaries", testBackfillCLI)
+	t.Run("bulk-backfill-crosses-ready-only-pages", testBulkBackfillDiscovery)
+	t.Run("bulk-backfill-excludes-reset", testBulkBackfillResetInterlock)
 }
 
 func testAtomicSource(t *testing.T) {
