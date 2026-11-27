@@ -110,6 +110,7 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 			DSN: cfg.dsn, AllowLocalSocket: cfg.allowLocalSocket,
 			ApplicationName: "newim-gateway-profiles", Guard: guard,
 			ProjectConversations: cfg.projectConversations,
+			ProjectReadState:     cfg.projectReadState,
 		})
 		if err != nil {
 			return errors.New("newim-gateway profile storage unavailable")
@@ -178,6 +179,7 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 			PrivatePolicy: true, DirectOnly: cfg.groups == nil, ManagedGroups: cfg.groups != nil,
 			StrangerPolicy:       cfg.strangerPolicy,
 			ProjectConversations: cfg.projectConversations,
+			ProjectReadState:     cfg.projectReadState,
 		})
 		if err != nil {
 			return errors.New("newim-gateway send storage unavailable")
@@ -205,6 +207,7 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 			DSN: cfg.dsn, AllowLocalSocket: cfg.allowLocalSocket,
 			ApplicationName: "newim-gateway-groups", Guard: guard,
 			ProjectConversations: cfg.projectConversations,
+			ProjectReadState:     cfg.projectReadState,
 		})
 		if err != nil {
 			return errors.New("newim-gateway group storage unavailable")
@@ -223,6 +226,7 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 		repository, err := conversationsync.Open(startup, conversationsync.Config{
 			DSN: cfg.dsn, AllowLocalSocket: cfg.allowLocalSocket,
 			ApplicationName: "newim-gateway-sync", Guard: guard, RequireSourceReady: true,
+			IncludeReadState: cfg.projectReadState,
 		})
 		if err != nil {
 			return errors.New("newim-gateway conversation sync storage unavailable")
@@ -250,6 +254,7 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 		repository, err := readstore.Open(startup, readstore.Config{
 			DSN: cfg.dsn, AllowLocalSocket: cfg.allowLocalSocket,
 			ApplicationName: "newim-gateway-read", Guard: guard,
+			ProjectReadState: cfg.projectReadState,
 		})
 		if err != nil {
 			return errors.New("newim-gateway read watermark storage unavailable")

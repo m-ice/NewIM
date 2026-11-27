@@ -25,3 +25,11 @@ newim-sync-backfill reset --user example_user
 `run` 按固定的账号目录页继续所有待回填账号，全部就绪时输出 `SYNC_SOURCE_COMPLETE`。`step` 提交一个账号的一批数据，输出 `SYNC_SOURCE_PENDING` 或 `SYNC_SOURCE_READY`。批次上限为 100。失败输出稳定错误码，可继续执行。
 
 回退到旧写进程前先停止对外读取，并使用 `reset` 对受影响的账号推进代际，使原游标过期。数据和持久修订保留。全量回填和重置互斥，运行期间重置返回 `SYNC_NOT_READY`。重新启用双写后运行回填再恢复读取。
+
+## 已读位点回填
+
+1. 应用迁移 017，排空并升级回环、TLS 写入和公共同步进程。继续开启会话投影，并统一启用 `NEWIM_CONVERSATION_READ_SYNC=1`。
+2. 用相同的已读同步开关执行 `newim-sync-backfill run`。命令按存量账号逐页回填原摘要及有效位点，重启后继续上次已提交的进度。新预配空账号直接就绪。
+3. 尚未回填的账号在已读模式下收到 `SYNC_NOT_READY`。存量账号完成后，上一代际的游标收到 `SYNC_CURSOR_EXPIRED`，客户端重新开始 bootstrap。
+
+回退前先暂停公共同步和有关写入，再统一关掉已读投影。按原流程对受影响的账号重置并回填，再恢复流量。保留已读记录和历史修订。

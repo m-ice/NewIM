@@ -6,6 +6,37 @@ import (
 	"testing"
 )
 
+func TestConversationReadSyncConfig(t *testing.T) {
+	root := t.TempDir()
+	for _, test := range []struct {
+		name, projection, readSync string
+		enabled                    bool
+		invalid                    bool
+	}{
+		{name: "legacy mode", projection: "1"},
+		{name: "explicitly disabled", readSync: "0"},
+		{name: "enabled", projection: "1", readSync: "1", enabled: true},
+		{name: "requires source projection", readSync: "1", invalid: true},
+		{name: "invalid toggle", projection: "1", readSync: "true", invalid: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			env := map[string]string{
+				"NEWIM_GATEWAY_ADDR":            "127.0.0.1:0",
+				"NEWIM_GATEWAY_TLS_CERT_FILE":   filepath.Join(root, "cert.pem"),
+				"NEWIM_GATEWAY_TLS_KEY_FILE":    filepath.Join(root, "key.pem"),
+				"NEWIM_AUTH_DSN":                "postgresql://test@localhost/newim",
+				"NEWIM_AUTH_DEVICE_ADMISSION":   "1",
+				"NEWIM_CONVERSATION_PROJECTION": test.projection,
+				"NEWIM_CONVERSATION_READ_SYNC":  test.readSync,
+			}
+			got, err := readConfig(func(name string) string { return env[name] })
+			if (err != nil) != test.invalid || got.projectReadState != test.enabled {
+				t.Fatalf("read state enabled=%t, error=%v", got.projectReadState, err)
+			}
+		})
+	}
+}
+
 func TestStrangerMessageConfig(t *testing.T) {
 	root := t.TempDir()
 	for _, test := range []struct {

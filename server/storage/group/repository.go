@@ -31,6 +31,7 @@ type Config struct {
 	ApplicationName      string
 	Guard                *postgresidentity.Guard
 	ProjectConversations bool
+	ProjectReadState     bool
 }
 
 // Repository owns a bounded database pool.
@@ -38,6 +39,7 @@ type Config struct {
 type Repository struct {
 	pool                 *pgxpool.Pool
 	projectConversations bool
+	projectReadState     bool
 }
 
 var _ app.Store = (*Repository)(nil)
@@ -45,7 +47,7 @@ var _ app.Store = (*Repository)(nil)
 // Open verifies transport and checks that the managed-group schema is ready.
 // Open 验证数据库传输配置并检查纳管群结构是否就绪。
 func Open(ctx context.Context, config Config) (*Repository, error) {
-	if ctx == nil || config.DSN == "" {
+	if ctx == nil || config.DSN == "" || (config.ProjectReadState && !config.ProjectConversations) {
 		return nil, app.StorageUnavailable
 	}
 	if config.ApplicationName == "" {
@@ -107,12 +109,14 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 	if err != nil {
 		return nil, app.StorageUnavailable
 	}
-	repo := &Repository{pool: pool, projectConversations: config.ProjectConversations}
+	repo := &Repository{
+		pool: pool, projectConversations: config.ProjectConversations, projectReadState: config.ProjectReadState,
+	}
 	if err = repo.checkSchema(ctx); err != nil {
 		pool.Close()
 		return nil, err
 	}
-	if config.ProjectConversations && conversationsync.CheckSourceSchema(ctx, pool) != nil {
+	if config.ProjectConversations && conversationsync.CheckSourceSchema(ctx, pool, config.ProjectReadState) != nil {
 		pool.Close()
 		return nil, app.StorageUnavailable
 	}
@@ -182,7 +186,7 @@ func (r *Repository) recordConversationSource(ctx context.Context, tx pgx.Tx, gr
 			removedIDs[i] = member.UserID
 		}
 	}
-	if err := conversationsync.RecordSourceConversation(ctx, tx, groupID, removedIDs); err != nil {
+	if err := conversationsync.RecordSourceConversation(ctx, tx, groupID, removedIDs, r.projectReadState); err != nil {
 		return app.StorageUnavailable
 	}
 	return nil

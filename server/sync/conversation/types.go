@@ -61,6 +61,7 @@ type Item struct {
 	Kind                  string  `json:"kind"`
 	LatestConversationSeq *uint64 `json:"latestConversationSeq,omitempty,string"`
 	LatestServerMsgID     *string `json:"latestServerMsgId,omitempty"`
+	LastReadSeq           *uint64 `json:"lastReadSeq,omitempty,string"`
 }
 
 // Page effects and NextCursor must be persisted atomically by consumers.

@@ -14,6 +14,7 @@ import (
 	"github.com/m-ice/NewIM/server/auth/session"
 	app "github.com/m-ice/NewIM/server/read"
 	"github.com/m-ice/NewIM/server/storage/authsession"
+	"github.com/m-ice/NewIM/server/storage/conversationsync"
 	"github.com/m-ice/NewIM/server/storage/membership"
 	"github.com/m-ice/NewIM/server/storage/postgresidentity"
 	"github.com/m-ice/NewIM/server/user"
@@ -26,10 +27,12 @@ type Config struct {
 	AllowLocalSocket bool
 	ApplicationName  string
 	Guard            *postgresidentity.Guard
+	ProjectReadState bool
 }
 
 type Repository struct {
-	pool *pgxpool.Pool
+	pool             *pgxpool.Pool
+	projectReadState bool
 }
 
 var _ app.Store = (*Repository)(nil)
@@ -84,10 +87,14 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 	if err != nil {
 		return nil, app.Fail(app.StorageUnavailable)
 	}
-	r := &Repository{pool: pool}
+	r := &Repository{pool: pool, projectReadState: config.ProjectReadState}
 	if err = r.checkSchema(ctx); err != nil {
 		r.Close()
 		return nil, err
+	}
+	if config.ProjectReadState && conversationsync.CheckReadSourceSchema(ctx, pool) != nil {
+		r.Close()
+		return nil, app.Fail(app.StorageUnavailable)
 	}
 	return r, nil
 }
@@ -160,7 +167,7 @@ func (r *Repository) watermark(ctx context.Context, bearer session.BearerSession
 		return app.State{}, app.Fail(app.InvalidInput)
 	}
 	return withVerifiedBearer(ctx, r, bearer, func(ctx context.Context, tx pgx.Tx) (app.State, error) {
-		return applyWatermark(ctx, tx, id, bearer.UserID(), seq)
+		return r.applyWatermark(ctx, tx, id, bearer.UserID(), seq)
 	})
 }
 
@@ -195,7 +202,12 @@ func withVerifiedBearer[T any](ctx context.Context, r *Repository, bearer sessio
 	return result, nil
 }
 
-func applyWatermark(ctx context.Context, tx pgx.Tx, id, userID string, seq *int64) (app.State, error) {
+func (r *Repository) applyWatermark(ctx context.Context, tx pgx.Tx, id, userID string, seq *int64) (app.State, error) {
+	if r.projectReadState && seq != nil {
+		if err := conversationsync.LockSourceMembership(ctx, tx); err != nil {
+			return app.State{}, app.Fail(app.StorageUnavailable)
+		}
+	}
 	state, err := lockVisibleConversation(ctx, tx, id, userID)
 	if err != nil {
 		return app.State{}, err
@@ -209,7 +221,7 @@ func applyWatermark(ctx context.Context, tx pgx.Tx, id, userID string, seq *int6
 			return app.State{}, app.Fail(app.InvalidInput)
 		}
 		if *seq > state.LastReadSeq {
-			return advanceWatermark(ctx, tx, state, userID, *seq)
+			return r.advanceWatermark(ctx, tx, state, userID, *seq)
 		}
 	}
 	return state, nil
@@ -258,7 +270,7 @@ func loadWatermark(ctx context.Context, tx pgx.Tx, state app.State, userID strin
 	return state, nil
 }
 
-func advanceWatermark(ctx context.Context, tx pgx.Tx, state app.State, userID string, seq int64) (app.State, error) {
+func (r *Repository) advanceWatermark(ctx context.Context, tx pgx.Tx, state app.State, userID string, seq int64) (app.State, error) {
 	tag, err := tx.Exec(ctx, `INSERT INTO newim.im_read_states AS current (conversation_id,user_id,read_seq)
 		VALUES ($1,$2,$3) ON CONFLICT (conversation_id,user_id) DO UPDATE SET read_seq=EXCLUDED.read_seq
 		WHERE current.read_seq < EXCLUDED.read_seq`, state.ConversationID, userID, seq)
@@ -275,6 +287,11 @@ func advanceWatermark(ctx context.Context, tx pgx.Tx, state app.State, userID st
 		WHERE conversation_id=$1 AND user_id=$2 RETURNING updated_at`, state.ConversationID, userID).Scan(&updatedAt)
 	if err != nil {
 		return app.State{}, app.Fail(app.StorageUnavailable)
+	}
+	if r.projectReadState {
+		if err = conversationsync.RecordSourceWatermark(ctx, tx, userID, state.ConversationID); err != nil {
+			return app.State{}, app.Fail(app.StorageUnavailable)
+		}
 	}
 	at := updatedAt.UTC()
 	state.LastReadSeq = seq

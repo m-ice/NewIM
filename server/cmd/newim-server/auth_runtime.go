@@ -43,6 +43,7 @@ const (
 	authAdmissionEnv           = "NEWIM_AUTH_DEVICE_ADMISSION"
 	authAccountRevocationEnv   = "NEWIM_AUTH_ACCOUNT_REVOCATION"
 	conversationProjectionEnv  = "NEWIM_CONVERSATION_PROJECTION"
+	conversationReadSyncEnv    = "NEWIM_CONVERSATION_READ_SYNC"
 	authMaxDevicesEnv          = "NEWIM_AUTH_MAX_DEVICES"
 	authMaxPerPlatformEnv      = "NEWIM_AUTH_MAX_DEVICES_PER_PLATFORM"
 	authSingleDeviceEnv        = "NEWIM_AUTH_SINGLE_DEVICE"
@@ -186,6 +187,12 @@ func newAuthAndMessageRuntime(ctx context.Context, cfg api.Config, admission, pr
 		return nil, nil, api.ErrInvalidAuthConfig
 	}
 	projectConversations := projectionValue == "1"
+	readSyncValue := os.Getenv(conversationReadSyncEnv)
+	projectReadState := readSyncValue == "1"
+	if (projectReadState && !projectConversations) ||
+		(readSyncValue != "" && readSyncValue != "0" && !projectReadState) {
+		return nil, nil, api.ErrInvalidAuthConfig
+	}
 	privatePolicyValue := os.Getenv(privateMessagePolicyEnv)
 	privatePolicy := privatePolicyValue == "1"
 	if (privatePolicy && !messageEnabled) ||
@@ -231,6 +238,7 @@ func newAuthAndMessageRuntime(ctx context.Context, cfg api.Config, admission, pr
 			ApplicationName:      "newim-profile-http",
 			Guard:                guard,
 			ProjectConversations: projectConversations,
+			ProjectReadState:     projectReadState,
 		})
 		if guard.Tripped() != nil {
 			runtime.Close()
@@ -254,6 +262,7 @@ func newAuthAndMessageRuntime(ctx context.Context, cfg api.Config, admission, pr
 		PrivatePolicy:        privatePolicy,
 		StrangerPolicy:       strangerPolicy,
 		ProjectConversations: projectConversations,
+		ProjectReadState:     projectReadState,
 	})
 	if err != nil {
 		runtime.Close()

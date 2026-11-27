@@ -26,6 +26,7 @@ type Config struct {
 	ApplicationName    string
 	Guard              *postgresidentity.Guard
 	RequireSourceReady bool
+	IncludeReadState   bool
 }
 
 // Repository owns a bounded pool; credentials and driver errors stay private.
@@ -33,13 +34,15 @@ type Config struct {
 type Repository struct {
 	pool               *pgxpool.Pool
 	requireSourceReady bool
+	includeReadState   bool
 }
 
 // Open requires verified TLS for TCP, or explicitly enabled local sockets.
 // Open 的 TCP 必须校验主机证书，本地套接字须显式启用。
 func Open(ctx context.Context, config Config) (*Repository, error) {
 	if ctx == nil || config.DSN == "" || config.MaxConnections < 0 || config.MaxConnections > 8 ||
-		(config.ApplicationName != "" && !identifier(config.ApplicationName)) {
+		(config.ApplicationName != "" && !identifier(config.ApplicationName)) ||
+		(config.IncludeReadState && !config.RequireSourceReady) {
 		return nil, app.Fail(app.StorageUnavailable)
 	}
 	c, err := pgxpool.ParseConfig(config.DSN)
@@ -100,12 +103,12 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 		return nil, fixed(err)
 	}
 	if config.RequireSourceReady {
-		if err = CheckSourceSchema(ctx, pool); err != nil {
+		if err = CheckSourceSchema(ctx, pool, config.IncludeReadState); err != nil {
 			pool.Close()
 			return nil, fixed(err)
 		}
 	}
-	return &Repository{pool: pool, requireSourceReady: config.RequireSourceReady}, nil
+	return &Repository{pool: pool, requireSourceReady: config.RequireSourceReady, includeReadState: config.IncludeReadState}, nil
 }
 
 // Close releases all pool resources after callers finish their transactions.

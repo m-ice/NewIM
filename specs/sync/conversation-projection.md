@@ -28,10 +28,15 @@ ContinueDelta(ctx, principal, cursor) (Page, error)
 ```
 
 `Page` contains immutable account revisions and an authenticated continuation or
-checkpoint cursor. It includes only `conversationId`, positive `revision`,
-`upsert|remove`, and for an upsert the nonnegative conversation sequence plus a
-nullable server message ID. It never includes payload bytes, profiles, read
-state, mute state, devices or deletion requests.
+checkpoint cursor. Items include `conversationId`, a positive `revision` and
+`upsert|remove`. An upsert carries the nonnegative conversation sequence and
+nullable server message ID.
+
+When read-state projection is enabled, new upserts also carry `lastReadSeq` as
+a nonnegative decimal string. It holds the greater of the persisted account
+watermark and the member's exclusive history boundary as of the revision. The
+sequence stays absolute when the summary has no visible messages. Old upserts
+can omit it. A remove carries only its identifier, revision and kind.
 
 A reference consumer applies an item only when its revision is greater than the
 locally stored revision for that account/conversation. A remove retains that

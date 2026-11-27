@@ -45,11 +45,16 @@ func run(ctx context.Context, args []string) int {
 		(action != "run" && !user.ValidID(userID)) || limit < 1 || limit > conversation.MaxPageItems {
 		return invalidArguments()
 	}
+	readSync := os.Getenv("NEWIM_CONVERSATION_READ_SYNC")
+	if readSync != "" && readSync != "0" && readSync != "1" {
+		return invalidArguments()
+	}
 	repository, err := conversationsync.Open(ctx, conversationsync.Config{
 		DSN:                os.Getenv("NEWIM_AUTH_DSN"),
 		AllowLocalSocket:   os.Getenv("NEWIM_AUTH_ALLOW_LOCAL_SOCKET") == "1",
 		ApplicationName:    "newim-sync-backfill",
 		RequireSourceReady: true,
+		IncludeReadState:   readSync == "1",
 		MaxConnections:     1,
 		Guard:              postgresidentity.NewGuard(nil),
 	})

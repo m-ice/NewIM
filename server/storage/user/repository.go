@@ -30,6 +30,7 @@ type Config struct {
 	ApplicationName      string
 	Guard                *postgresidentity.Guard
 	ProjectConversations bool
+	ProjectReadState     bool
 }
 
 // Repository owns a bounded database pool.
@@ -37,6 +38,7 @@ type Config struct {
 type Repository struct {
 	pool                 *pgxpool.Pool
 	projectConversations bool
+	projectReadState     bool
 }
 
 var _ app.Store = (*Repository)(nil)
@@ -44,7 +46,7 @@ var _ app.Store = (*Repository)(nil)
 // Open verifies transport and checks that the profile schema is ready.
 // Open 验证数据库传输配置并检查资料表是否就绪。
 func Open(ctx context.Context, config Config) (*Repository, error) {
-	if ctx == nil || config.DSN == "" {
+	if ctx == nil || config.DSN == "" || (config.ProjectReadState && !config.ProjectConversations) {
 		return nil, app.Fail(app.StorageUnavailable)
 	}
 	if config.ApplicationName == "" {
@@ -110,11 +112,13 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 		pool.Close()
 		return nil, app.Fail(app.StorageUnavailable)
 	}
-	if config.ProjectConversations && conversationsync.CheckSourceSchema(ctx, pool) != nil {
+	if config.ProjectConversations && conversationsync.CheckSourceSchema(ctx, pool, config.ProjectReadState) != nil {
 		pool.Close()
 		return nil, app.Fail(app.StorageUnavailable)
 	}
-	return &Repository{pool: pool, projectConversations: config.ProjectConversations}, nil
+	return &Repository{
+		pool: pool, projectConversations: config.ProjectConversations, projectReadState: config.ProjectReadState,
+	}, nil
 }
 
 // Close releases the database pool.
@@ -159,7 +163,11 @@ func (r *Repository) Provision(ctx context.Context, userID string, patch app.Pat
 		return app.Profile{}, err
 	}
 	if newUser && r.projectConversations {
-		if err = conversationsync.InitializeSourceAccount(ctx, tx, userID); err != nil {
+		initialize := conversationsync.InitializeSourceAccount
+		if r.projectReadState {
+			initialize = conversationsync.InitializeReadSourceAccount
+		}
+		if err = initialize(ctx, tx, userID); err != nil {
 			return app.Profile{}, app.Fail(app.StorageUnavailable)
 		}
 	}

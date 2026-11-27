@@ -151,6 +151,11 @@ TLS 发送的设备预算可用 `NEWIM_TLS_MESSAGE_DEVICE_ATTEMPTS_PER_MINUTE` �
 运行 `make read-receipt-check read-receipt-security read-receipt-recovery` 验证。
 [私聊已读回执](../specs/read/receipt.md)
 
+应用迁移 017 并升级回环和 TLS 进程后，`NEWIM_CONVERSATION_READ_SYNC=1` 可让会话
+bootstrap 和 delta 携带账号位点。所有相关写入、同步读取和回填命令一致启用。
+上线与回退步骤见 [会话投影回填](../specs/sync/conversation-backfill.md#已读位点回填)。
+运行 `make read-sync-check read-sync-security read-sync-recovery read-sync-query-plan` 验证。
+
 TLS 消息网关设置 `NEWIM_MEDIA_HTTP=1` 和绝对路径 `NEWIM_MEDIA_LOCAL_ROOT` 后，
 可处理媒体上传、私有下载和媒体消息发送。媒体网关实例使用同一私有持久目录。
 [媒体传输接口](../specs/media/tls-transfer.md)。

@@ -20,14 +20,18 @@ TESTS = {
     'read-receipt-check': 'TestReadReceiptHTTPCheck',
     'read-receipt-security': 'TestReadReceiptHTTPSecurity',
     'read-receipt-recovery': 'TestReadReceiptHTTPRecovery',
+    'read-sync-check': 'TestReadSyncHTTPCheck',
+    'read-sync-security': 'TestReadSyncHTTPSecurity',
+    'read-sync-recovery': 'TestReadSyncHTTPRecovery',
+    'read-sync-query-plan': 'TestReadSyncHTTPWide',
 }
 
 
-def run_test(db, name, phase='single'):
+def run_test(db, name, phase='single', binary='conversationsynchttp.test'):
     argv = ['docker', 'exec', '-e', 'NEWIM_GATEWAY_BINARY=/tmp/newim-gateway',
             '-e', 'NEWIM_SERVER_BINARY=/tmp/newim-server',
             '-e', 'NEWIM_SYNC_BACKFILL_BINARY=/tmp/newim-sync-backfill',
-            '-e', 'NEWIM_SYNC_HTTP_PHASE=' + phase, db.name, '/tmp/conversationsynchttp.test']
+            '-e', 'NEWIM_SYNC_HTTP_PHASE=' + phase, db.name, '/tmp/' + binary]
     listing = db.commands.run(argv + ['-test.list', '^' + name + '$'], label='list-' + phase)
     result = db.commands.run(argv + ['-test.v', '-test.count=1', '-test.timeout=120s',
                                      '-test.run', '^' + name + '$'], timeout=135,
@@ -51,18 +55,25 @@ def main():
         env = os.environ.copy()
         env.update(CGO_ENABLED='0', GOOS='linux', GOARCH=platform.split('/')[1], GOTOOLCHAIN='local')
         binary = directory / 'conversationsynchttp.test'
+        read_sync = args.suite.startswith('read-sync-')
         read_suite = args.suite.startswith('read-')
+        query_plan = args.suite == 'read-sync-query-plan'
         servers = ('newim-gateway', 'newim-server')
-        if not read_suite:
+        if not read_suite or read_sync:
             servers += ('newim-sync-backfill',)
         build(commands, ['go', 'test', '-c', '-tags=integration', '-o', str(binary),
                          './tests/integration/conversationsynchttp'], env, 'sync-http-cross-compile')
+        paths = (binary.name, *servers)
+        if query_plan:
+            plan = directory / 'readsyncplan.test'
+            build(commands, ['go', 'test', '-c', '-tags=integration', '-o', str(plan),
+                             './server/storage/conversationsync'], env, 'read-sync-query-plan-cross-compile')
+            paths += (plan.name,)
         for name in servers:
             build(commands, ['go', 'build', '-o', str(directory / name), './server/cmd/' + name],
                   env, 'sync-http-' + name + '-build')
         with Database(commands, image, platform) as db:
-            db.sql(migration_sql(15 if read_suite else 14))
-            paths = (binary.name, *servers)
+            db.sql(migration_sql(17 if read_sync else 15 if read_suite else 14))
             for name in paths:
                 commands.run(['docker', 'cp', str(directory / name), db.name + ':/tmp/' + name],
                              label='copy-owned-' + name)
@@ -74,6 +85,8 @@ def main():
                 run_test(db, TESTS[args.suite], 'restart')
             else:
                 run_test(db, TESTS[args.suite])
+                if query_plan:
+                    run_test(db, 'TestReadSyncQueryPlan', 'plan', plan.name)
         print('TLS conversation sync suite passed; command records: ' + str(directory))
     except (Failure, OSError) as exc:
         print('TLS conversation sync suite failed: ' + str(exc) + '; command records: ' + str(directory))

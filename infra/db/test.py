@@ -134,6 +134,14 @@ def check_catalog(db, target=None):
         'USING btree (conversation_id, sender_id)|true|true|true',
     ]
     equal(sender_indexes, expected_sender if target >= 16 else [], 'conversation and sender history index')
+    read_sync_columns = db.sql("SELECT table_name||'|'||column_name||'|'||data_type||'|'||is_nullable||'|'||"
+                               "COALESCE(column_default,'') FROM information_schema.columns WHERE table_schema='newim' "
+                               "AND ((table_name='im_conversation_sync_accounts' AND column_name='read_state_epoch') "
+                               "OR (table_name='im_conversation_sync_changes' AND column_name='last_read_seq')) "
+                               "ORDER BY table_name;").splitlines()
+    expected_read_sync = ['im_conversation_sync_accounts|read_state_epoch|bigint|YES|',
+                          'im_conversation_sync_changes|last_read_seq|bigint|YES|']
+    equal(read_sync_columns, expected_read_sync if target >= 17 else [], 'nullable read projection columns without defaults')
     check_ledger(db, target)
 
 
@@ -215,9 +223,9 @@ def sync_constraints(db):
     scalar(db, "SELECT epoch||'|'||last_change_seq||'|'||min_valid_seq FROM newim.im_conversation_sync_accounts WHERE user_id='alice';",
            '1|0|0', 'initial account defaults')
     columns = {
-        'accounts': 'user_id,epoch,last_change_seq,min_valid_seq,source_ready,source_after_key',
+        'accounts': 'user_id,epoch,last_change_seq,min_valid_seq,source_ready,source_after_key,read_state_epoch',
         'keys': 'user_id,conversation_id,first_change_seq',
-        'changes': 'user_id,change_seq,conversation_id,kind,latest_seq,latest_server_msg_id',
+        'changes': 'user_id,change_seq,conversation_id,kind,latest_seq,latest_server_msg_id,last_read_seq',
     }
     for suffix, expected in columns.items():
         scalar(db, "SELECT string_agg(column_name,',' ORDER BY ordinal_position) FROM information_schema.columns "
@@ -239,6 +247,8 @@ def sync_constraints(db):
         ("UPDATE newim.im_conversation_sync_accounts SET source_ready=NULL;", '23502'),
         ("UPDATE newim.im_conversation_sync_accounts SET source_after_key='invalid key';", '23514'),
         ("UPDATE newim.im_conversation_sync_accounts SET source_ready=true,source_after_key='other';", '23514'),
+        ("UPDATE newim.im_conversation_sync_accounts SET read_state_epoch=0;", '23514'),
+        ("UPDATE newim.im_conversation_sync_accounts SET read_state_epoch=epoch+1;", '23514'),
         ("UPDATE newim.im_conversation_sync_keys SET first_change_seq=0;", '23514'),
         ("INSERT INTO newim.im_conversation_sync_keys VALUES ('bob','room',1);", '23503'),
         ("INSERT INTO newim.im_conversation_sync_keys VALUES ('alice','missing',1);", '23503'),
@@ -251,6 +261,8 @@ def sync_constraints(db):
         ("INSERT INTO newim.im_conversation_sync_changes VALUES ('alice',4,'room','remove',NULL,'s_one');", '23514'),
         ("INSERT INTO newim.im_conversation_sync_changes VALUES ('alice',4,'other','upsert',1,'s_one');", '23503'),
         ("INSERT INTO newim.im_conversation_sync_changes VALUES ('alice',1,'other','upsert',0,NULL);", '23505'),
+        ("UPDATE newim.im_conversation_sync_changes SET last_read_seq=-1 WHERE kind='upsert';", '23514'),
+        ("UPDATE newim.im_conversation_sync_changes SET last_read_seq=0 WHERE kind='remove';", '23514'),
         ("DELETE FROM newim.im_conversation_sync_keys WHERE conversation_id='room';", '23503'),
         ("DELETE FROM newim.im_conversation_sync_accounts WHERE user_id='alice';", '23503'),
     ]
@@ -260,7 +272,9 @@ def sync_constraints(db):
     equal(snapshot(db), before, 'sync constraint failures preserve state')
     # BIGINT boundaries are valid independently of application-level allocation.
     db.sql(f"BEGIN; UPDATE newim.im_conversation_sync_accounts SET epoch={MAXIMUM},last_change_seq={MAXIMUM},min_valid_seq={MAXIMUM}; "
-           f"INSERT INTO newim.im_conversation_sync_changes VALUES ('alice',{MAXIMUM},'room','upsert',{MAXIMUM},NULL); ROLLBACK;")
+           "UPDATE newim.im_conversation_sync_accounts SET read_state_epoch=epoch; "
+           f"INSERT INTO newim.im_conversation_sync_changes VALUES ('alice',{MAXIMUM},'room','upsert',{MAXIMUM},NULL); "
+           f"UPDATE newim.im_conversation_sync_changes SET last_read_seq={MAXIMUM} WHERE change_seq=2; ROLLBACK;")
     equal(snapshot(db), before, 'boundary transaction rollback')
     print(f'PASS sync schema constraints: {len(negatives)} rejected writes', flush=True)
 
@@ -1178,6 +1192,52 @@ def stranger_message_index_migration(db, commands):
     print('PASS populated 016 failure/termination rollback, exact sender index and original rows', flush=True)
 
 
+def conversation_read_sync_migration(db, commands):
+    db.sql("INSERT INTO newim.im_conversation_sync_accounts(user_id,epoch,last_change_seq,min_valid_seq,source_after_key) "
+           "VALUES ('bob',3,2,1,'room'); "
+           "INSERT INTO newim.im_conversation_sync_keys(user_id,conversation_id,first_change_seq) VALUES ('bob','other',1); "
+           "INSERT INTO newim.im_conversation_sync_changes(user_id,change_seq,conversation_id,kind,latest_seq,latest_server_msg_id) "
+           "VALUES ('bob',1,'other','upsert',0,NULL),('bob',2,'other','remove',NULL,NULL);")
+    legacy_accounts = "SELECT to_jsonb(a)-'read_state_epoch' FROM newim.im_conversation_sync_accounts a ORDER BY user_id;"
+    legacy_changes = "SELECT to_jsonb(c)-'last_read_seq' FROM newim.im_conversation_sync_changes c ORDER BY user_id,change_seq;"
+    historical = snapshot(db)
+    accounts = db.sql(legacy_accounts)
+    changes = db.sql(legacy_changes)
+    with tempfile.TemporaryDirectory(prefix='conversation-read-sync-migration-copy-', dir=commands.directory) as owned:
+        directory = Path(owned)
+        for path in source_migrations():
+            (directory/path.name).write_bytes(path.read_bytes())
+        candidate = directory/'017_conversation_read_sync.sql'
+        original = candidate.read_text()
+        candidate.write_text(original + "\nSELECT 1/0;\n")
+        db.sql(migration_sql(17, directory=directory), error='22012')
+        check_catalog(db, 16)
+        equal(snapshot(db), historical, 'failed 017 preserves populated 016 rows')
+        candidate.write_text(original + "\nSELECT pg_sleep(30);\n")
+        held = db.session("SET application_name='newim_conversation_read_sync_migration_interrupt'; " +
+                          migration_sql(17, directory=directory))
+        db.wait_sql("SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name="
+                    "'newim_conversation_read_sync_migration_interrupt' AND wait_event='PgSleep');")
+        db.sql("SELECT pg_terminate_backend(pid) FROM pg_stat_activity "
+               "WHERE application_name='newim_conversation_read_sync_migration_interrupt';")
+        held.finish(error='57P01')
+        check_catalog(db, 16)
+        equal(snapshot(db), historical, 'terminated 017 preserves populated 016 rows')
+    db.sql(migration_sql(17))
+    check_catalog(db, 17)
+    upgraded = snapshot(db)
+    changed_tables = {'im_conversation_sync_accounts', 'im_conversation_sync_changes', 'migrations'}
+    equal({k: v for k, v in upgraded.items() if k not in changed_tables},
+          {k: v for k, v in historical.items() if k not in changed_tables}, '017 preserves every other table')
+    equal(db.sql(legacy_accounts), accounts, '017 preserves epochs, readiness and backfill progress')
+    equal(db.sql(legacy_changes), changes, '017 preserves historical upserts and tombstones')
+    scalar(db, "SELECT count(*) FROM newim.im_conversation_sync_accounts WHERE read_state_epoch IS NOT NULL;",
+           0, '017 does not mark old accounts ready for read sync')
+    scalar(db, "SELECT count(*) FROM newim.im_conversation_sync_changes WHERE last_read_seq IS NOT NULL;",
+           0, '017 does not fill historical read sequences')
+    print('PASS populated 017 failure/termination rollback and immutable projection history', flush=True)
+
+
 def migrations(db, commands):
     head = len(source_migrations())
     db.sql(migration_sql(1))
@@ -1207,6 +1267,7 @@ def migrations(db, commands):
     source_projection_migration(db, commands)
     read_watermark_migration(db, commands)
     stranger_message_index_migration(db, commands)
+    conversation_read_sync_migration(db, commands)
     after = snapshot(db)
     db.sql(migration_sql())
     equal(snapshot(db), after, 'head replay stable')

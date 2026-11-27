@@ -18,8 +18,8 @@ func TestSyncMigrations(t *testing.T) {
 
 	ledger := f.scalarString("SELECT string_agg(version::text||':'||sha256,',' ORDER BY version) FROM newim_meta.migrations")
 	parts := strings.Split(ledger, ",")
-	if len(parts) != 16 {
-		t.Fatalf("migration ledger got %q want versions 1..16", ledger)
+	if len(parts) != 17 {
+		t.Fatalf("migration ledger got %q want versions 1..17", ledger)
 	}
 	for index, part := range parts {
 		fields := strings.SplitN(part, ":", 2)

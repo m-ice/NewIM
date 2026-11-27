@@ -16,3 +16,5 @@
 | 503 | `READ_STORAGE_UNAVAILABLE`、`AUTH_UNAVAILABLE` | 服务暂不可用 |
 
 部署先应用迁移 015，再使用 `NEWIM_READ_WATERMARK_HTTP=1` 启用。地址和账号每分钟默认预算分别为 120 和 60，可通过 `NEWIM_READ_WATERMARK_IP_ATTEMPTS_PER_MINUTE` 和 `NEWIM_READ_WATERMARK_ACCOUNT_ATTEMPTS_PER_MINUTE` 调整。关闭入口后会话位点继续保留。
+
+启用 [会话已读投影](../sync/conversation-backfill.md#已读位点回填) 后，实际推进的位点与当前账号的会话修订一起提交。其他设备可通过会话增量同步读取该位点。

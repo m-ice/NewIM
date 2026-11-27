@@ -383,6 +383,19 @@ read-receipt-security: toolchain
 read-receipt-recovery: toolchain
 	python3 -B infra/db/sync_http_suite.py read-receipt-recovery
 
+.PHONY: read-sync-check read-sync-security read-sync-recovery read-sync-query-plan
+read-sync-check: toolchain
+	python3 -B infra/db/sync_http_suite.py read-sync-check
+
+read-sync-security: toolchain
+	python3 -B infra/db/sync_http_suite.py read-sync-security
+
+read-sync-recovery: toolchain
+	python3 -B infra/db/sync_http_suite.py read-sync-recovery
+
+read-sync-query-plan: toolchain
+	python3 -B infra/db/sync_http_suite.py read-sync-query-plan
+
 .PHONY: message-delta-http-check message-delta-http-security message-delta-http-recovery
 message-delta-http-check: toolchain
 	python3 -B infra/db/message_delta_http_suite.py check

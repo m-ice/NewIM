@@ -45,9 +45,17 @@ func (r *Repository) InitializeEmptyAccount(ctx context.Context, user string) er
 	var epoch, head, floor int64
 	err = tx.QueryRow(ctx, "SELECT epoch,last_change_seq,min_valid_seq FROM newim.im_conversation_sync_accounts WHERE user_id=$1 FOR UPDATE", user).Scan(&epoch, &head, &floor)
 	if errors.Is(err, pgx.ErrNoRows) {
-		_, err = tx.Exec(ctx, "INSERT INTO newim.im_conversation_sync_accounts(user_id) VALUES($1)", user)
+		if r.includeReadState {
+			err = InitializeReadSourceAccount(ctx, tx, user)
+		} else {
+			_, err = tx.Exec(ctx, "INSERT INTO newim.im_conversation_sync_accounts(user_id) VALUES($1)", user)
+		}
 	} else if err == nil && (epoch != 1 || head != 0 || floor != 0) {
 		return app.Fail(app.NotReady)
+	} else if err == nil && r.includeReadState {
+		_, err = tx.Exec(ctx, `UPDATE newim.im_conversation_sync_accounts SET
+			source_ready=true,source_after_key=NULL,read_state_epoch=epoch
+			WHERE user_id=$1 AND (NOT source_ready OR read_state_epoch IS DISTINCT FROM epoch)`, user)
 	}
 	if err != nil {
 		return fixed(err)
@@ -89,7 +97,11 @@ func (r *Repository) AdvanceFloor(ctx context.Context, user string, floor uint64
 		if uint64(epoch) == app.MaxSequence {
 			return app.Fail(app.SequenceExhausted)
 		}
-		_, err = tx.Exec(ctx, "UPDATE newim.im_conversation_sync_accounts SET min_valid_seq=$2,epoch=epoch+1 WHERE user_id=$1", user, int64(floor))
+		statement := "UPDATE newim.im_conversation_sync_accounts SET min_valid_seq=$2,epoch=epoch+1"
+		if r.includeReadState {
+			statement += ",read_state_epoch=CASE WHEN read_state_epoch=epoch THEN epoch+1 ELSE read_state_epoch END"
+		}
+		_, err = tx.Exec(ctx, statement+" WHERE user_id=$1", user, int64(floor))
 		if err != nil {
 			return fixed(err)
 		}

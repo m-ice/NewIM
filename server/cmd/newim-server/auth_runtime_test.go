@@ -156,6 +156,32 @@ func TestMessageRuntimeConfigValidation(t *testing.T) {
 	}
 }
 
+func TestAuthRuntimeConversationReadSyncConfig(t *testing.T) {
+	t.Setenv(messageHTTPEnv, "0")
+	t.Setenv(privateMessagePolicyEnv, "0")
+	t.Setenv(strangerMessagePolicyEnv, "0")
+	t.Setenv(authDSNEnv, "")
+	for _, test := range []struct {
+		name, projection, readSync string
+		invalid                    bool
+	}{
+		{name: "disabled"},
+		{name: "enabled", projection: "1", readSync: "1"},
+		{name: "requires source projection", readSync: "1", invalid: true},
+		{name: "invalid toggle", projection: "1", readSync: "true", invalid: true},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			t.Setenv(conversationProjectionEnv, test.projection)
+			t.Setenv(conversationReadSyncEnv, test.readSync)
+			runtime, routes, err := newAuthAndMessageRuntime(context.Background(), api.Config{}, false, false, slog.Default())
+			if runtime != nil || len(routes) != 0 || (err != nil) != test.invalid ||
+				(test.invalid && errorCode(err) != string(api.CodeInvalidAuthConfig)) {
+				t.Fatalf("runtime=%v routes=%v err=%v", runtime, routes, err)
+			}
+		})
+	}
+}
+
 func TestAuthRuntimeRejectsUnsafeStartupBeforeOpen(t *testing.T) {
 	t.Setenv(messageHTTPEnv, "0")
 	t.Setenv(authDSNEnv, "postgres://example.invalid/newim")

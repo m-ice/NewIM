@@ -12,15 +12,18 @@ import (
 
 const sourceBackfillLock int64 = 0x4e494d53594e4301
 
+var errReadBackfillUnprepared = errors.New("read state backfill needs preparation")
+
 type sourceBackfillDB interface {
 	BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error)
 	Query(context.Context, string, ...any) (pgx.Rows, error)
 }
 
 type sourceBackfillState struct {
-	epoch int64
-	ready bool
-	after string
+	epoch          int64
+	ready          bool
+	after          string
+	readStateEpoch int64
 }
 
 // BackfillStep reconciles one account page and commits its progress.
@@ -29,10 +32,10 @@ func (r *Repository) BackfillStep(ctx context.Context, userID string, limit int)
 	if ctx == nil || r == nil || r.pool == nil || !r.requireSourceReady {
 		return false, app.Fail(app.StorageUnavailable)
 	}
-	return backfillStep(ctx, r.pool, userID, limit)
+	return backfillStep(ctx, r.pool, userID, limit, r.includeReadState)
 }
 
-func backfillStep(ctx context.Context, db sourceBackfillDB, userID string, limit int) (bool, error) {
+func backfillStep(ctx context.Context, db sourceBackfillDB, userID string, limit int, includeReadState bool) (bool, error) {
 	if !identifier(userID) {
 		return false, app.Fail(app.Forbidden)
 	}
@@ -41,6 +44,21 @@ func backfillStep(ctx context.Context, db sourceBackfillDB, userID string, limit
 	}
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
+	ready, err := backfillPage(ctx, db, userID, limit, includeReadState)
+	if !errors.Is(err, errReadBackfillUnprepared) {
+		return ready, err
+	}
+	if err = prepareReadBackfillAccount(ctx, db, userID); err != nil {
+		return false, err
+	}
+	ready, err = backfillPage(ctx, db, userID, limit, includeReadState)
+	if errors.Is(err, errReadBackfillUnprepared) {
+		return false, app.Fail(app.NotReady)
+	}
+	return ready, err
+}
+
+func backfillPage(ctx context.Context, db sourceBackfillDB, userID string, limit int, includeReadState bool) (bool, error) {
 	tx, err := db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return false, fixed(err)
@@ -55,9 +73,12 @@ func backfillStep(ctx context.Context, db sourceBackfillDB, userID string, limit
 	if err = userExists(ctx, tx, userID); err != nil {
 		return false, err
 	}
-	initial, err := readSourceBackfillState(ctx, tx, userID, false)
+	initial, err := readSourceBackfillState(ctx, tx, userID, false, includeReadState)
 	if err != nil {
 		return false, err
+	}
+	if includeReadState && initial.readStateEpoch != initial.epoch {
+		return false, errReadBackfillUnprepared
 	}
 	var keys []string
 	var more bool
@@ -76,15 +97,18 @@ func backfillStep(ctx context.Context, db sourceBackfillDB, userID string, limit
 		VALUES ($1) ON CONFLICT (user_id) DO NOTHING`, userID); err != nil {
 		return false, fixed(err)
 	}
-	current, err := readSourceBackfillState(ctx, tx, userID, true)
+	current, err := readSourceBackfillState(ctx, tx, userID, true, includeReadState)
 	if err != nil {
 		return false, err
+	}
+	if includeReadState && current.readStateEpoch != current.epoch {
+		return false, errReadBackfillUnprepared
 	}
 	if current.ready || current != initial {
 		return current.ready, fixed(tx.Commit(ctx))
 	}
 	if len(keys) > 0 {
-		if err = appendSourceProjection(ctx, tx, sourceAccountPageTargets, userID, keys); err != nil {
+		if err = appendSourceProjection(ctx, tx, includeReadState, sourceAccountPageTargets, userID, keys); err != nil {
 			return false, err
 		}
 	}
@@ -105,26 +129,75 @@ func backfillStep(ctx context.Context, db sourceBackfillDB, userID string, limit
 	return ready, nil
 }
 
-func readSourceBackfillState(ctx context.Context, tx pgx.Tx, userID string, lock bool) (sourceBackfillState, error) {
-	query := `SELECT epoch,source_ready,COALESCE(source_after_key::text,'')
-		FROM newim.im_conversation_sync_accounts WHERE user_id=$1`
+func readSourceBackfillState(ctx context.Context, tx pgx.Tx, userID string, lock, includeReadState bool) (sourceBackfillState, error) {
+	var state sourceBackfillState
+	query := "SELECT epoch,source_ready,COALESCE(source_after_key::text,'')"
+	columns := []any{&state.epoch, &state.ready, &state.after}
+	if includeReadState {
+		query += ",COALESCE(read_state_epoch,0)"
+		columns = append(columns, &state.readStateEpoch)
+	}
+	query += " FROM newim.im_conversation_sync_accounts WHERE user_id=$1"
 	if lock {
 		query += " FOR UPDATE"
 	}
-	var state sourceBackfillState
-	err := tx.QueryRow(ctx, query, userID).Scan(&state.epoch, &state.ready, &state.after)
+	err := tx.QueryRow(ctx, query, userID).Scan(columns...)
 	if !lock && errors.Is(err, pgx.ErrNoRows) {
 		return sourceBackfillState{epoch: 1}, nil
 	}
 	if err != nil || state.epoch < 1 || (state.after != "" && !identifier(state.after)) ||
-		(state.ready && state.after != "") {
+		(state.ready && state.after != "") || state.readStateEpoch < 0 || state.readStateEpoch > state.epoch {
 		return sourceBackfillState{}, app.Fail(app.StorageUnavailable)
 	}
 	return state, nil
 }
 
-func sourceBackfillKeys(ctx context.Context, tx pgx.Tx, userID, after string, limit int) ([]string, error) {
-	rows, err := tx.Query(ctx, `SELECT conversation_id FROM (
+// Preparation publishes the new epoch without holding conversation locks.
+func prepareReadBackfillAccount(ctx context.Context, db sourceBackfillDB, userID string) error {
+	tx, err := db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return fixed(err)
+	}
+	defer rollback(tx)
+	if err = configure(ctx, tx); err != nil {
+		return err
+	}
+	if err = resetReadSourceAccount(ctx, tx, userID, true); err != nil {
+		return err
+	}
+	return fixed(tx.Commit(ctx))
+}
+
+func resetReadSourceAccount(ctx context.Context, tx pgx.Tx, userID string, onlyUnprepared bool) error {
+	epoch := int64(1)
+	if onlyUnprepared {
+		// An account without a projection row starts from the implicit first epoch.
+		epoch++
+	}
+	tag, err := tx.Exec(ctx, `INSERT INTO newim.im_conversation_sync_accounts AS account(user_id,epoch,read_state_epoch)
+		VALUES ($1,$2,$2) ON CONFLICT (user_id) DO UPDATE SET epoch=account.epoch+1,
+		read_state_epoch=account.epoch+1,min_valid_seq=account.last_change_seq,source_ready=false,source_after_key=NULL
+		WHERE account.epoch<9223372036854775807
+		  AND (NOT $3::boolean OR account.read_state_epoch IS DISTINCT FROM account.epoch)`, userID, epoch, onlyUnprepared)
+	if err != nil {
+		return fixed(err)
+	}
+	if tag.RowsAffected() == 1 {
+		return nil
+	}
+	if onlyUnprepared {
+		state, err := readSourceBackfillState(ctx, tx, userID, true, true)
+		if err != nil {
+			return err
+		}
+		if state.readStateEpoch == state.epoch {
+			return nil
+		}
+	}
+	return app.Fail(app.SequenceExhausted)
+}
+
+const sourceBackfillKeysSQL = `SELECT conversation_id FROM (
 		(SELECT conversation_id FROM newim.im_conversation_members
 		 WHERE user_id=$1 AND departed_at IS NULL AND conversation_id>$2::text
 		 ORDER BY conversation_id LIMIT $3)
@@ -132,7 +205,10 @@ func sourceBackfillKeys(ctx context.Context, tx pgx.Tx, userID, after string, li
 		(SELECT conversation_id FROM newim.im_conversation_sync_keys
 		 WHERE user_id=$1 AND conversation_id>$2::text
 		 ORDER BY conversation_id LIMIT $3)
-	) AS directory ORDER BY conversation_id LIMIT $3`, userID, after, limit)
+	) AS directory ORDER BY conversation_id LIMIT $3`
+
+func sourceBackfillKeys(ctx context.Context, tx pgx.Tx, userID, after string, limit int) ([]string, error) {
+	rows, err := tx.Query(ctx, sourceBackfillKeysSQL, userID, after, limit)
 	if err != nil {
 		return nil, fixed(err)
 	}
@@ -162,17 +238,21 @@ func (r *Repository) NextSourceAccounts(ctx context.Context, after string) (next
 	if ctx == nil || r == nil || r.pool == nil || !r.requireSourceReady {
 		return "", nil, app.Fail(app.StorageUnavailable)
 	}
-	return nextSourceAccounts(ctx, r.pool, after)
+	return nextSourceAccounts(ctx, r.pool, after, r.includeReadState)
 }
 
-func nextSourceAccounts(ctx context.Context, db sourceBackfillDB, after string) (next string, pending []string, err error) {
+func nextSourceAccounts(ctx context.Context, db sourceBackfillDB, after string, includeReadState bool) (next string, pending []string, err error) {
 	if after != "" && !identifier(after) {
 		return "", nil, app.Fail(app.InvalidCursor)
 	}
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
+	readyCondition := "a.source_ready"
+	if includeReadState {
+		readyCondition += " AND a.read_state_epoch=a.epoch"
+	}
 	rows, err := db.Query(ctx, `SELECT page.user_id,COALESCE((
-		SELECT a.source_ready FROM newim.im_conversation_sync_accounts a WHERE a.user_id=page.user_id
+		SELECT `+readyCondition+` FROM newim.im_conversation_sync_accounts a WHERE a.user_id=page.user_id
 	), false)
 	FROM (SELECT user_id FROM newim.im_users WHERE user_id>$1::text ORDER BY user_id LIMIT $2) page
 	ORDER BY page.user_id`, after, app.MaxPageItems)
@@ -238,13 +318,13 @@ func (r *Repository) RunSourceBackfill(ctx context.Context, limit int) (err erro
 	var after string
 	for {
 		// A disconnected session loses both the lock and the ability to write.
-		next, pending, err := nextSourceAccounts(ctx, conn, after)
+		next, pending, err := nextSourceAccounts(ctx, conn, after, r.includeReadState)
 		if err != nil || next == "" {
 			return err
 		}
 		for _, userID := range pending {
 			for {
-				ready, err := backfillStep(ctx, conn, userID, limit)
+				ready, err := backfillStep(ctx, conn, userID, limit, r.includeReadState)
 				if err != nil {
 					return err
 				}
@@ -282,6 +362,12 @@ func (r *Repository) ResetSourceAccount(ctx context.Context, userID string) erro
 	}
 	if err = userExists(ctx, tx, userID); err != nil {
 		return err
+	}
+	if r.includeReadState {
+		if err = resetReadSourceAccount(ctx, tx, userID, false); err != nil {
+			return err
+		}
+		return fixed(tx.Commit(ctx))
 	}
 	tag, err := tx.Exec(ctx, `INSERT INTO newim.im_conversation_sync_accounts AS account(user_id)
 		VALUES ($1) ON CONFLICT (user_id) DO UPDATE SET epoch=account.epoch+1,

@@ -41,6 +41,7 @@ type Config struct {
 	ManagedGroups bool
 	// ProjectConversations records source changes in the owning transaction.
 	ProjectConversations bool
+	ProjectReadState     bool
 	// Guard enables shared backend identity validation when non-nil.
 	// Guard 非 nil 时启用共享后端身份校验。
 	Guard *postgresidentity.Guard
@@ -56,6 +57,7 @@ type Repository struct {
 	directOnly           bool
 	managedGroups        bool
 	projectConversations bool
+	projectReadState     bool
 }
 
 // Open requires verified TLS for TCP or explicitly enabled local sockets.
@@ -71,6 +73,9 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 		return nil, app.Fail(app.SendStorageUnavailable)
 	}
 	if config.StrangerPolicy && !config.PrivatePolicy {
+		return nil, app.Fail(app.SendStorageUnavailable)
+	}
+	if config.ProjectReadState && !config.ProjectConversations {
 		return nil, app.Fail(app.SendStorageUnavailable)
 	}
 	if config.ApplicationName != "" && !identifier(config.ApplicationName) {
@@ -136,6 +141,7 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 		privatePolicy: config.PrivatePolicy, strangerPolicy: config.StrangerPolicy,
 		directOnly: config.DirectOnly, managedGroups: config.ManagedGroups,
 		projectConversations: config.ProjectConversations,
+		projectReadState:     config.ProjectReadState,
 	}
 	if repository.managedGroups {
 		if err = repository.checkManagedGroupSchema(ctx); err != nil {
@@ -149,7 +155,7 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 			return nil, err
 		}
 	}
-	if config.ProjectConversations && conversationsync.CheckSourceSchema(ctx, pool) != nil {
+	if config.ProjectConversations && conversationsync.CheckSourceSchema(ctx, pool, config.ProjectReadState) != nil {
 		pool.Close()
 		return nil, app.Fail(app.SendStorageUnavailable)
 	}
@@ -258,7 +264,7 @@ func (r *Repository) Persist(ctx context.Context, principal conversation.Princip
 	// 并发等 intent 重试会通过 unique-violation 路径返回胜者的生成身份。
 	persisted.Replayed = stored.ServerMsgID != generated.ServerMsgID
 	if r.projectConversations && !persisted.Replayed {
-		if err = conversationsync.RecordSourceConversation(ctx, tx, request.ConversationID, nil); err != nil {
+		if err = conversationsync.RecordSourceConversation(ctx, tx, request.ConversationID, nil, r.projectReadState); err != nil {
 			return app.PersistedMessage{}, privateStorageError(err)
 		}
 	}

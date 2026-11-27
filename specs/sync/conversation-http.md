@@ -11,6 +11,8 @@
 
 响应使用现有 [会话分页协议](conversation-projection.md)，包含 `items`、`hasMore` 与 `nextCursor`，上限 65,536 字节。中间页的 `nextCursor` 用于继续当前轮次。终页的 `nextCursor` 是下一轮 delta 的检查点。客户端将一页的修订和下一游标一起持久化。所有响应禁止缓存。
 
+启用已读位点投影后，upsert 可附带非负十进制字符串 `lastReadSeq`。该位点属于当前账号，以修订提交时的有效位点为准。省略字段时客户端保留已有位点。收到更新的修订时，客户端与会话摘要及分页游标一同提交。群重入后尚无可见消息时，`latestConversationSeq` 可为 `"0"`，`lastReadSeq` 仍保留绝对序号。移除项不携带位点。启用步骤见 [会话投影回填](conversation-backfill.md#已读位点回填)。
+
 | 状态 | 代码 | 客户端处理 |
 | --- | --- | --- |
 | 400 | `SYNC_INVALID_INPUT` / `SYNC_INVALID_CURSOR` / `SYNC_LIMIT_EXCEEDED` | 校验字段、游标类型和账号 |

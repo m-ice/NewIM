@@ -481,8 +481,12 @@ func validateItem(item Item) error {
 		if item.LatestConversationSeq == nil || !validSequence(*item.LatestConversationSeq) || !validOptionalIdentifier(item.LatestServerMsgID) {
 			return Fail(StorageUnavailable)
 		}
+		if item.LastReadSeq != nil &&
+			(!validSequence(*item.LastReadSeq) || (*item.LatestConversationSeq != 0 && *item.LastReadSeq > *item.LatestConversationSeq)) {
+			return Fail(StorageUnavailable)
+		}
 	case "remove":
-		if item.LatestConversationSeq != nil || item.LatestServerMsgID != nil {
+		if item.LatestConversationSeq != nil || item.LatestServerMsgID != nil || item.LastReadSeq != nil {
 			return Fail(StorageUnavailable)
 		}
 	default:

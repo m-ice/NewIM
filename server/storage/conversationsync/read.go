@@ -12,6 +12,7 @@ import (
 type readScope struct {
 	activeMembersOnly  bool
 	requireSourceReady bool
+	includeReadState   bool
 }
 
 // Read releases its consistent snapshot before returning any candidate.
@@ -47,13 +48,18 @@ func (r *Repository) Read(ctx context.Context, user string, request app.ReadRequ
 	if err = userExists(ctx, tx, user); err != nil {
 		return result, err
 	}
-	scope := readScope{activeMembersOnly: activeMembersOnly, requireSourceReady: r.requireSourceReady}
+	scope := readScope{
+		activeMembersOnly: activeMembersOnly, requireSourceReady: r.requireSourceReady, includeReadState: r.includeReadState,
+	}
 	query := "SELECT epoch,last_change_seq,min_valid_seq FROM newim.im_conversation_sync_accounts WHERE user_id=$1"
 	if scope.requireSourceReady {
 		if !scope.activeMembersOnly {
 			return result, app.Fail(app.StorageUnavailable)
 		}
 		query += " AND source_ready"
+	}
+	if scope.includeReadState {
+		query += " AND read_state_epoch=epoch"
 	}
 	var epoch, head, floor int64
 	err = tx.QueryRow(ctx, query, user).Scan(&epoch, &head, &floor)
@@ -139,7 +145,7 @@ func readDirectory(ctx context.Context, tx pgx.Tx, user, after string, scope rea
 	for _, e := range entries {
 		candidate := app.Candidate{Key: e.key}
 		if uint64(e.first) <= result.Fence {
-			candidate.State, err = latest(ctx, tx, user, e.key, result.Fence)
+			candidate.State, err = latestItem(ctx, tx, user, e.key, result.Fence, scope.includeReadState)
 			if err != nil {
 				return err
 			}
@@ -156,12 +162,12 @@ func readDirectory(ctx context.Context, tx pgx.Tx, user, after string, scope rea
 }
 
 func readDelta(ctx context.Context, tx pgx.Tx, user string, request app.ReadRequest, scope readScope, result *app.ReadResult) error {
-	rows, err := tx.Query(ctx, "SELECT conversation_id,change_seq,kind,latest_seq,latest_server_msg_id FROM newim.im_conversation_sync_changes WHERE user_id=$1 AND change_seq>$2 AND change_seq<=$3 ORDER BY change_seq LIMIT $4", user, int64(request.AfterSeq), int64(result.Fence), request.Limit+1)
+	rows, err := tx.Query(ctx, "SELECT "+itemColumns(scope.includeReadState)+" FROM newim.im_conversation_sync_changes WHERE user_id=$1 AND change_seq>$2 AND change_seq<=$3 ORDER BY change_seq LIMIT $4", user, int64(request.AfterSeq), int64(result.Fence), request.Limit+1)
 	if err != nil {
 		return fixed(err)
 	}
 	for rows.Next() {
-		item, err := scanItem(rows)
+		item, err := scanItem(rows, scope.includeReadState)
 		if err != nil {
 			rows.Close()
 			return err
@@ -187,7 +193,7 @@ func authorize(ctx context.Context, tx pgx.Tx, user string, scope readScope, can
 	}
 	var err error
 	if scope.requireSourceReady {
-		return authorizeSourceSummary(ctx, tx, user, candidate)
+		return authorizeSourceSummary(ctx, tx, user, candidate, scope.includeReadState)
 	}
 	candidate.Member, err = hasMember(ctx, tx, user, candidate.Key, scope.activeMembersOnly)
 	if err != nil {
@@ -199,12 +205,12 @@ func authorize(ctx context.Context, tx pgx.Tx, user string, scope readScope, can
 	return err
 }
 
-func authorizeSourceSummary(ctx context.Context, tx pgx.Tx, user string, candidate *app.Candidate) error {
+func authorizeSourceSummary(ctx context.Context, tx pgx.Tx, user string, candidate *app.Candidate, includeReadState bool) error {
 	var floor int64
 	err := tx.QueryRow(ctx, `SELECT history_after_seq FROM newim.im_conversation_members
 		WHERE user_id=$1 AND conversation_id=$2 AND departed_at IS NULL`, user, candidate.Key).Scan(&floor)
 	if errors.Is(err, pgx.ErrNoRows) {
-		candidate.Latest, err = latest(ctx, tx, user, candidate.Key, app.MaxSequence)
+		candidate.Latest, err = latestItem(ctx, tx, user, candidate.Key, app.MaxSequence, includeReadState)
 		return err
 	}
 	if err != nil || floor < 0 {
@@ -218,7 +224,7 @@ func authorizeSourceSummary(ctx context.Context, tx pgx.Tx, user string, candida
 
 	// Record the authorization change without expiring an earlier page.
 	candidate.HistoryRestricted = true
-	replacement, err := latest(ctx, tx, user, candidate.Key, app.MaxSequence)
+	replacement, err := latestItem(ctx, tx, user, candidate.Key, app.MaxSequence, includeReadState)
 	if err != nil || replacement == nil || replacement.Kind != "upsert" || replacement.Revision <= candidate.State.Revision {
 		return err
 	}
@@ -229,10 +235,17 @@ func authorizeSourceSummary(ctx context.Context, tx pgx.Tx, user string, candida
 	return err
 }
 
+const visibleSummarySQL = `
+	SELECT COALESCE((SELECT conversation_id=$1 AND conversation_seq=$3
+		FROM (` + sourceSummaryPoint + `$2 LIMIT 1) AS summary), false)`
+
 func visibleSourceSummary(ctx context.Context, tx pgx.Tx, item *app.Item, floor uint64) (bool, error) {
 	seq := *item.LatestConversationSeq
 	if (seq == 0) != (item.LatestServerMsgID == nil) {
 		return false, app.Fail(app.StorageUnavailable)
+	}
+	if item.LastReadSeq != nil && *item.LastReadSeq < floor {
+		return false, nil
 	}
 	if seq == 0 {
 		return true, nil
@@ -241,9 +254,7 @@ func visibleSourceSummary(ctx context.Context, tx pgx.Tx, item *app.Item, floor 
 		return false, nil
 	}
 	var matches bool
-	err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM newim.im_messages
-		WHERE conversation_id=$1 AND server_msg_id=$2 AND conversation_seq=$3)`,
-		item.ConversationID, *item.LatestServerMsgID, int64(seq)).Scan(&matches)
+	err := tx.QueryRow(ctx, visibleSummarySQL, item.ConversationID, *item.LatestServerMsgID, int64(seq)).Scan(&matches)
 	if err != nil || !matches {
 		return false, app.Fail(app.StorageUnavailable)
 	}
@@ -260,16 +271,32 @@ func hasMember(ctx context.Context, tx pgx.Tx, user, conversation string, active
 	return member, err
 }
 
-func latest(ctx context.Context, tx pgx.Tx, user, conversation string, fence uint64) (*app.Item, error) {
-	row := tx.QueryRow(ctx, "SELECT conversation_id,change_seq,kind,latest_seq,latest_server_msg_id FROM newim.im_conversation_sync_changes WHERE user_id=$1 AND conversation_id=$2 AND change_seq<=$3 ORDER BY change_seq DESC LIMIT 1", user, conversation, int64(fence))
-	return scanItem(row)
+func itemColumns(includeReadState bool) string {
+	const columns = "conversation_id,change_seq,kind,latest_seq,latest_server_msg_id"
+	if includeReadState {
+		return columns + ",last_read_seq"
+	}
+	return columns
 }
 
-func scanItem(row interface{ Scan(...any) error }) (*app.Item, error) {
+func latest(ctx context.Context, tx pgx.Tx, user, conversation string, fence uint64) (*app.Item, error) {
+	return latestItem(ctx, tx, user, conversation, fence, false)
+}
+
+func latestItem(ctx context.Context, tx pgx.Tx, user, conversation string, fence uint64, includeReadState bool) (*app.Item, error) {
+	row := tx.QueryRow(ctx, "SELECT "+itemColumns(includeReadState)+" FROM newim.im_conversation_sync_changes WHERE user_id=$1 AND conversation_id=$2 AND change_seq<=$3 ORDER BY change_seq DESC LIMIT 1", user, conversation, int64(fence))
+	return scanItem(row, includeReadState)
+}
+
+func scanItem(row interface{ Scan(...any) error }, includeReadState bool) (*app.Item, error) {
 	item := &app.Item{}
 	var revision int64
-	var sequence *int64
-	err := row.Scan(&item.ConversationID, &revision, &item.Kind, &sequence, &item.LatestServerMsgID)
+	var sequence, readSequence *int64
+	fields := []any{&item.ConversationID, &revision, &item.Kind, &sequence, &item.LatestServerMsgID}
+	if includeReadState {
+		fields = append(fields, &readSequence)
+	}
+	err := row.Scan(fields...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
 	}
@@ -286,7 +313,14 @@ func scanItem(row interface{ Scan(...any) error }) (*app.Item, error) {
 		}
 		s := uint64(*sequence)
 		item.LatestConversationSeq = &s
-	} else if item.Kind != "remove" || sequence != nil || item.LatestServerMsgID != nil {
+		if readSequence != nil {
+			if *readSequence < 0 || (*sequence != 0 && *readSequence > *sequence) {
+				return nil, app.Fail(app.StorageUnavailable)
+			}
+			value := uint64(*readSequence)
+			item.LastReadSeq = &value
+		}
+	} else if item.Kind != "remove" || sequence != nil || item.LatestServerMsgID != nil || readSequence != nil {
 		return nil, app.Fail(app.StorageUnavailable)
 	}
 	return item, nil
