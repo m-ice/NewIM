@@ -268,6 +268,16 @@ user-check: toolchain
 user-security: toolchain
 	python3 -B infra/db/user_suite.py security
 
+.PHONY: friend-check friend-security friend-recovery
+friend-check: toolchain
+	python3 -B infra/db/friend_suite.py check
+
+friend-security: toolchain
+	python3 -B infra/db/friend_suite.py security
+
+friend-recovery: toolchain
+	python3 -B infra/db/friend_suite.py recovery
+
 .PHONY: message-check message-recovery message-errors
 message-check: toolchain
 	python3 -B infra/db/message_suite.py check

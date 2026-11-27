@@ -74,6 +74,9 @@ jobs:
       - name: Exercise trusted provisioning and authenticated profiles
         timeout-minutes: 12
         run: make user-check user-security
+      - name: Exercise authenticated friend operations and durable changes
+        timeout-minutes: 12
+        run: make friend-check friend-security friend-recovery
       - name: Exercise idempotent current-token revocation
         timeout-minutes: 12
         run: make auth-logout-check

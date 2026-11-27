@@ -13,8 +13,11 @@ import (
 	"time"
 
 	"github.com/m-ice/NewIM/server/auth/session"
+	"github.com/m-ice/NewIM/server/friend"
+	"github.com/m-ice/NewIM/server/friendhttp"
 	"github.com/m-ice/NewIM/server/gateway"
 	"github.com/m-ice/NewIM/server/storage/authsession"
+	friendstore "github.com/m-ice/NewIM/server/storage/friend"
 	"github.com/m-ice/NewIM/server/storage/messagesync"
 	"github.com/m-ice/NewIM/server/storage/postgresidentity"
 	userstore "github.com/m-ice/NewIM/server/storage/user"
@@ -78,7 +81,8 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 		return errConfig
 	}
 
-	var routes http.Handler = handler
+	var profiles *userhttp.Handler
+	var friends *friendhttp.Handler
 	if limits := cfg.profiles; limits != nil {
 		profileRepo, err := userstore.Open(startup, userstore.Config{
 			DSN: cfg.dsn, AllowLocalSocket: cfg.allowLocalSocket,
@@ -92,18 +96,40 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 		if err != nil {
 			return errConfig
 		}
-		profiles, err := userhttp.New(service, auth, gateway.NewProfileBudget(limits.ip, limits.account))
+		profiles, err = userhttp.New(service, auth, gateway.NewProfileBudget(limits.ip, limits.account))
 		if err != nil {
 			return errConfig
 		}
-		routes = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-			if userhttp.ContainsRoute(r.URL.EscapedPath()) {
-				profiles.ServeHTTP(w, r)
-				return
-			}
-			handler.ServeHTTP(w, r)
-		})
 	}
+	if limits := cfg.friends; limits != nil {
+		friendRepo, err := friendstore.Open(startup, friendstore.Config{
+			DSN: cfg.dsn, AllowLocalSocket: cfg.allowLocalSocket,
+			ApplicationName: "newim-gateway-friends", Guard: guard,
+		})
+		if err != nil {
+			return errors.New("newim-gateway friend storage unavailable")
+		}
+		defer friendRepo.Close()
+		service, err := friend.NewService(friendRepo)
+		if err != nil {
+			return errConfig
+		}
+		friends, err = friendhttp.New(service, auth, gateway.NewProfileBudget(limits.ip, limits.account))
+		if err != nil {
+			return errConfig
+		}
+	}
+	routes := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		path := r.URL.EscapedPath()
+		switch {
+		case profiles != nil && userhttp.ContainsRoute(path):
+			profiles.ServeHTTP(w, r)
+		case friends != nil && friendhttp.ContainsRoute(path):
+			friends.ServeHTTP(w, r)
+		default:
+			handler.ServeHTTP(w, r)
+		}
+	})
 	cancelStartup()
 
 	listener, err := (&net.ListenConfig{}).Listen(ctx, "tcp", cfg.addr)

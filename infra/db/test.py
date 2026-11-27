@@ -37,6 +37,8 @@ WEBHOOK_TABLES = {'im_webhook_endpoints', 'im_webhook_endpoint_revisions'}
 ADMISSION_TABLES = {'im_session_revocation_events'}
 GATEWAY_TABLES = {'im_gateway_handshakes'}
 USER_PROFILE_TABLES = {'im_user_profiles'}
+FRIEND_TABLES = {'im_friend_edges', 'im_friend_applications', 'im_friend_sync_accounts',
+                 'im_friend_sync_changes'}
 
 
 def source_migrations():
@@ -65,6 +67,7 @@ def check_catalog(db, target=None):
     expected |= ADMISSION_TABLES if target >= 8 else set()
     expected |= GATEWAY_TABLES if target >= 9 else set()
     expected |= USER_PROFILE_TABLES if target >= 10 else set()
+    expected |= FRIEND_TABLES if target >= 11 else set()
     actual_tables = set(db.sql("SELECT tablename FROM pg_tables WHERE schemaname='newim';").splitlines())
     if actual_tables != expected:
         raise Failure('exact catalog table set: missing='+repr(sorted(expected-actual_tables))+
@@ -287,6 +290,7 @@ def schema(db, commands):
     auth_constraints(db)
     gateway_handshake_constraints(db)
     user_profile_constraints(db)
+    friend_constraints(db)
     media_constraints(db)
     webhook_constraints(db)
     print(f'PASS schema catalogs and {len(negatives)} negative writes', flush=True)
@@ -452,6 +456,40 @@ def user_profile_constraints(db):
         db.sql(sql, error=error)
     equal(snapshot(db), before, 'profile constraint failures preserve state')
     print(f'PASS user profile schema constraints: {len(negatives)} rejected writes', flush=True)
+
+
+def friend_constraints(db):
+    db.sql("INSERT INTO newim.im_friend_edges(owner_id,peer_id) VALUES ('alice','bob'),('bob','alice'); "
+           "INSERT INTO newim.im_friend_applications VALUES "
+           "('alice','request1','bob','','pending'),('bob','request1','alice','','pending'); "
+           "INSERT INTO newim.im_friend_sync_accounts VALUES ('alice',2),('bob',1); "
+           "INSERT INTO newim.im_friend_sync_changes VALUES "
+           "('alice',1,'application_changed','bob',jsonb_build_object('applicantId','alice','recipientId','bob')), "
+           "('bob',1,'application_changed','alice',jsonb_build_object('applicantId','alice','recipientId','bob')), "
+           "('alice',2,'friend_upserted','bob',jsonb_build_object('profile',jsonb_build_object('userId','bob')));")
+    negatives = [
+        ("INSERT INTO newim.im_friend_edges(owner_id,peer_id) VALUES ('alice','alice');", '23514'),
+        ("UPDATE newim.im_friend_edges SET remark=repeat(chr(20320),171);", '23514'),
+        ("INSERT INTO newim.im_friend_edges(owner_id,peer_id) VALUES ('alice','bob');", '23505'),
+        ("INSERT INTO newim.im_friend_edges(owner_id,peer_id) VALUES ('alice','unknown_user');", '23503'),
+        ("INSERT INTO newim.im_friend_applications VALUES ('alice','request2','bob','','pending');", '23505'),
+        ("UPDATE newim.im_friend_applications SET message=repeat(chr(20320),171);", '23514'),
+        ("UPDATE newim.im_friend_applications SET state='unknown';", '23514'),
+        ("UPDATE newim.im_friend_sync_accounts SET latest_revision=-1;", '23514'),
+        ("UPDATE newim.im_friend_sync_changes SET revision=0 WHERE owner_id='alice';", '23514'),
+        ("UPDATE newim.im_friend_sync_changes SET payload=NULL WHERE owner_id='alice';", '23514'),
+        ("INSERT INTO newim.im_friend_sync_changes VALUES "
+         "('alice',3,'friend_removed','bob',jsonb_build_object('remark','private'));", '23514'),
+        ("INSERT INTO newim.im_friend_sync_changes VALUES "
+         "('alice',3,'friend_upserted','bob',jsonb_build_object('profile',jsonb_build_object('userId','alice')));", '23514'),
+        ("INSERT INTO newim.im_friend_sync_changes VALUES "
+         "('alice',3,'application_changed','bob',jsonb_build_object('applicantId','other','recipientId','bob'));", '23514'),
+    ]
+    before = snapshot(db)
+    for sql, error in negatives:
+        db.sql(sql, error=error)
+    equal(snapshot(db), before, 'friend constraint failures preserve state')
+    print(f'PASS friend schema constraints: {len(negatives)} rejected writes', flush=True)
 
 
 def media_constraints(db):
@@ -753,6 +791,20 @@ def user_profile_migration(db):
     print('PASS populated 010 preserves historical users, devices, sessions and tokens', flush=True)
 
 
+def friend_migration(db):
+    db.sql("INSERT INTO newim.im_user_profiles(user_id,nickname) VALUES ('bob','Existing Profile'); "
+           "INSERT INTO newim.im_blocks(user_id,blocked_user_id) VALUES ('alice','bob');")
+    historical = snapshot(db)
+    db.sql(migration_sql(11))
+    check_catalog(db, 11)
+    upgraded = snapshot(db)
+    equal({k: v for k, v in upgraded.items() if k not in FRIEND_TABLES | {'migrations'}},
+          {k: v for k, v in historical.items() if k != 'migrations'}, '011 preserves all historical rows')
+    for table in sorted(FRIEND_TABLES):
+        scalar(db, f"SELECT count(*) FROM newim.{table};", 0, '011 leaves '+table+' empty')
+    print('PASS populated 011 preserves users, profiles, conversations and directional blocks', flush=True)
+
+
 def migrations(db, commands):
     head = len(source_migrations())
     db.sql(migration_sql(1))
@@ -776,6 +828,7 @@ def migrations(db, commands):
     device_admission_migration(db)
     gateway_handshake_migration(db)
     user_profile_migration(db)
+    friend_migration(db)
     after = snapshot(db)
     db.sql(migration_sql())
     equal(snapshot(db), after, 'head replay stable')

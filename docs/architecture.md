@@ -20,6 +20,8 @@ and the [gateway specification](../specs/gateway/websocket.md).
 The TLS gateway also serves authenticated user profile HTTP endpoints.
 The trusted application provisions accounts through the loopback server.
 See [ADR 0026](adr/0026-user-profile.md).
+The same TLS gateway serves friendship operations and per-account relationship changes.
+See [ADR 0027](adr/0027-friend-relationships.md).
 Public HTTP message and sync endpoints, UI, push delivery, complete credential verification, client
 lifecycle integration, retention/moderation/account erasure, and platform
 wrappers remain future work. A

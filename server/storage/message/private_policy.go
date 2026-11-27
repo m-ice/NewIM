@@ -8,6 +8,7 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	protocol "github.com/m-ice/NewIM/core/protocol/go"
 	app "github.com/m-ice/NewIM/server/message"
+	"github.com/m-ice/NewIM/server/storage/postgrespair"
 )
 
 type userPair struct {
@@ -36,9 +37,7 @@ func (p userPair) peer(userID string) string {
 }
 
 func (p userPair) lock(ctx context.Context, tx pgx.Tx) error {
-	_, err := tx.Exec(ctx, `SELECT pg_catalog.pg_advisory_xact_lock(
-		pg_catalog.hashtextextended('newim.private-message:' || $1::text || ':' || $2::text, 0))`, p.low, p.high)
-	return privateStorageError(err)
+	return privateStorageError(postgrespair.Lock(ctx, tx, p.low, p.high))
 }
 
 func (p userPair) verifyUsers(ctx context.Context, tx pgx.Tx) error {

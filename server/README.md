@@ -101,6 +101,11 @@ and the [lifecycle specification](../specs/observability/server-message-lifecycl
 数据库角色需具备账号和资料读取权限，按进程用途授予账号插入或资料写入权限。
 [资料接口](../specs/user/profile.md)。运行 `make user-check user-security` 验证。
 
+应用迁移 011 后，在 TLS 网关设置 `NEWIM_FRIEND_HTTP=1` 可启用好友申请、关系维护和按修订读取。
+每进程每分钟的地址与账号预算默认分别为 120 和 60，可用
+`NEWIM_FRIEND_IP_ATTEMPTS_PER_MINUTE` 和 `NEWIM_FRIEND_ACCOUNT_ATTEMPTS_PER_MINUTE` 调整。
+[好友接口](../specs/friend/relationships.md)。运行 `make friend-check friend-security friend-recovery` 验证。
+
 Run the root `make build`, `make check`, `make docs-check`, `make api-check`,
 `make api-recovery`, `make api-security`, `make auth-http-check`,
 `make auth-http-security`, `make auth-route-check`, `make auth-logout-check`,
