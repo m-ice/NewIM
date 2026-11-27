@@ -71,21 +71,44 @@ func (r *Repository) ListEntries(ctx context.Context, actor string, request app.
 		return app.Page[app.Entry]{}, err
 	}
 	defer rollback(tx)
-	rows, err := tx.Query(ctx, "SELECT "+entryColumns+`
-		FROM newim.im_group_requests
-		WHERE group_id=$1 AND (actor_id, request_id) > ($3::text, $4::text)
-			AND (actor_id=$2 OR user_id=$2 OR EXISTS (
-				SELECT 1 FROM newim.im_groups g
-				JOIN newim.im_conversation_members m ON m.conversation_id=g.group_id
-				WHERE g.group_id=$1 AND g.dissolved_at IS NULL AND m.user_id=$2
-					AND m.departed_at IS NULL AND m.group_role IN ('owner','admin')
-			))
-		ORDER BY actor_id, request_id LIMIT $5`, request.GroupID, actor, request.AfterActorID, request.AfterRequestID, limit+1)
+	var manager bool
+	if err = tx.QueryRow(ctx, `SELECT EXISTS (
+		SELECT 1 FROM newim.im_groups g
+		JOIN newim.im_conversation_members m ON m.conversation_id=g.group_id
+		WHERE g.group_id=$1 AND g.dissolved_at IS NULL AND m.user_id=$2
+			AND m.departed_at IS NULL AND m.group_role IN ('owner','admin')
+	)`, request.GroupID, actor).Scan(&manager); err != nil {
+		return app.Page[app.Entry]{}, app.StorageUnavailable
+	}
+	var rows pgx.Rows
+	if manager {
+		rows, err = tx.Query(ctx, managerEntries, request.GroupID, request.AfterActorID, request.AfterRequestID, limit+1)
+	} else {
+		rows, err = tx.Query(ctx, participantEntries, request.GroupID, actor, request.AfterActorID, request.AfterRequestID, limit+1)
+	}
 	if err != nil {
 		return app.Page[app.Entry]{}, app.StorageUnavailable
 	}
 	return collectPage(ctx, tx, rows, limit, scanEntry)
 }
+
+const managerEntries = "SELECT " + entryColumns + `
+	FROM newim.im_group_requests
+	WHERE group_id=$1 AND (actor_id, request_id)>($2::text,$3::text)
+	ORDER BY actor_id, request_id LIMIT $4`
+
+// A join is covered by the actor branch. Invite actors and targets are distinct.
+const participantEntries = "SELECT " + entryColumns + " FROM ((" +
+	"SELECT " + entryColumns + `
+	FROM newim.im_group_requests
+	WHERE group_id=$1 AND actor_id=$2 AND (actor_id, request_id)>($3::text,$4::text)
+	ORDER BY actor_id, request_id LIMIT $5
+) UNION ALL (
+	SELECT ` + entryColumns + `
+	FROM newim.im_group_requests
+	WHERE group_id=$1 AND user_id=$2 AND kind='invite' AND (actor_id, request_id)>($3::text,$4::text)
+	ORDER BY actor_id, request_id LIMIT $5
+)) AS visible ORDER BY actor_id, request_id LIMIT $5`
 
 func (r *Repository) Changes(ctx context.Context, actor string, after int64, limit int) (app.ChangePage, error) {
 	limit = readPageLimit(limit)

@@ -22,6 +22,10 @@ CREATE UNIQUE INDEX im_conversation_members_active_owner_idx
   ON newim.im_conversation_members (conversation_id)
   WHERE group_role = 'owner' AND departed_at IS NULL;
 
+CREATE INDEX im_conversation_members_group_owner_idx
+  ON newim.im_conversation_members (conversation_id, departed_at NULLS FIRST, user_id)
+  WHERE group_role = 'owner';
+
 CREATE TABLE newim.im_groups (
   group_id newim.identifier PRIMARY KEY REFERENCES newim.im_conversations (conversation_id),
   name text NOT NULL CHECK (octet_length(name) > 0),
@@ -59,6 +63,9 @@ CREATE TABLE newim.im_group_requests (
 
 CREATE UNIQUE INDEX im_group_requests_pending_idx
   ON newim.im_group_requests (group_id, user_id) WHERE state = 'pending';
+
+CREATE INDEX im_group_requests_invite_target_idx
+  ON newim.im_group_requests (group_id, user_id, actor_id, request_id) WHERE kind = 'invite';
 
 CREATE TABLE newim.im_group_sync_accounts (
   owner_id newim.identifier PRIMARY KEY REFERENCES newim.im_users (user_id),

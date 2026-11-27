@@ -99,6 +99,18 @@ func TestGroupCheck(t *testing.T) {
 	post[group.View](t, f, first, owner, updateGroupPath, "view", group.UpdateRequest{GroupID: id, JoinMode: &modeTwo})
 	openJoin := join(t, f, second, openUser, id, "open_join", group.Join, openID)
 	requireEntry(t, openJoin, openID, openID, "open_join", group.Join, group.Accepted)
+	requestPage := post[group.Page[group.Entry]](t, f, first, openUser, requestsGroupPath, "page", group.EntryListRequest{
+		GroupID: id, Limit: 1,
+	})
+	if !requestPage.HasMore || len(requestPage.Items) != 1 || requestPage.Items[0] != rejected {
+		t.Fatal("participant page did not return the first invitation")
+	}
+	requestPage = post[group.Page[group.Entry]](t, f, second, openUser, requestsGroupPath, "page", group.EntryListRequest{
+		GroupID: id, AfterActorID: rejected.ActorID, AfterRequestID: rejected.RequestID, Limit: 1,
+	})
+	if requestPage.HasMore || len(requestPage.Items) != 1 || requestPage.Items[0] != openJoin {
+		t.Fatal("participant cursor did not continue through the member's own application")
+	}
 	f.call(second, http.MethodPost, joinGroupPath, excess, encode(t, group.JoinRequest{GroupID: id, RequestID: "full_group", Kind: group.Join}), nil).
 		requireError(t, 409, "GROUP_CAPACITY_EXCEEDED")
 
