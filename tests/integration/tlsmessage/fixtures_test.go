@@ -303,6 +303,9 @@ func (r response) requireError(t *testing.T, status int, code string) {
 	if r.headers.Get("Cache-Control") != "no-store" {
 		t.Fatal("TLS message API error must disable caching")
 	}
+	if r.headers.Get("X-Content-Type-Options") != "nosniff" {
+		t.Fatalf("TLS message API error %s missing nosniff response header", code)
+	}
 }
 
 func (p *process) requireRedacted(t *testing.T, values ...string) {

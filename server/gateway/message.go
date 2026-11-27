@@ -2,7 +2,6 @@ package gateway
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"net/netip"
@@ -52,12 +51,7 @@ func (m *MessageRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !m.budget.AllowAddress(addr.Addr().Unmap()) {
-		w.Header().Set("Cache-Control", "no-store")
-		w.Header().Set("Content-Type", "application/json; charset=utf-8")
-		w.WriteHeader(http.StatusTooManyRequests)
-		_ = json.NewEncoder(w).Encode(map[string]any{"error": map[string]string{
-			"code": string(messagehttp.CodeRateLimited),
-		}})
+		messagehttp.WriteRateLimited(w)
 		return
 	}
 	if r.URL.EscapedPath() == messagehttp.Route {

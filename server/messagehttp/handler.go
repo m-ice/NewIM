@@ -192,7 +192,7 @@ func authenticateSession(w http.ResponseWriter, ctx context.Context, header http
 	session, err := authenticator.AuthenticateBearer(ctx, rawToken)
 	if err != nil {
 		if errors.Is(err, ErrRateLimited) {
-			writeError(w, http.StatusTooManyRequests, CodeRateLimited, false)
+			WriteRateLimited(w)
 			return app.BearerSession{}, false
 		}
 		status, _ := bearerhttp.MapAuthenticationError(err)
@@ -293,6 +293,12 @@ func writeACK(w http.ResponseWriter, frame protocol.ServerFrame) {
 	setCommonHeaders(w)
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
+}
+
+// WriteRateLimited uses the message error contract for transport budgets.
+// WriteRateLimited 为网关限流返回统一的消息接口错误。
+func WriteRateLimited(w http.ResponseWriter) {
+	writeError(w, http.StatusTooManyRequests, CodeRateLimited, false)
 }
 
 func writeUnauthorized(w http.ResponseWriter) {
