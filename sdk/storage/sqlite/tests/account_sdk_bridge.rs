@@ -254,6 +254,10 @@ fn decode_page(reply: Reply) -> sdk::Page {
                         latest_conversation_seq: summary.latest_conversation_seq,
                         latest_server_msg_id: summary.latest_server_msg_id,
                         last_read_seq: summary.last_read_seq,
+                        unread: summary.unread.map(|unread| ConversationUnread {
+                            count: unread.count,
+                            visibility_revision: unread.visibility_revision,
+                        }),
                         settings: summary.settings.map(|value| ConversationSyncSettings {
                             version: value.version,
                             pinned: value.pinned,

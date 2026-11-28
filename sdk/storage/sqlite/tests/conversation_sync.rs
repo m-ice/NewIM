@@ -54,6 +54,7 @@ fn upsert(id: &str, revision: u64) -> ConversationSyncItem {
             latest_conversation_seq: 0,
             latest_server_msg_id: None,
             last_read_seq: None,
+            unread: None,
             settings: None,
         }),
     }
@@ -600,4 +601,71 @@ fn full_disjoint_directories_swap_and_capacity_failure_keeps_checkpoint() {
         })
         .unwrap();
     assert_eq!(count, MAX_SYNC_DIRECTORY_ITEMS as i64);
+}
+
+#[test]
+fn terminal_directory_page_replaces_optimistic_unread_and_survives_reopen() {
+    let directory = Directory::new();
+    let mut store = directory.open();
+    let optimistic = Action::Apply(Batch {
+        expected_revision: current(&mut store).revision,
+        messages: Vec::new(),
+        conversations: vec![Conversation {
+            id: "room".into(),
+            unread: 7,
+            summary: Blob(vec![42]),
+        }],
+        cursor: None,
+        resolve_pending: Vec::new(),
+    });
+    assert!(matches!(
+        run(&mut store, 2, optimistic),
+        Ok(Response::Committed(_))
+    ));
+    let snapshot_unread = |store: &mut SqliteStore| {
+        let response = run(
+            store,
+            1,
+            Action::Snapshot {
+                conversation: Some("room".into()),
+            },
+        )
+        .unwrap();
+        let Response::Snapshot(snapshot) = response else {
+            panic!("missing conversation snapshot")
+        };
+        snapshot.conversation.unwrap().unread
+    };
+    let mut item = upsert("room", 2);
+    let ConversationSyncChange::Upsert(summary) = &mut item.change else {
+        unreachable!()
+    };
+    summary.latest_conversation_seq = 5;
+    summary.latest_server_msg_id = Some("last".into());
+    summary.last_read_seq = Some(2);
+    summary.unread = Some(ConversationUnread {
+        count: 2,
+        visibility_revision: 1,
+    });
+    from_server(&mut store, 3, true, vec![item.clone()]);
+    assert_eq!(snapshot_unread(&mut store), 7);
+    from_server(&mut store, 4, false, Vec::new());
+    assert_eq!(snapshot_unread(&mut store), 2);
+    drop(store);
+
+    let mut store = directory.open();
+    assert_eq!(snapshot_unread(&mut store), 2);
+    assert_eq!(published(&mut store, None, 1).items, vec![item.clone()]);
+    let ConversationSyncChange::Upsert(summary) = &mut item.change else {
+        unreachable!()
+    };
+    item.revision += 1;
+    summary.last_read_seq = Some(5);
+    summary.unread = Some(ConversationUnread {
+        count: 0,
+        visibility_revision: 2,
+    });
+    from_server(&mut store, 5, false, vec![item.clone()]);
+    assert_eq!(snapshot_unread(&mut store), 0);
+    assert_eq!(published(&mut store, None, 1).items, vec![item]);
 }

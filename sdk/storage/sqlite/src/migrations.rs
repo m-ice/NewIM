@@ -6,9 +6,11 @@ pub const SQL3: &str = include_str!("../migrations/003-conversation-sync.sql");
 pub const HASH3: &str = "1d5e4cb321646511f624866c33c0bdab239a0c5320af3ec2ff940eef60d8d4e2";
 pub const SQL4: &str = include_str!("../migrations/004-message-sync.sql");
 pub const HASH4: &str = "5482c1543d5d29318011a2caedf5a6c2549b98337d05c4eaf013464b1548bcee";
+pub const SQL5: &str = include_str!("../migrations/005-message-visibility.sql");
+pub const HASH5: &str = "0a3c4209f721aaa69e9e06366f87d3472d428ecfc4b1bfb08474a2a5bf548ae9";
 use crate::{StoreError, db};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
-pub const VERSION: i64 = 4;
+pub const VERSION: i64 = 5;
 const APPLICATION_ID: i64 = 0x4e494d31;
 
 pub fn apply(
@@ -57,6 +59,7 @@ pub fn apply(
         (2, SQL2, HASH2),
         (3, SQL3, HASH3),
         (4, SQL4, HASH4),
+        (5, SQL5, HASH5),
     ] {
         if v <= version {
             let existing: Option<(String, Vec<u8>)> = tx
@@ -112,6 +115,7 @@ fn validate_schema(conn: &Connection) -> Result<(), StoreError> {
     expected.execute_batch(SQL2).map_err(db)?;
     expected.execute_batch(SQL3).map_err(db)?;
     expected.execute_batch(SQL4).map_err(db)?;
+    expected.execute_batch(SQL5).map_err(db)?;
     if schema(conn)? != schema(&expected)? {
         return Err(StoreError::UnsupportedSchema);
     }

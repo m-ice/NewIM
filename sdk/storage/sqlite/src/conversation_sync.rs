@@ -6,7 +6,7 @@ use newim_sdk_core::{conversation_sync::merge_revision, store::*};
 use rusqlite::{OptionalExtension, Row, Statement, Transaction, params};
 use std::collections::BTreeMap;
 
-const ITEM_COLUMNS: &str = "conversation_id,revision,latest_seq,latest_server_id,last_read_seq,settings_version,pinned,muted,draft,clear_through_seq,known_clear_through_seq";
+const ITEM_COLUMNS: &str = "conversation_id,revision,latest_seq,latest_server_id,last_read_seq,settings_version,pinned,muted,draft,clear_through_seq,known_clear_through_seq,unread_count,visibility_revision";
 
 struct State {
     position: ConversationSyncPosition,
@@ -53,8 +53,17 @@ fn item(row: &Row<'_>) -> rusqlite::Result<ConversationSyncItem> {
     bounded(row, 0, 128)?;
     bounded(row, 3, 128)?;
     bounded(row, 8, MAX_CONVERSATION_DRAFT_BYTES)?;
+    let unread = match (optional_unsigned(row, 11)?, optional_unsigned(row, 12)?) {
+        (None, None) => None,
+        (Some(count), Some(visibility_revision)) => Some(ConversationUnread {
+            count,
+            visibility_revision,
+        }),
+        _ => return Err(rusqlite::Error::InvalidQuery),
+    };
     let change = match optional_unsigned(row, 2)? {
-        None => ConversationSyncChange::Remove,
+        None if unread.is_none() => ConversationSyncChange::Remove,
+        None => return Err(rusqlite::Error::InvalidQuery),
         Some(latest_conversation_seq) => {
             let settings = optional_unsigned(row, 5)?
                 .map(|version| {
@@ -71,6 +80,7 @@ fn item(row: &Row<'_>) -> rusqlite::Result<ConversationSyncItem> {
                 latest_conversation_seq,
                 latest_server_msg_id: row.get(3)?,
                 last_read_seq: optional_unsigned(row, 4)?,
+                unread,
                 settings,
             })
         }
@@ -221,13 +231,14 @@ fn write_page(
     let mut history = prepare_history_lookup(tx)?;
     let mut statement = tx
         .prepare(
-            "INSERT INTO conversation_sync_items VALUES(?,?,?,?,?,?,?,?,?,?,?,?)
+            "INSERT INTO conversation_sync_items VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
              ON CONFLICT(round,conversation_id) DO UPDATE SET
              revision=excluded.revision,latest_seq=excluded.latest_seq,
              latest_server_id=excluded.latest_server_id,last_read_seq=excluded.last_read_seq,
              settings_version=excluded.settings_version,pinned=excluded.pinned,muted=excluded.muted,
              draft=excluded.draft,clear_through_seq=excluded.clear_through_seq,
-             known_clear_through_seq=excluded.known_clear_through_seq",
+             known_clear_through_seq=excluded.known_clear_through_seq,
+             unread_count=excluded.unread_count,visibility_revision=excluded.visibility_revision",
         )
         .map_err(db)?;
     for item in items {
@@ -261,6 +272,10 @@ fn write_page(
                 settings.map(|settings| settings.draft.as_str()),
                 settings.map(|settings| settings.clear_through_seq as i64),
                 item.known_clear_through_seq as i64,
+                summary.and_then(|summary| summary.unread.map(|unread| unread.count as i64)),
+                summary.and_then(|summary| summary
+                    .unread
+                    .map(|unread| unread.visibility_revision as i64)),
             ])
             .map_err(db)?;
     }
@@ -392,6 +407,17 @@ pub(crate) fn apply(
             )
         }
     };
+    if matches!(&position.phase, ConversationSyncPhase::DeltaCheckpoint(_)) {
+        tx.execute(
+            "UPDATE conversations AS cached SET unread=authoritative.unread_count
+             FROM conversation_sync_items AS authoritative
+             WHERE authoritative.round=? AND authoritative.conversation_id=cached.id
+               AND authoritative.unread_count IS NOT NULL
+               AND cached.unread<>authoritative.unread_count",
+            [position.round as i64],
+        )
+        .map_err(db)?;
+    }
     let (phase, cursor) = match &position.phase {
         ConversationSyncPhase::BootstrapStart => (0, None),
         ConversationSyncPhase::BootstrapPage(cursor) => (1, Some(cursor.0.as_slice())),

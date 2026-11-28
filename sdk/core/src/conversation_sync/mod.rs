@@ -255,6 +255,10 @@ fn merge_summary(
         same_revision,
     )?;
     retain_known(&before.settings, &mut after.settings, same_revision)?;
+    // A missing count in a newer revision is unknown until the server refreshes it.
+    if same_revision {
+        retain_known(&before.unread, &mut after.unread, true)?;
+    }
     Ok(())
 }
 

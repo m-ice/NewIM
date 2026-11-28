@@ -37,6 +37,7 @@ fn directory(sequence: u64) -> ConversationSyncSnapshot {
                 latest_conversation_seq: sequence,
                 latest_server_msg_id: (sequence > 0).then(|| "message".into()),
                 last_read_seq: None,
+                unread: None,
                 settings: None,
             }),
         }],

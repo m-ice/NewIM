@@ -155,7 +155,14 @@ pub struct ConversationSyncSummary {
     pub latest_conversation_seq: u64,
     pub latest_server_msg_id: Option<String>,
     pub last_read_seq: Option<u64>,
+    pub unread: Option<ConversationUnread>,
     pub settings: Option<ConversationSyncSettings>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ConversationUnread {
+    pub count: u64,
+    pub visibility_revision: u64,
 }
 
 #[derive(Clone, PartialEq, Eq)]

@@ -112,6 +112,10 @@ pub(super) fn sync_item(item: &ConversationSyncItem) -> bool {
                     && summary
                         .last_read_seq
                         .is_none_or(|seq| seq <= i64::MAX as u64 && (latest == 0 || seq <= latest))
+                    && summary.unread.is_none_or(|unread| {
+                        unread.count <= latest.saturating_sub(summary.last_read_seq.unwrap_or(0))
+                            && unread.visibility_revision <= i64::MAX as u64
+                    })
                     && summary.settings.as_ref().is_none_or(|settings| {
                         settings.version <= i64::MAX as u64
                             && settings.clear_through_seq <= i64::MAX as u64
@@ -234,13 +238,20 @@ pub fn validate_request(r: &Request) -> Result<(), StoreError> {
     Ok(())
 }
 
+fn sync_batch_has_unread(batch: &ConversationSyncBatch) -> bool {
+    matches!(&batch.mutation, ConversationSyncMutation::CommitPage { items, .. }
+    if items.iter().any(|item| matches!(
+        &item.change, ConversationSyncChange::Upsert(summary) if summary.unread.is_some()
+    )))
+}
+
 struct Writer {
     bytes: Vec<u8>,
     len: usize,
     count_only: bool,
 }
 impl Writer {
-    fn conversation_sync_batch(&mut self, batch: &ConversationSyncBatch) {
+    fn conversation_sync_batch(&mut self, batch: &ConversationSyncBatch, include_unread: bool) {
         self.number(batch.expected_revision);
         self.sync_position(&batch.expected_position);
         match &batch.mutation {
@@ -255,7 +266,7 @@ impl Writer {
                 self.number(u64::from(*has_more));
                 self.number(items.len() as u64);
                 for item in items {
-                    self.sync_item(item);
+                    self.sync_item(item, include_unread);
                 }
             }
         }
@@ -339,7 +350,7 @@ impl Writer {
             }
         }
     }
-    fn sync_item(&mut self, item: &ConversationSyncItem) {
+    fn sync_item(&mut self, item: &ConversationSyncItem, include_unread: bool) {
         self.text(&item.conversation_id);
         self.number(item.revision);
         self.number(item.known_clear_through_seq);
@@ -360,6 +371,13 @@ impl Writer {
                     self.number(u64::from(settings.muted));
                     self.text(&settings.draft);
                     self.number(settings.clear_through_seq);
+                }
+                if include_unread {
+                    self.number(u64::from(summary.unread.is_some()));
+                    if let Some(unread) = summary.unread {
+                        self.number(unread.count);
+                        self.number(unread.visibility_revision);
+                    }
                 }
             }
         }
@@ -466,8 +484,9 @@ impl Writer {
                 }
             }
             Action::ApplyConversationSync(batch) => {
-                self.number(11);
-                self.conversation_sync_batch(batch);
+                let unread = sync_batch_has_unread(batch);
+                self.number(if unread { 15 } else { 11 });
+                self.conversation_sync_batch(batch, unread);
             }
             Action::MessageSyncSnapshot(query) => {
                 self.number(12);
@@ -525,8 +544,9 @@ impl Writer {
                 }
             }
             Action::ApplyConversationSyncWithRemovals { batch, removed } => {
-                self.number(14);
-                self.conversation_sync_batch(batch);
+                let unread = sync_batch_has_unread(batch);
+                self.number(if unread { 16 } else { 14 });
+                self.conversation_sync_batch(batch, unread);
                 self.number(removed.len() as u64);
                 for id in removed {
                     self.text(id);

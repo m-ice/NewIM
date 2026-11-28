@@ -36,6 +36,7 @@ fn upsert(id: &str, revision: u64, sequence: u64, read: Option<u64>) -> Conversa
             latest_conversation_seq: sequence,
             latest_server_msg_id: (sequence > 0).then(|| format!("message_{sequence}")),
             last_read_seq: read,
+            unread: None,
             settings: None,
         }),
     }

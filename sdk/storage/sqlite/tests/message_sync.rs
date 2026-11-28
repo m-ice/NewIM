@@ -54,6 +54,7 @@ fn publish(store: &mut SqliteStore, operation: u64) {
             latest_conversation_seq: 0,
             latest_server_msg_id: None,
             last_read_seq: None,
+            unread: None,
             settings: None,
         }),
     );
@@ -109,6 +110,7 @@ fn upsert_at(revision: u64, floor: u64) -> ConversationSyncItem {
             latest_conversation_seq: 8,
             latest_server_msg_id: Some("s8".into()),
             last_read_seq: None,
+            unread: None,
             settings: Some(ConversationSyncSettings {
                 version: revision,
                 pinned: false,
