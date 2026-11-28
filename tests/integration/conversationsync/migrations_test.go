@@ -18,8 +18,8 @@ func TestSyncMigrations(t *testing.T) {
 
 	ledger := f.scalarString("SELECT string_agg(version::text||':'||sha256,',' ORDER BY version) FROM newim_meta.migrations")
 	parts := strings.Split(ledger, ",")
-	if len(parts) != 20 {
-		t.Fatalf("migration ledger got %q want versions 1..20", ledger)
+	if len(parts) != 21 {
+		t.Fatalf("migration ledger got %q want versions 1..21", ledger)
 	}
 	for index, part := range parts {
 		fields := strings.SplitN(part, ":", 2)
@@ -37,8 +37,8 @@ func TestSyncMigrations(t *testing.T) {
 	if tables := f.scalarInt64("SELECT count(*) FROM pg_tables WHERE schemaname='newim' AND tablename='im_media_assets'"); tables != 1 {
 		t.Fatalf("additive media table count got %d want 1", tables)
 	}
-	if tables := f.scalarInt64("SELECT count(*) FROM pg_tables WHERE schemaname='newim';"); tables != 33 {
-		t.Fatalf("head table count got %d want 33", tables)
+	if tables := f.scalarInt64("SELECT count(*) FROM pg_tables WHERE schemaname='newim';"); tables != 34 {
+		t.Fatalf("head table count got %d want 34", tables)
 	}
 	if tables := f.scalarInt64("SELECT count(*) FROM pg_tables WHERE schemaname='newim' AND tablename IN ('im_webhook_endpoints','im_webhook_endpoint_revisions')"); tables != 2 {
 		t.Fatalf("additive webhook table count got %d want 2", tables)

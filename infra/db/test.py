@@ -44,6 +44,7 @@ ACCOUNT_REVOCATION_TABLES = {'im_account_revocation_requests'}
 CONVERSATION_ACCOUNT_TABLES = {'im_conversation_account_settings'}
 WEBHOOK_MANAGEMENT_TABLES = {'im_webhook_management_audit'}
 ACTOR_TYPE_TABLES = {'im_user_actor_types'}
+MESSAGE_VISIBILITY_TABLES = {'im_message_visibility_events'}
 
 
 def source_migrations():
@@ -78,6 +79,7 @@ def check_catalog(db, target=None):
     expected |= CONVERSATION_ACCOUNT_TABLES if target >= 18 else set()
     expected |= WEBHOOK_MANAGEMENT_TABLES if target >= 19 else set()
     expected |= ACTOR_TYPE_TABLES if target >= 20 else set()
+    expected |= MESSAGE_VISIBILITY_TABLES if target >= 21 else set()
     actual_tables = set(db.sql("SELECT tablename FROM pg_tables WHERE schemaname='newim';").splitlines())
     if actual_tables != expected:
         raise Failure('exact catalog table set: missing='+repr(sorted(expected-actual_tables))+
@@ -185,6 +187,13 @@ WHERE indisvalid AND indisready AND indexrelid IN (
     expected_keys = ['FOREIGN KEY (conversation_id, user_id) REFERENCES newim.im_conversation_members(conversation_id, user_id)',
                      'PRIMARY KEY (conversation_id, user_id)']
     equal(settings_keys, expected_keys if target >= 18 else [], 'account settings reuse the member key')
+    visibility_columns = db.sql(
+        "SELECT column_name||'|'||data_type||'|'||is_nullable FROM information_schema.columns "
+        "WHERE table_schema='newim' AND table_name='im_conversation_sync_changes' "
+        "AND column_name IN ('unread_count','visibility_revision') ORDER BY column_name;"
+    ).splitlines()
+    expected_visibility = ['unread_count|bigint|YES', 'visibility_revision|bigint|YES']
+    equal(visibility_columns, expected_visibility if target >= 21 else [], 'optional visibility projection columns')
     check_ledger(db, target)
 
 
@@ -269,7 +278,8 @@ def sync_constraints(db):
         'accounts': 'user_id,epoch,last_change_seq,min_valid_seq,source_ready,source_after_key,read_state_epoch',
         'keys': 'user_id,conversation_id,first_change_seq',
         'changes': ('user_id,change_seq,conversation_id,kind,latest_seq,latest_server_msg_id,last_read_seq,'
-                    'settings_version,settings_pinned,settings_muted,settings_draft,settings_clear_through_seq'),
+                    'settings_version,settings_pinned,settings_muted,settings_draft,settings_clear_through_seq,'
+                    'unread_count,visibility_revision'),
     }
     for suffix, expected in columns.items():
         scalar(db, "SELECT string_agg(column_name,',' ORDER BY ordinal_position) FROM information_schema.columns "
@@ -307,6 +317,10 @@ def sync_constraints(db):
         ("INSERT INTO newim.im_conversation_sync_changes VALUES ('alice',1,'other','upsert',0,NULL);", '23505'),
         ("UPDATE newim.im_conversation_sync_changes SET last_read_seq=-1 WHERE kind='upsert';", '23514'),
         ("UPDATE newim.im_conversation_sync_changes SET last_read_seq=0 WHERE kind='remove';", '23514'),
+        ("UPDATE newim.im_conversation_sync_changes SET unread_count=0 WHERE change_seq=1;", '23514'),
+        ("UPDATE newim.im_conversation_sync_changes SET unread_count=2,visibility_revision=0 WHERE change_seq=1;", '23514'),
+        ("UPDATE newim.im_conversation_sync_changes SET unread_count=0,visibility_revision=-1 WHERE change_seq=1;", '23514'),
+        ("UPDATE newim.im_conversation_sync_changes SET unread_count=0,visibility_revision=0 WHERE kind='remove';", '23514'),
         ("DELETE FROM newim.im_conversation_sync_keys WHERE conversation_id='room';", '23503'),
         ("DELETE FROM newim.im_conversation_sync_accounts WHERE user_id='alice';", '23503'),
     ]
@@ -359,6 +373,36 @@ def conversation_account_settings_constraints(db):
     for sql, error in negatives:
         db.sql(sql, error=error)
     print(f'PASS conversation account settings constraints: {len(negatives)} rejected writes', flush=True)
+
+
+def message_visibility_constraints(db):
+    insert = (
+        'INSERT INTO newim.im_message_visibility_events '
+        '(conversation_id,visibility_revision,target_seq,actor_user_id,request_id,action,audience_user_id) VALUES '
+    )
+    db.sql(insert + "('room',1,1,'bob','hide_one','delete_for_me','bob');")
+    db.sql(insert + "('room',2,1,'alice','recall_one','recall',NULL);")
+    negatives = [
+        ("('room',3,1,'alice','private_missing','delete_for_me',NULL);", '23514'),
+        ("('room',3,1,'alice','private_other','delete_for_me','bob');", '23514'),
+        ("('room',3,1,'alice','global_with_viewer','admin_remove','alice');", '23514'),
+        ("('room',3,1,'alice','unknown','clear',NULL);", '23514'),
+        ("('room',0,1,'alice','bad_revision','recall',NULL);", '23514'),
+        ("('room',3,0,'alice','bad_target','recall',NULL);", '23514'),
+        ("('room',3,999,'alice','missing_target','recall',NULL);", '23503'),
+        ("('other',3,1,'alice','foreign_target','recall',NULL);", '23503'),
+        ("('room',3,1,'alice','recall_one','delete_for_me','alice');", '23505'),
+        ("('room',3,1,'alice','removed_again','admin_remove',NULL);", '23505'),
+        ("('room',3,1,'bob','hidden_again','delete_for_me','bob');", '23505'),
+    ]
+    for values, error in negatives:
+        db.sql(insert + values, error=error)
+    scalar(db, "SELECT count(*) FROM newim.im_message_visibility_events;", 2,
+           'failed visibility writes do not add events')
+    scalar(db, "SELECT count(*) FROM newim.im_messages WHERE server_msg_id='s_one' "
+               "AND payload_bytes=decode('7b2274657874223a2274657374227d','hex');", 1,
+           'visibility events preserve the original stored message')
+    print(f'PASS message visibility shape and identity: {len(negatives)} rejected writes', flush=True)
 
 
 def schema(db, commands):
@@ -427,6 +471,7 @@ def schema(db, commands):
     equal(snapshot(db), before, 'negative writes preserve database')
     sync_constraints(db)
     conversation_account_settings_constraints(db)
+    message_visibility_constraints(db)
     auth_constraints(db)
     account_revocation_constraints(db)
     gateway_handshake_constraints(db)
@@ -1437,6 +1482,46 @@ def actor_type_migration(db, commands):
     print('PASS populated 020 failure/termination rollback and actor types', flush=True)
 
 
+def message_visibility_migration(db, commands):
+    projection = (
+        "SELECT md5(COALESCE(string_agg(row_state,'|' ORDER BY row_state),'')) "
+        "FROM (SELECT (to_jsonb(change)-'unread_count'-'visibility_revision')::text AS row_state "
+        "FROM newim.im_conversation_sync_changes change) legacy;"
+    )
+    historical = snapshot(db)
+    original_projection = db.sql(projection)
+    with tempfile.TemporaryDirectory(prefix='message-visibility-migration-', dir=commands.directory) as owned:
+        directory = Path(owned)
+        for path in source_migrations():
+            (directory / path.name).write_bytes(path.read_bytes())
+        candidate = directory / '021_message_visibility.sql'
+        original = candidate.read_text()
+        candidate.write_text(original + "\nSELECT 1/0;\n")
+        db.sql(migration_sql(21, directory=directory), error='22012')
+        check_catalog(db, 20)
+        equal(snapshot(db), historical, 'failed 021 preserves populated 020')
+        candidate.write_text(original + "\nSELECT pg_sleep(30);\n")
+        name = 'newim_message_visibility_migration_interrupt'
+        held = db.session(f"SET application_name='{name}'; " + migration_sql(21, directory=directory))
+        db.wait_sql(f"SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name='{name}' "
+                    "AND wait_event='PgSleep');")
+        db.sql(f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='{name}';")
+        held.finish(error='57P01')
+        check_catalog(db, 20)
+        equal(snapshot(db), historical, 'terminated 021 preserves populated 020')
+    db.sql(migration_sql(21))
+    check_catalog(db, 21)
+    changed = MESSAGE_VISIBILITY_TABLES | {'migrations', 'im_conversation_sync_changes'}
+    equal({table: digest for table, digest in snapshot(db).items() if table not in changed},
+          {table: digest for table, digest in historical.items() if table not in changed},
+          '021 preserves historical messages, read states and delivery rows')
+    equal(db.sql(projection), original_projection, '021 preserves previous projection revisions')
+    scalar(db, "SELECT count(*) FROM newim.im_conversation_sync_changes "
+               "WHERE unread_count IS NOT NULL OR visibility_revision IS NOT NULL;", 0,
+           '021 introduces optional projection fields without backfilling historical rows')
+    print('PASS populated 021 failure/termination rollback and additive visibility ledger', flush=True)
+
+
 def migrations(db, commands):
     head = len(source_migrations())
     db.sql(migration_sql(1))
@@ -1470,6 +1555,7 @@ def migrations(db, commands):
     conversation_account_settings_migration(db, commands)
     webhook_management_migration(db, commands)
     actor_type_migration(db, commands)
+    message_visibility_migration(db, commands)
     after = snapshot(db)
     db.sql(migration_sql())
     equal(snapshot(db), after, 'head replay stable')
