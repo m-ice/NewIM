@@ -62,6 +62,8 @@ type Item struct {
 	LatestConversationSeq *uint64          `json:"latestConversationSeq,omitempty,string"`
 	LatestServerMsgID     *string          `json:"latestServerMsgId,omitempty"`
 	LastReadSeq           *uint64          `json:"lastReadSeq,omitempty,string"`
+	UnreadCount           *uint64          `json:"unreadCount,omitempty,string"`
+	VisibilityRevision    *uint64          `json:"visibilityRevision,omitempty,string"`
 	Settings              *AccountSettings `json:"settings,omitempty"`
 }
 

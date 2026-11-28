@@ -99,7 +99,14 @@ pub struct Summary {
     pub latest_conversation_seq: u64,
     pub latest_server_msg_id: Option<String>,
     pub last_read_seq: Option<u64>,
+    pub unread: Option<UnreadState>,
     pub settings: Option<Settings>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct UnreadState {
+    pub count: u64,
+    pub visibility_revision: u64,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -204,6 +211,8 @@ fn decode_item(raw: &str) -> Result<Item, Error> {
                 "latestConversationSeq",
                 "latestServerMsgId",
                 "lastReadSeq",
+                "unreadCount",
+                "visibilityRevision",
                 "settings",
             ]
             .iter()
@@ -241,6 +250,19 @@ fn decode_summary(fields: &Object) -> Result<Summary, Error> {
     {
         return Err(Error::InvalidMessage);
     }
+    let unread = if fields.contains_key("unreadCount") || fields.contains_key("visibilityRevision")
+    {
+        let count = sequence(fields, "unreadCount")?;
+        if count > latest_conversation_seq.saturating_sub(last_read_seq.unwrap_or(0)) {
+            return Err(Error::InvalidMessage);
+        }
+        Some(UnreadState {
+            count,
+            visibility_revision: sequence(fields, "visibilityRevision")?,
+        })
+    } else {
+        None
+    };
     let settings = fields
         .get("settings")
         .map(|raw| decode_settings(raw.get()))
@@ -249,6 +271,7 @@ fn decode_summary(fields: &Object) -> Result<Summary, Error> {
         latest_conversation_seq,
         latest_server_msg_id,
         last_read_seq,
+        unread,
         settings,
     })
 }
@@ -303,6 +326,7 @@ mod tests {
                 latest_conversation_seq: 0,
                 latest_server_msg_id: None,
                 last_read_seq: None,
+                unread: None,
                 settings: None,
             })
         );
@@ -315,6 +339,35 @@ mod tests {
             })
         ));
         assert_eq!(page.items[2].change, Change::Remove);
+    }
+
+    #[test]
+    fn requires_paired_unread_count_and_visibility_revision() {
+        let input = r#"{"conversationId":"room","revision":"1","kind":"upsert","latestConversationSeq":"9","latestServerMsgId":"last","lastReadSeq":"7","unreadCount":"2","visibilityRevision":"0"}"#;
+        let Change::Upsert(summary) = decode_item(input).unwrap().change else {
+            panic!("expected unread summary");
+        };
+        assert_eq!(
+            summary.unread,
+            Some(UnreadState {
+                count: 2,
+                visibility_revision: 0
+            })
+        );
+        for invalid in [
+            input.replace(r#","unreadCount":"2""#, ""),
+            input.replace(r#","visibilityRevision":"0""#, ""),
+            input.replace(r#""unreadCount":"2""#, r#""unreadCount":"3""#),
+            input.replace(r#""visibilityRevision":"0""#, r#""visibilityRevision":0"#),
+            input.replace(
+                r#""visibilityRevision":"0""#,
+                r#""visibilityRevision":"9223372036854775808""#,
+            ),
+            r#"{"conversationId":"room","revision":"1","kind":"remove","visibilityRevision":"0"}"#
+                .into(),
+        ] {
+            assert!(decode_item(&invalid).is_err());
+        }
     }
 
     #[test]

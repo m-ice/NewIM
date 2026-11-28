@@ -504,3 +504,32 @@ func TestPageEncodingRejectsOversizeItem(t *testing.T) {
 	}}}, cursorPosition{key: "b"}, true, 1000)
 	mustCode(t, err, LimitExceeded)
 }
+
+func TestDirectoryUnreadStateAndVisibilityRevision(t *testing.T) {
+	latest, read, count, revision := uint64(9), uint64(7), uint64(2), uint64(0)
+	id := "message"
+	item := Item{
+		ConversationID: "room", Revision: 1, Kind: "upsert", LatestConversationSeq: &latest,
+		LatestServerMsgID: &id, LastReadSeq: &read, UnreadCount: &count, VisibilityRevision: &revision,
+	}
+	if err := validateItem(item); err != nil {
+		t.Fatal(err)
+	}
+	body, err := json.Marshal(item)
+	if err != nil || !bytes.Contains(body, []byte(`"unreadCount":"2","visibilityRevision":"0"`)) {
+		t.Fatalf("unread summary did not use canonical decimals: %s (%v)", body, err)
+	}
+
+	excess, wide := uint64(3), uint64(1)<<63
+	for _, bad := range []Item{
+		{ConversationID: "room", Revision: 1, Kind: "upsert", LatestConversationSeq: &latest, UnreadCount: &count},
+		{ConversationID: "room", Revision: 1, Kind: "upsert", LatestConversationSeq: &latest, VisibilityRevision: &revision},
+		{ConversationID: "room", Revision: 1, Kind: "upsert", LatestConversationSeq: &latest, LastReadSeq: &read, UnreadCount: &excess, VisibilityRevision: &revision},
+		{ConversationID: "room", Revision: 1, Kind: "upsert", LatestConversationSeq: &latest, UnreadCount: &count, VisibilityRevision: &wide},
+		{ConversationID: "room", Revision: 1, Kind: "remove", UnreadCount: &count, VisibilityRevision: &revision},
+	} {
+		if err := validateItem(bad); ErrorCode(err) != StorageUnavailable {
+			t.Fatalf("invalid unread state was accepted: %v", err)
+		}
+	}
+}

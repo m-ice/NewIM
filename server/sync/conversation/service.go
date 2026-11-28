@@ -485,6 +485,18 @@ func validateItem(item Item) error {
 			(!validSequence(*item.LastReadSeq) || (*item.LatestConversationSeq != 0 && *item.LastReadSeq > *item.LatestConversationSeq)) {
 			return Fail(StorageUnavailable)
 		}
+		if (item.UnreadCount == nil) != (item.VisibilityRevision == nil) {
+			return Fail(StorageUnavailable)
+		}
+		if item.UnreadCount != nil {
+			remaining := *item.LatestConversationSeq
+			if item.LastReadSeq != nil {
+				remaining -= min(remaining, *item.LastReadSeq)
+			}
+			if *item.UnreadCount > remaining || !validSequence(*item.VisibilityRevision) {
+				return Fail(StorageUnavailable)
+			}
+		}
 		if settings := item.Settings; settings != nil {
 			latest := *item.LatestConversationSeq
 			if settings.Version == 0 || !validSequence(settings.Version) || settings.Deleted ||
@@ -494,7 +506,8 @@ func validateItem(item Item) error {
 			}
 		}
 	case "remove":
-		if item.LatestConversationSeq != nil || item.LatestServerMsgID != nil || item.LastReadSeq != nil || item.Settings != nil {
+		if item.LatestConversationSeq != nil || item.LatestServerMsgID != nil || item.LastReadSeq != nil ||
+			item.UnreadCount != nil || item.VisibilityRevision != nil || item.Settings != nil {
 			return Fail(StorageUnavailable)
 		}
 	default:
