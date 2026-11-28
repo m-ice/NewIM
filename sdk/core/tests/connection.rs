@@ -663,3 +663,59 @@ fn acknowledgments_can_survive_transport_loss_but_cannot_cross_auth_loss() {
     );
     assert!(!connection.accepts_ack(&sent, expiry));
 }
+
+#[test]
+fn send_rejection_invalidates_the_session_across_transport_changes() {
+    for reconnect in [false, true] {
+        let mut connection = Connection::new(fence(1), 0).unwrap();
+        let initial = online(&mut connection, NOW + 10_000);
+        let committed = CommittedDirectory::from_store(&directory(0), None).unwrap();
+        event(
+            &mut connection,
+            Event::Directory {
+                ticket: &initial,
+                committed,
+            },
+            NOW,
+        );
+        let sent = connection.send_context().unwrap();
+        event(&mut connection, Event::NetworkLost, NOW + 1);
+
+        let mut expected = Vec::new();
+        if reconnect {
+            let effects = event(&mut connection, Event::NetworkAvailable, NOW + 2);
+            let [Effect::LoadDirectory(next)] = effects.as_slice() else {
+                panic!("reconnect should reuse the current credentials");
+            };
+            assert_ne!(next, &initial);
+            expected.push(Effect::Cancel(next.clone()));
+        }
+        expected.push(Effect::AdvanceFence(initial.fence.clone()));
+
+        assert_eq!(
+            connection.reject_send_credentials(&sent, AuthCause::Rejected, NOW + 3),
+            expected
+        );
+        assert!(!connection.accepts_ack(&sent, NOW + 3));
+        let mut effects = event(
+            &mut connection,
+            Event::FenceAdvanced {
+                previous: &initial.fence,
+                next: fence(2),
+            },
+            NOW + 4,
+        );
+        if !reconnect {
+            assert!(effects.is_empty());
+            effects = event(&mut connection, Event::NetworkAvailable, NOW + 5);
+        }
+        let recovery = credential(effects, AuthCause::Rejected);
+        assert_eq!(recovery.fence, fence(2));
+        assert!(
+            connection
+                .reject_send_credentials(&sent, AuthCause::Rejected, NOW + 6)
+                .is_empty()
+        );
+        assert!(connection.accepts(&recovery));
+    }
+}

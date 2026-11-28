@@ -223,6 +223,9 @@ func runConnectionSDKBridge(t *testing.T, migration, messages int, observed bool
 	peer := admitConnectionDevice(t, f, server, bridgePeer, "phone", "phone")
 	short := issueConnectionToken(t, f, shortIssuer, phone)
 	tokens := map[string]string{"phone": phone.Token, "next": tablet.Token, "peer": peer.Token}
+	if observed {
+		tokens["unauthenticated"] = ""
+	}
 
 	phase = "groups"
 	createGroup(t, f, gateway, phone.Token, bridgeRoom, []string{bridgePeer}, true)

@@ -9,7 +9,7 @@ use newim_protocol::{
     message_delta as delta, send, visibility,
 };
 use newim_sdk_core::{
-    connection::{Event, Failure, Subscription, Ticket},
+    connection::{AuthCause, Event, Failure, Subscription, Ticket},
     message_sync::{self as core, InFlightPage, IncomingMessage},
     store::*,
 };
@@ -159,16 +159,23 @@ impl Client {
         status: u16,
         body: &str,
     ) -> Result<()> {
+        if status == 401 {
+            let effects = self.transition(Event::Failed {
+                ticket,
+                failure: Failure::Authentication(AuthCause::Rejected),
+            })?;
+            let recorded = self.fail_history(&flight, GapFailure::Authentication);
+            return self.effects(effects).and(recorded);
+        }
         let request = wire_history_request(&flight);
         if status != 200 {
             let failure = match status {
-                401 => GapFailure::Authentication,
                 409 => GapFailure::InvalidCursor,
                 _ => GapFailure::Temporary,
             };
             self.fail_history(&flight, failure)?;
             return match status {
-                401 | 403 | 404 => self.network_response(ticket, status),
+                403 | 404 => self.network_response(ticket, status),
                 _ => Ok(()),
             };
         }

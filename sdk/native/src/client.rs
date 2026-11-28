@@ -176,7 +176,6 @@ pub(crate) struct Client {
     pub(crate) requests: BTreeMap<u64, Work>,
     pub(crate) selected: Option<String>,
     pub(crate) last_context: Option<SendContext>,
-    pub(crate) active_ticket: Option<Ticket>,
     pub(crate) sending: Option<SendFlight>,
     pub(crate) now_ms: u64,
     random: u64,
@@ -210,7 +209,6 @@ impl Client {
             requests: BTreeMap::new(),
             selected: None,
             last_context: None,
-            active_ticket: None,
             sending: None,
             now_ms: 0,
             random: 0,
@@ -299,8 +297,13 @@ impl Client {
         self.now_ms = input.now_ms;
         self.random = input.random;
         if self.advance_pending.is_some() {
-            if !matches!(input.event, HostEvent::Tick) {
-                return Err(Status::StoreUnavailable);
+            match input.event {
+                HostEvent::Tick => {}
+                HostEvent::Logout => self.update(Event::Logout)?,
+                HostEvent::NetworkAvailable => self.update(Event::NetworkAvailable)?,
+                HostEvent::NetworkChanged => self.update(Event::NetworkChanged)?,
+                HostEvent::NetworkLost => self.update(Event::NetworkLost)?,
+                _ => return Err(Status::StoreUnavailable),
             }
             return self.advance();
         }
@@ -481,21 +484,12 @@ impl Client {
                     .as_ref()
                     .is_some_and(|flight| flight.operation == op)
                 {
-                    let authentication = matches!(
-                        reason,
-                        TransportFailure::Unauthorized
-                            | TransportFailure::Revoked
-                            | TransportFailure::Expired
-                            | TransportFailure::DeviceLimit
-                    );
-                    return self.fail_send(
-                        if authentication {
-                            "AUTH_REQUIRED"
-                        } else {
-                            "SERVER_TEMPORARY_UNAVAILABLE"
-                        },
-                        authentication,
-                    );
+                    return match reason.into() {
+                        Failure::Authentication(cause) => {
+                            self.fail_send("AUTH_REQUIRED", Some(cause))
+                        }
+                        _ => self.fail_send("SERVER_TEMPORARY_UNAVAILABLE", None),
+                    };
                 }
                 let ticket = match self.requests.get(&op) {
                     Some(work) => work.ticket().clone(),
@@ -535,12 +529,17 @@ impl Client {
             .map(|socket| socket.ticket.clone())
     }
 
+    pub(crate) fn transition(&mut self, event: Event<'_>) -> Result<Vec<Effect>> {
+        Ok(self.connection.update(event, self.now_ms, self.random)?)
+    }
+
     pub(crate) fn update(&mut self, event: Event<'_>) -> Result<()> {
-        let effects = self.connection.update(event, self.now_ms, self.random)?;
+        let effects = self.transition(event)?;
         self.effects(effects)
     }
 
-    fn effects(&mut self, effects: Vec<Effect>) -> Result<()> {
+    pub(crate) fn effects(&mut self, effects: Vec<Effect>) -> Result<()> {
+        let mut cleanup = Ok(());
         for effect in effects {
             match effect {
                 Effect::RecoverCredentials { ticket, cause } => {
@@ -553,7 +552,6 @@ impl Client {
                         AuthCause::DeviceLimit => "device_limit",
                     };
                     self.emit(json!({"type": "credentials_required", "operation": op.to_string(), "cause": cause}))?;
-                    self.active_ticket = Some(ticket.clone());
                     self.requests.insert(op, Work::Credentials(ticket));
                 }
                 Effect::LoadDirectory(ticket) => {
@@ -603,7 +601,10 @@ impl Client {
                         },
                     )?;
                 }
-                Effect::Cancel(ticket) => self.cancel(&ticket)?,
+                Effect::Cancel(ticket) => {
+                    // An optional gap update must not suppress a following fence change.
+                    cleanup = self.cancel(&ticket).and(cleanup);
+                }
                 Effect::AdvanceFence(previous) => {
                     self.advance_pending = Some(previous);
                     self.advance()?;
@@ -618,7 +619,7 @@ impl Client {
                 }
             }
         }
-        Ok(())
+        cleanup
     }
 
     fn advance(&mut self) -> Result<()> {
@@ -644,9 +645,7 @@ impl Client {
     }
 
     fn cancel(&mut self, ticket: &Ticket) -> Result<()> {
-        if self.active_ticket.as_ref() == Some(ticket) {
-            self.active_ticket = None;
-        }
+        let mut cleanup = Ok(());
         let cancelled: Vec<u64> = self
             .requests
             .iter()
@@ -655,7 +654,7 @@ impl Client {
             .collect();
         for op in cancelled {
             if let Some(Work::History(_, flight)) = self.requests.remove(&op) {
-                self.interrupt_history(&flight)?;
+                cleanup = self.interrupt_history(&flight).and(cleanup);
             }
             self.emit(json!({"type":"cancel","operation":op.to_string()}))?;
         }
@@ -667,7 +666,7 @@ impl Client {
         {
             self.emit(json!({"type":"cancel","operation":socket.operation.to_string()}))?;
         }
-        Ok(())
+        cleanup
     }
 
     pub(crate) fn directory_snapshot(

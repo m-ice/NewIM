@@ -1,10 +1,12 @@
 """Drive the linked C host through the existing owned PostgreSQL/TLS fixture."""
 
 from collections import deque
+from contextlib import closing
 from pathlib import Path
 import json
 import os
 import re
+import sqlite3
 import subprocess
 import sys
 import tempfile
@@ -102,7 +104,7 @@ class Driver:
         code, _ = self.http("peer", "/api/v1/messages", wire(client, text))
         require(code == 200, "commit a peer message over TLS")
 
-    def run(self, effects):
+    def run(self, effects, *, hold_http=None):
         pending = deque(effects)
         observations = []
         for _ in range(128):
@@ -124,6 +126,8 @@ class Driver:
                     require(not self.step({**credentials, "verified": False}, status=1),
                             "unverified credential result changed native state")
                     pending.extend(self.step(credentials))
+                case "http" if effect["path"] == hold_http:
+                    observations.append(effect)
                 case "http":
                     code, body = self.http("phone", effect["path"], effect["body"])
                     pending.extend(self.step({"type": "http", "operation": operation,
@@ -251,6 +255,78 @@ def exercise(driver):
             "logged-out bridge cannot expose cached messages")
 
 
+def reject_send(driver, client):
+    effects = driver.step({"type": "queue_send", "body": wire(client, "authentication recovery")})
+    require([effect["type"] for effect in effects] == ["send_queued", "http"],
+            "hold the current persisted send")
+    send = effects[1]
+    code, body = driver.http("unauthenticated", send["path"], send["body"])
+    require(code == 401, "authoritative authentication rejection over TLS")
+    return {"type": "http", "operation": send["operation"],
+            "status": code, "verified": True, "body": body}
+
+
+def exercise_authentication_recovery(driver, root):
+    driver.event("resume")
+    driver.event("network_lost")
+    ready(driver.event("network_available"), "transport reconnected using the current credentials")
+
+    client = "native_rejected_after_reconnect"
+    rejection = reject_send(driver, client)
+    effects = driver.step(rejection)
+    require(any(effect["type"] == "send_failed" and effect["code"] == "AUTH_REQUIRED"
+                for effect in effects), "record the rejected send")
+    require(any(effect["type"] == "credentials_required" and effect["cause"] == "rejected"
+                for effect in effects), "request credentials after the persisted auth fence changes")
+    require(not driver.step({"type": "list_messages", "conversationId": ROOM, "limit": 32},
+                            status=3), "block cached reads until authentication recovers")
+    require(not driver.step(rejection, status=1), "retire the rejected send completion")
+    ready(driver.run(effects), "re-authenticate, then load the current directory")
+    driver.event("dismiss_send", clientId=client)
+
+    rejection = reject_send(driver, "native_rejected_offline")
+    driver.event("network_lost")
+    with closing(sqlite3.connect(root / "active" / "store.db")) as store:
+        generation, = store.execute("SELECT generation FROM store_metadata WHERE id=1").fetchone()
+        store.execute("BEGIN IMMEDIATE")
+        driver.step(rejection, status=3)
+        require(not driver.step({"type": "list_messages", "conversationId": ROOM, "limit": 32},
+                                status=6), "failed SQLite work does not restore local access")
+        require(not driver.step({"type": "network_available"}, status=3),
+                "record network changes while waiting for the store")
+        require(not driver.step({"type": "logout"}, status=3),
+                "logout overrides pending credential recovery")
+        store.rollback()
+        require(all(effect["type"] == "cancel" for effect in driver.event("tick")),
+                "commit the fence without requesting credentials after logout")
+        current, = store.execute("SELECT generation FROM store_metadata WHERE id=1").fetchone()
+        require(current == generation + 1, "persist the auth fence once after SQLite recovers")
+    require(not driver.event("network_available"), "network availability preserves logout")
+    require(not driver.step(rejection, status=1), "reject completions after the auth fence changed")
+
+
+def exercise_logout_during_history(driver, root):
+    ready(driver.event("resume"), "explicit resume after logout")
+    driver.event("network_lost")
+    driver.peer_message("native_gap_during_logout", "history request before logout")
+    path = "/api/v1/sync/messages"
+    effects = driver.run(driver.step({"type": "network_available"}), hold_http=path)
+    history = [effect for effect in effects if effect.get("path") == path]
+    require(len(history) == 1 and driver.socket is not None, "hold active history recovery")
+    with closing(sqlite3.connect(root / "active" / "store.db")) as store:
+        generation, = store.execute("SELECT generation FROM store_metadata WHERE id=1").fetchone()
+        store.execute("BEGIN IMMEDIATE")
+        effects = driver.step({"type": "logout"}, status=3)
+        require({effect["operation"] for effect in effects if effect["type"] == "cancel"} ==
+                {driver.socket, history[0]["operation"]}, "cancel all work while SQLite is busy")
+        require(not driver.run(effects), "logout has no visible data or new credential request")
+        store.rollback()
+        require(not driver.event("tick"), "retry the pending auth fence after cleanup fails")
+        current, = store.execute("SELECT generation FROM store_metadata WHERE id=1").fetchone()
+        require(current == generation + 1, "persist the logout fence after interrupted history")
+    require(not driver.event("network_available"), "logout stays closed after the store recovers")
+
+
 def main():
     require(len(sys.argv) == 2 and re.fullmatch(r"newim-db-[0-9a-f]{32}", sys.argv[1]),
             "run through the owned TLS fixture")
@@ -266,7 +342,10 @@ def main():
         root = parent / "account"
         root.mkdir(mode=0o700)
         with Pipe([str(host), "--relay", os.fspath(root), ACCOUNT]) as native, Pipe(go_fixture) as tls:
-            exercise(Driver(native, tls))
+            driver = Driver(native, tls)
+            exercise(driver)
+            exercise_authentication_recovery(driver, root)
+            exercise_logout_during_history(driver, root)
             native.finish()
             tls.finish(expect_pass=True)
     print("native C ABI, SQLite and TLS recovery passed")

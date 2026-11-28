@@ -1,7 +1,7 @@
 use crate::{Result, Status, client::Client, codec, id};
 use newim_protocol::send::{self, Send, ServerFrame};
 use newim_sdk_core::{
-    connection::{AuthCause, Event, Failure},
+    connection::AuthCause,
     message::{PersistedAck, SendContext, SendFailure, SendIntent},
     observability::AckFlight,
     outbox::{self, OutboxError, OutboxRecord, OutboxState, OutboxTransition},
@@ -214,7 +214,8 @@ impl Client {
         trace: Option<&str>,
     ) -> Result<()> {
         if status != 200 {
-            return self.fail_send(&failure_code(status, body), status == 401);
+            let auth = (status == 401).then_some(AuthCause::Rejected);
+            return self.fail_send(&failure_code(status, body), auth);
         }
         let flight = self.sending.as_ref().ok_or(Status::InvalidInput)?;
         let frame = send::decode_server_frame(body.as_bytes()).map_err(|_| Status::InvalidInput)?;
@@ -267,7 +268,28 @@ impl Client {
         self.dispatch_outbox()
     }
 
-    pub(crate) fn fail_send(&mut self, code: &str, authentication: bool) -> Result<()> {
+    pub(crate) fn fail_send(
+        &mut self,
+        code: &str,
+        authentication: Option<AuthCause>,
+    ) -> Result<()> {
+        let Some(cause) = authentication else {
+            self.record_send_failure(code)?;
+            return self.dispatch_outbox();
+        };
+        let flight = self.sending.as_ref().ok_or(Status::InvalidInput)?;
+        let effects = self
+            .connection
+            .reject_send_credentials(&flight.context, cause, self.now_ms);
+        if effects.is_empty() {
+            return Err(Status::InvalidInput);
+        }
+        // Record the failure under the old store fence before applying the new fence.
+        let recorded = self.record_send_failure(code);
+        self.effects(effects).and(recorded)
+    }
+
+    fn record_send_failure(&mut self, code: &str) -> Result<()> {
         let revision = self.revision()?;
         let flight = self.sending.as_ref().ok_or(Status::InvalidInput)?;
         let failure = SendFailure::from_validated_code(
@@ -285,14 +307,7 @@ impl Client {
             self.now_ms,
         )?;
         let flight = self.sending.take().ok_or(Status::InternalFailure)?;
-        self.emit_send_transition(&flight.pending, transition)?;
-        if authentication && let Some(ticket) = self.active_ticket.clone() {
-            return self.update(Event::Failed {
-                ticket: &ticket,
-                failure: Failure::Authentication(AuthCause::Rejected),
-            });
-        }
-        self.dispatch_outbox()
+        self.emit_send_transition(&flight.pending, transition)
     }
 
     fn pending(&mut self, client_id: &str) -> Result<Pending> {

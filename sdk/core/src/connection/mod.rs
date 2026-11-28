@@ -556,6 +556,22 @@ impl Connection {
             && context.validate().is_ok()
     }
 
+    /// Invalidate the authenticated session that issued a correlated send.
+    /// A transport change can retire its ticket while the send is still in flight.
+    pub fn reject_send_credentials(
+        &mut self,
+        context: &SendContext,
+        cause: AuthCause,
+        now_ms: u64,
+    ) -> Vec<Effect> {
+        let mut effects = Vec::new();
+        if self.accepts_ack(context, now_ms) {
+            self.advance_fence(Some(cause), &mut effects);
+            self.metrics.connection_effects(&effects);
+        }
+        effects
+    }
+
     fn start_if_due(&mut self, now_ms: u64, effects: &mut Vec<Effect>) {
         if !self.online
             || !matches!(self.phase, Phase::Idle | Phase::Backoff(_))
