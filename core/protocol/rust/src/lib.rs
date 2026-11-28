@@ -11,6 +11,7 @@ pub mod message_delta;
 mod scan;
 pub mod send;
 mod sender_type;
+pub mod visibility;
 
 pub use sender_type::SenderType;
 
@@ -81,7 +82,10 @@ impl Message {
     pub fn supported(&self) -> bool {
         self.protocol_version == 1
             && self.version == 1
-            && matches!(self.message_type.as_str(), "text" | "media")
+            && matches!(
+                self.message_type.as_str(),
+                "text" | "media" | visibility::HIDDEN_MESSAGE_TYPE
+            )
     }
 }
 
@@ -208,6 +212,9 @@ fn validate_semantics(message: &Message) -> Result<(), Error> {
             }
         }
         "media" => media::validate(message.payload.get())?,
+        visibility::HIDDEN_MESSAGE_TYPE => {
+            visibility::decode_hidden_payload(message.payload.get())?;
+        }
         _ => {}
     }
     Ok(())

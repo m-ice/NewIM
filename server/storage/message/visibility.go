@@ -173,3 +173,17 @@ func visibilityActionKey(action protocol.VisibilityAction) string {
 		return "recall"
 	}
 }
+
+// VisibilityAction converts a committed ledger action to its wire value.
+func VisibilityAction(key string) protocol.VisibilityAction {
+	switch key {
+	case "recall":
+		return protocol.Recall
+	case "delete_for_me":
+		return protocol.DeleteForMe
+	case "admin_remove":
+		return protocol.AdminRemove
+	default:
+		return ""
+	}
+}

@@ -1,5 +1,10 @@
 package protocol
 
+import (
+	"bytes"
+	"encoding/json"
+)
+
 const VisibilityRequestLimit = 1024
 
 type VisibilityAction string
@@ -59,4 +64,28 @@ type VisibilityEvent struct {
 	Revision        int64            `json:"visibilityRevision,string"`
 	Action          VisibilityAction `json:"action"`
 	CountAsUnread   bool             `json:"countAsUnread"`
+}
+
+const HiddenMessageType = "message_hidden"
+
+func EncodeHiddenPayload(action VisibilityAction) ([]byte, error) {
+	if !action.Valid() {
+		return nil, InvalidMessage
+	}
+	return json.Marshal(struct {
+		Action        VisibilityAction `json:"action"`
+		CountAsUnread bool             `json:"countAsUnread"`
+	}{Action: action})
+}
+
+func validateHiddenPayload(raw []byte) error {
+	fields, err := objectFields(raw)
+	if err != nil || len(fields) != 2 || !bytes.Equal(bytes.TrimSpace(fields["countAsUnread"]), []byte("false")) {
+		return InvalidMessage
+	}
+	action, err := stringField(fields, "action")
+	if err != nil || !VisibilityAction(action).Valid() {
+		return InvalidMessage
+	}
+	return nil
 }

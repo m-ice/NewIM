@@ -62,7 +62,7 @@ func ContainsRoute(path string) bool {
 }
 
 func isSyncRoute(path string) bool {
-	return path == bootstrapRoute || path == deltaRoute || path == messagesRoute
+	return path == bootstrapRoute || path == deltaRoute || path == messagesRoute || path == syncmessage.VisibilityRoute
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
@@ -75,7 +75,8 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		allowed = r.Method == http.MethodGet || r.Method == http.MethodPatch
 	}
 	switch {
-	case (!isSyncRoute(path) && !settings) || (settings && h.settings == nil) || (path == messagesRoute && h.messages == nil):
+	case (!isSyncRoute(path) && !settings) || (settings && h.settings == nil) || (path == messagesRoute && h.messages == nil) ||
+		(path == syncmessage.VisibilityRoute && !h.messages.SupportsVisibility()):
 		writeError(w, http.StatusNotFound, "HTTP_NOT_FOUND")
 		return
 	case !allowed:
@@ -118,6 +119,10 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	if path == messagesRoute {
 		h.readMessages(w, r.Context(), token, identity, body)
+		return
+	}
+	if path == syncmessage.VisibilityRoute {
+		h.readVisibility(w, r.Context(), token, identity, body)
 		return
 	}
 	request, ok := decodeRequest(path, body)

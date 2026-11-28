@@ -91,6 +91,27 @@
           }
         }
       }
+    },
+    {
+      "if": {
+        "properties": {
+          "type": { "const": "message_hidden" },
+          "version": { "const": 1 }
+        }
+      },
+      "then": {
+        "properties": {
+          "payload": {
+            "type": "object",
+            "required": ["action", "countAsUnread"],
+            "properties": {
+              "action": { "enum": ["recall", "deleteForMe", "adminRemove"] },
+              "countAsUnread": { "const": false }
+            },
+            "additionalProperties": false
+          }
+        }
+      }
     }
   ],
   "x-wire-profile": {

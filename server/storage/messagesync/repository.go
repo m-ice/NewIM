@@ -13,7 +13,6 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	protocol "github.com/m-ice/NewIM/core/protocol/go"
 	"github.com/m-ice/NewIM/server/storage/conversationsync"
-	"github.com/m-ice/NewIM/server/storage/membership"
 	messagestore "github.com/m-ice/NewIM/server/storage/message"
 	"github.com/m-ice/NewIM/server/storage/postgresidentity"
 	app "github.com/m-ice/NewIM/server/sync/message"
@@ -40,6 +39,7 @@ type Repository struct {
 	readTxOptions   pgx.TxOptions
 	accountSettings bool
 	actorTypes      bool
+	visibility      bool
 }
 
 // Open requires verified TLS for TCP or an explicitly enabled local socket.
@@ -122,8 +122,13 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 		pool.Close()
 		return nil, app.Fail(app.StorageUnavailable)
 	}
+	visibility, err := conversationsync.VisibilityAvailable(ctx, pool)
+	if err != nil {
+		pool.Close()
+		return nil, app.Fail(app.StorageUnavailable)
+	}
 	return &Repository{pool: pool, readTxOptions: pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly},
-		accountSettings: accountSettings, actorTypes: actorTypes}, nil
+		accountSettings: accountSettings, actorTypes: actorTypes, visibility: visibility}, nil
 }
 
 // Close releases all pool resources.
@@ -163,37 +168,15 @@ func (r *Repository) read(ctx context.Context, user string, request app.ReadRequ
 			return app.ReadResult{}, app.Fail(app.StorageUnavailable)
 		}
 	}
-	advanced, err := membership.Advanced(ctx, tx)
-	if err != nil {
-		return app.ReadResult{}, fixed(err)
-	}
-	head, err := readHead(ctx, tx, user, request.ConversationID, advanced)
+	floor, visibleSeq, err := r.messageWindow(ctx, tx, user, request.ConversationID)
 	if err != nil {
 		return app.ReadResult{}, err
 	}
-	if err = validateHead(ctx, tx, request.ConversationID, head.latestSeq, head.latestID, head.pointerSeq); err != nil {
-		return app.ReadResult{}, err
-	}
-
-	visibleSeq := head.latestSeq
-	if head.departedThroughSeq != nil {
-		if *head.departedThroughSeq > head.latestSeq {
-			return app.ReadResult{}, app.Fail(app.StorageUnavailable)
-		}
-		visibleSeq = *head.departedThroughSeq
-	}
-	if r.accountSettings {
-		floor, err := conversationsync.PersonalHistoryFloor(ctx, tx, user, request.ConversationID, visibleSeq)
-		if err != nil {
-			return app.ReadResult{}, app.Fail(app.StorageUnavailable)
-		}
-		head.historyAfterSeq = max(head.historyAfterSeq, floor)
-	}
-	lower, err := request.EffectiveAfterSeq(head.historyAfterSeq, visibleSeq)
+	lower, err := request.EffectiveAfterSeq(floor, visibleSeq)
 	if err != nil {
 		return app.ReadResult{}, err
 	}
-	if lower > head.historyAfterSeq {
+	if lower > floor {
 		present, err := anchorPresent(ctx, tx, request.ConversationID, lower)
 		if err != nil {
 			return app.ReadResult{}, err
@@ -206,14 +189,14 @@ func (r *Repository) read(ctx context.Context, user string, request app.ReadRequ
 	if err != nil {
 		return app.ReadResult{}, err
 	}
-	rows, err := r.readRows(ctx, tx, request.ConversationID, lower, visibleSeq, limit+1)
+	rows, err := r.readRows(ctx, tx, user, request.ConversationID, lower, visibleSeq, limit+1)
 	if err != nil {
 		return app.ReadResult{}, err
 	}
 	if err = tx.Commit(ctx); err != nil {
 		return app.ReadResult{}, app.Fail(app.StorageUnavailable)
 	}
-	return app.ReadResult{HistoryAfterSeq: head.historyAfterSeq, LatestSeq: visibleSeq, Limit: limit, Rows: rows}, nil
+	return app.ReadResult{HistoryAfterSeq: floor, LatestSeq: visibleSeq, Limit: limit, Rows: rows}, nil
 }
 
 func (r *Repository) begin(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {
@@ -349,22 +332,44 @@ func normalizeLimit(limit int) (int, error) {
 	return limit, nil
 }
 
-func (r *Repository) readRows(ctx context.Context, tx pgx.Tx, conversationID string, lower, upper int64, limit int) ([]app.Item, error) {
-	const columns = "server_msg_id,client_msg_id,sender_id,conversation_id,conversation_seq,protocol_version,schema_version,message_type,server_time_ms,payload_bytes"
+func (r *Repository) readRows(ctx context.Context, tx pgx.Tx, user, conversationID string, lower, upper int64, limit int) ([]app.Item, error) {
+	const fields = "server_msg_id,client_msg_id,sender_id,conversation_id,conversation_seq,protocol_version,schema_version,message_type,server_time_ms"
+	const columns = fields + ",payload_bytes"
 	query := "SELECT " + columns + `
 FROM newim.im_messages
 WHERE conversation_id=$1 AND conversation_seq>$2 AND conversation_seq<=$3
 ORDER BY conversation_seq
 LIMIT $4`
-	if r.actorTypes {
-		// Bound the message page before looking up its immutable sender types.
-		query = "SELECT " + columns + ",a.actor_type FROM (" + query + `) AS m
-LEFT JOIN LATERAL (
-	SELECT actor_type FROM newim.im_user_actor_types WHERE user_id=m.sender_id LIMIT 1
-) AS a ON true
-ORDER BY m.conversation_seq`
+	args := []any{conversationID, lower, upper, limit}
+	if r.actorTypes || r.visibility {
+		projection := columns
+		var joins string
+		const action = "COALESCE(global_hide.action,personal_hide.action)"
+		if r.visibility {
+			projection = fields + ",CASE WHEN " + action + " IS NULL THEN m.payload_bytes END"
+			joins = ` LEFT JOIN LATERAL (
+				SELECT action FROM newim.im_message_visibility_events
+				WHERE conversation_id=m.conversation_id AND target_seq=m.conversation_seq AND audience_user_id IS NULL
+			) global_hide ON true
+			LEFT JOIN LATERAL (
+				SELECT action FROM newim.im_message_visibility_events
+				WHERE conversation_id=m.conversation_id AND target_seq=m.conversation_seq AND audience_user_id=$5
+			) personal_hide ON true`
+			args = append(args, user)
+		}
+		if r.actorTypes {
+			projection += ",a.actor_type"
+			joins += ` LEFT JOIN LATERAL (
+				SELECT actor_type FROM newim.im_user_actor_types WHERE user_id=m.sender_id LIMIT 1
+			) a ON true`
+		}
+		if r.visibility {
+			projection += "," + action
+		}
+		// Restrict the page before adding actor and viewer-specific state.
+		query = "SELECT " + projection + " FROM (" + query + ") AS m" + joins + " ORDER BY m.conversation_seq"
 	}
-	rows, err := tx.Query(ctx, query, conversationID, lower, upper, limit)
+	rows, err := tx.Query(ctx, query, args...)
 	if err != nil {
 		return nil, fixed(err)
 	}
@@ -373,11 +378,14 @@ ORDER BY m.conversation_seq`
 	for rows.Next() {
 		var item app.Item
 		var protocolVersion, schemaVersion int32
-		var actor *string
+		var actor, hidden *string
 		dest := []any{&item.ServerMsgID, &item.ClientMsgID, &item.SenderID, &item.ConversationID,
 			&item.ConversationSeq, &protocolVersion, &schemaVersion, &item.MessageType, &item.ServerTime, &item.Payload}
 		if r.actorTypes {
 			dest = append(dest, &actor)
+		}
+		if r.visibility {
+			dest = append(dest, &hidden)
 		}
 		if err = rows.Scan(dest...); err != nil {
 			return nil, fixed(err)
@@ -387,7 +395,16 @@ ORDER BY m.conversation_seq`
 		}
 		item.ProtocolVersion = uint32(protocolVersion)
 		item.SchemaVersion = uint32(schemaVersion)
-		item.Payload = append([]byte(nil), item.Payload...)
+		if hidden == nil {
+			item.Payload = append([]byte(nil), item.Payload...)
+		} else {
+			item.MessageType = protocol.HiddenMessageType
+			item.SchemaVersion = 1
+			item.Payload, err = protocol.EncodeHiddenPayload(messagestore.VisibilityAction(*hidden))
+			if err != nil {
+				return nil, app.Fail(app.StorageUnavailable)
+			}
+		}
 		if actor != nil {
 			item.SenderType = protocol.SenderType(*actor)
 			if !item.SenderType.Valid() || item.SenderType.IsZero() {

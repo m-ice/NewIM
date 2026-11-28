@@ -45,7 +45,7 @@ type Message struct {
 
 // Supported reports implemented payload semantics, not permission to deliver. 是否支持该负载语义。
 func (m Message) Supported() bool {
-	return m.ProtocolVersion == 1 && m.Version == 1 && (m.Type == "text" || m.Type == "media")
+	return m.ProtocolVersion == 1 && m.Version == 1 && (m.Type == "text" || m.Type == "media" || m.Type == HiddenMessageType)
 }
 
 func identifier(s string, limit int, messageType bool) bool {
@@ -158,6 +158,8 @@ func validateKnownPayload(messageType string, version uint32, raw []byte) error 
 		return nil
 	case "media":
 		return validateMediaPayload(raw)
+	case HiddenMessageType:
+		return validateHiddenPayload(raw)
 	default:
 		return nil
 	}
