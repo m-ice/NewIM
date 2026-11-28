@@ -74,10 +74,11 @@ func (r *Repository) Fanout(ctx context.Context) (int64, error) {
 	return done.RowsAffected(), storageError(err)
 }
 
-func (r *Repository) Claim(ctx context.Context) (app.Delivery, bool, error) {
+func (r *Repository) Claim(ctx context.Context) (app.Delivery, app.ClaimStatus, error) {
 	ctx, cancel := context.WithTimeout(ctx, dbTimeout)
 	defer cancel()
 	var attempt app.Delivery
+	var leaseID *string
 	// Expired leases with exhausted attempt counts are closed by the same statement.
 	err := r.pool.QueryRow(ctx, `WITH expired AS MATERIALIZED (
 		SELECT event_id,user_id,device_id FROM newim.im_push_deliveries
@@ -98,13 +99,20 @@ func (r *Repository) Claim(ctx context.Context) (app.Delivery, bool, error) {
 		FROM next_job job WHERE (d.event_id,d.user_id,d.device_id)=(job.event_id,job.user_id,job.device_id)
 		RETURNING d.event_id,d.user_id,d.device_id,d.session_id,d.provider,d.registration_version,d.lease_id,d.attempts
 	)
-	SELECT * FROM claimed WHERE lease_id IS NOT NULL`, app.MaxAttempts, rand.Text()).
+	SELECT * FROM claimed`, app.MaxAttempts, rand.Text()).
 		Scan(&attempt.EventID, &attempt.UserID, &attempt.DeviceID, &attempt.SessionID,
-			&attempt.Channel, &attempt.Version, &attempt.LeaseID, &attempt.Attempts)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return app.Delivery{}, false, nil
+			&attempt.Channel, &attempt.Version, &leaseID, &attempt.Attempts)
+	switch {
+	case errors.Is(err, pgx.ErrNoRows):
+		return app.Delivery{}, app.NoDelivery, nil
+	case err != nil:
+		return app.Delivery{}, app.NoDelivery, app.ErrStorage
+	case leaseID == nil:
+		return app.Delivery{}, app.LeaseExhausted, nil
+	default:
+		attempt.LeaseID = *leaseID
+		return attempt, app.LeaseAcquired, nil
 	}
-	return attempt, err == nil, storageError(err)
 }
 
 func (r *Repository) Prepare(ctx context.Context, job app.Delivery) ([]byte, bool, error) {

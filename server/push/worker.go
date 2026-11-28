@@ -17,6 +17,14 @@ type Delivery struct {
 	Attempts int
 }
 
+type ClaimStatus uint8
+
+const (
+	NoDelivery ClaimStatus = iota
+	LeaseAcquired
+	LeaseExhausted
+)
+
 type Result uint8
 
 const (
@@ -40,7 +48,7 @@ type Provider interface {
 type Queue interface {
 	Enable(context.Context) error
 	Fanout(context.Context) (int64, error)
-	Claim(context.Context) (Delivery, bool, error)
+	Claim(context.Context) (Delivery, ClaimStatus, error)
 	Prepare(context.Context, Delivery) ([]byte, bool, error)
 	// Finish returns the committed decision, or zero if the lease no longer applies.
 	Finish(context.Context, Delivery, Outcome) (Result, error)
@@ -118,9 +126,17 @@ func (w *Worker) Run(ctx context.Context, onStorageFailure func(), report func(C
 // Cycle independently schedules one committed event and processes one due device notification.
 func (w *Worker) Cycle(ctx context.Context) (bool, error) {
 	scheduled, scheduleErr := w.queue.Fanout(ctx)
-	job, found, err := w.queue.Claim(ctx)
-	if err != nil || !found {
+	job, status, err := w.queue.Claim(ctx)
+	if err != nil {
 		return scheduled > 0, errors.Join(scheduleErr, err)
+	}
+	switch status {
+	case LeaseExhausted:
+		w.outcomes[PermanentFailure].Add(1)
+		return true, scheduleErr
+	case LeaseAcquired:
+	default:
+		return scheduled > 0, scheduleErr
 	}
 	outcome, err := w.send(ctx, job)
 	if err != nil {

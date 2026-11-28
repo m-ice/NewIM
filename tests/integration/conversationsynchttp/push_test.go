@@ -93,9 +93,9 @@ func fanoutOne(t *testing.T, f *fixture, repo *pushstore.Repository) {
 
 func claimPush(t *testing.T, f *fixture, repo *pushstore.Repository) push.Delivery {
 	t.Helper()
-	job, ok, err := repo.Claim(f.ctx)
+	job, status, err := repo.Claim(f.ctx)
 	must(t, err)
-	if !ok {
+	if status != push.LeaseAcquired {
 		t.Fatal("no eligible push job was claimed")
 	}
 	return job
@@ -344,6 +344,25 @@ func TestPushRecovery(t *testing.T) {
 		must(t, f.db.QueryRow(f.ctx, "SELECT status FROM newim.im_push_deliveries WHERE event_id=$1", job.EventID).Scan(&state))
 		if state != "failed" {
 			t.Fatalf("exhausted notification status = %q", state)
+		}
+		f.sql(`UPDATE newim.im_push_deliveries SET status='pending', attempts=$1, available_at=clock_timestamp()
+			WHERE event_id=$2`, push.MaxAttempts-1, job.EventID)
+		job = claimPush(t, f, repo)
+		f.sql(`UPDATE newim.im_push_deliveries SET lease_until=clock_timestamp()-interval '1 second'
+			WHERE lease_id=$1`, job.LeaseID)
+		_, status, err := repo.Claim(f.ctx)
+		must(t, err)
+		if status != push.LeaseExhausted {
+			t.Fatalf("expired final lease result = %d", status)
+		}
+		must(t, f.db.QueryRow(f.ctx, "SELECT status FROM newim.im_push_deliveries WHERE event_id=$1", job.EventID).Scan(&state))
+		if state != "failed" {
+			t.Fatalf("expired notification status = %q", state)
+		}
+		_, status, err = repo.Claim(f.ctx)
+		must(t, err)
+		if status != push.NoDelivery {
+			t.Fatalf("expired final lease processed again: %d", status)
 		}
 	default:
 		t.Fatal("push recovery requires prepare and restart phases")
