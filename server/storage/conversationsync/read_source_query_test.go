@@ -249,3 +249,59 @@ func requireReadSyncIndex(t *testing.T, plan readSyncPlanNode, table string, max
 		t.Fatalf("missing executed %s lookup", table)
 	}
 }
+
+func TestMessageVisibilityQueryPlan(t *testing.T) {
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+	db, err := pgx.Connect(ctx, "host=/var/run/postgresql user=newim_test dbname=newim_test sslmode=disable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer db.Close(context.Background())
+	tx, err := db.Begin(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rollback(tx)
+	if err = LockSourceMembership(ctx, tx); err != nil {
+		t.Fatal(err)
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO newim.im_users(user_id) VALUES ('visibility_plan_sender'),('visibility_plan_receiver');
+		INSERT INTO newim.im_conversations(conversation_id) VALUES ('visibility_plan_room'),('visibility_plan_other');
+		INSERT INTO newim.im_conversation_members(conversation_id,user_id)
+		VALUES ('visibility_plan_room','visibility_plan_sender'),('visibility_plan_room','visibility_plan_receiver');
+		INSERT INTO newim.im_messages(server_msg_id,sender_id,client_msg_id,conversation_id,conversation_seq,
+			protocol_version,schema_version,message_type,server_time_ms,payload_bytes)
+		SELECT 'vplan_m_'||room||'_'||seq,'visibility_plan_sender','vplan_c_'||room||'_'||seq,
+			'visibility_plan_'||room,seq,1,1,'text',seq,'{"text":"seed"}'::bytea
+		FROM generate_series(1,12000) seq CROSS JOIN (VALUES ('room'),('other')) seed(room);
+		UPDATE newim.im_conversations SET last_seq=12000,latest_server_msg_id='vplan_m_room_12000'
+			WHERE conversation_id='visibility_plan_room';
+		ANALYZE newim.im_messages;
+	`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const conversationID = "visibility_plan_room"
+	if err = RecordSourceConversation(ctx, tx, conversationID, nil, true, true); err != nil {
+		t.Fatal(err)
+	}
+	_, err = tx.Exec(ctx, `SELECT newim.persist_message(
+		'visibility_plan_sender','vplan_new','visibility_plan_room','vplan_new_server','text',1,12001,
+		'{"text":"new"}'::bytea,'vplan_new_event')`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	plan := readSyncExplain(t, ctx, tx, projectionQuery(true, true, true, true, sourceConversationTargets), conversationID, []string(nil))
+	requireReadSyncIndex(t, plan, "im_messages", 1, 2, "server_msg_id")
+
+	for user, want := range map[string]int64{"visibility_plan_sender": 0, "visibility_plan_receiver": 12001} {
+		var count, head int64
+		err = tx.QueryRow(ctx, `SELECT unread_count,latest_seq FROM newim.im_conversation_sync_changes
+			WHERE user_id=$1 AND conversation_id=$2 ORDER BY change_seq DESC LIMIT 1`, user, conversationID).Scan(&count, &head)
+		if err != nil || count != want || head != 12001 {
+			t.Fatalf("fresh send projection got count=%d head=%d error=%v; wanted %d/12001", count, head, err, want)
+		}
+	}
+}

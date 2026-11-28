@@ -8,6 +8,7 @@ mod message_sync;
 mod migrations;
 mod operations;
 mod recovery;
+mod visibility;
 pub use recovery::{RecoveryReport, quarantine, rebuild, salvage_pending};
 
 use newim_sdk_core::store::*;

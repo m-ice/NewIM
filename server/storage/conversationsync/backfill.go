@@ -12,7 +12,10 @@ import (
 
 const sourceBackfillLock int64 = 0x4e494d53594e4301
 
-var errReadBackfillUnprepared = errors.New("read state backfill needs preparation")
+var (
+	errReadBackfillUnprepared       = errors.New("read state backfill needs preparation")
+	errVisibilityBackfillUnprepared = errors.New("visibility backfill needs preparation")
+)
 
 type sourceBackfillDB interface {
 	BeginTx(context.Context, pgx.TxOptions) (pgx.Tx, error)
@@ -32,10 +35,10 @@ func (r *Repository) BackfillStep(ctx context.Context, userID string, limit int)
 	if ctx == nil || r == nil || r.pool == nil || !r.requireSourceReady {
 		return false, app.Fail(app.StorageUnavailable)
 	}
-	return backfillStep(ctx, r.pool, userID, limit, r.includeReadState, r.accountSettings)
+	return backfillStep(ctx, r.pool, userID, limit, r.includeReadState, r.accountSettings, r.visibility)
 }
 
-func backfillStep(ctx context.Context, db sourceBackfillDB, userID string, limit int, includeReadState, accountSettings bool) (bool, error) {
+func backfillStep(ctx context.Context, db sourceBackfillDB, userID string, limit int, includeReadState, accountSettings, visibility bool) (bool, error) {
 	if !identifier(userID) {
 		return false, app.Fail(app.Forbidden)
 	}
@@ -44,21 +47,26 @@ func backfillStep(ctx context.Context, db sourceBackfillDB, userID string, limit
 	}
 	ctx, cancel := context.WithTimeout(ctx, requestTimeout)
 	defer cancel()
-	ready, err := backfillPage(ctx, db, userID, limit, includeReadState, accountSettings)
-	if !errors.Is(err, errReadBackfillUnprepared) {
+	ready, err := backfillPage(ctx, db, userID, limit, includeReadState, accountSettings, visibility)
+	switch {
+	case errors.Is(err, errReadBackfillUnprepared):
+		err = prepareReadBackfillAccount(ctx, db, userID)
+	case errors.Is(err, errVisibilityBackfillUnprepared):
+		err = prepareVisibilityBackfillAccount(ctx, db, userID)
+	default:
 		return ready, err
 	}
-	if err = prepareReadBackfillAccount(ctx, db, userID); err != nil {
+	if err != nil {
 		return false, err
 	}
-	ready, err = backfillPage(ctx, db, userID, limit, includeReadState, accountSettings)
-	if errors.Is(err, errReadBackfillUnprepared) {
+	ready, err = backfillPage(ctx, db, userID, limit, includeReadState, accountSettings, visibility)
+	if errors.Is(err, errReadBackfillUnprepared) || errors.Is(err, errVisibilityBackfillUnprepared) {
 		return false, app.Fail(app.NotReady)
 	}
 	return ready, err
 }
 
-func backfillPage(ctx context.Context, db sourceBackfillDB, userID string, limit int, includeReadState, accountSettings bool) (bool, error) {
+func backfillPage(ctx context.Context, db sourceBackfillDB, userID string, limit int, includeReadState, accountSettings, visibility bool) (bool, error) {
 	tx, err := db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
 	if err != nil {
 		return false, fixed(err)
@@ -79,6 +87,15 @@ func backfillPage(ctx context.Context, db sourceBackfillDB, userID string, limit
 	}
 	if includeReadState && initial.readStateEpoch != initial.epoch {
 		return false, errReadBackfillUnprepared
+	}
+	if visibility && initial.ready {
+		needed, err := unreadBackfillNeeded(ctx, tx, userID)
+		if err != nil {
+			return false, err
+		}
+		if needed {
+			return false, errVisibilityBackfillUnprepared
+		}
 	}
 	var keys []string
 	var more bool
@@ -238,10 +255,10 @@ func (r *Repository) NextSourceAccounts(ctx context.Context, after string) (next
 	if ctx == nil || r == nil || r.pool == nil || !r.requireSourceReady {
 		return "", nil, app.Fail(app.StorageUnavailable)
 	}
-	return nextSourceAccounts(ctx, r.pool, after, r.includeReadState)
+	return nextSourceAccounts(ctx, r.pool, after, r.includeReadState, r.visibility)
 }
 
-func nextSourceAccounts(ctx context.Context, db sourceBackfillDB, after string, includeReadState bool) (next string, pending []string, err error) {
+func nextSourceAccounts(ctx context.Context, db sourceBackfillDB, after string, includeReadState, visibility bool) (next string, pending []string, err error) {
 	if after != "" && !identifier(after) {
 		return "", nil, app.Fail(app.InvalidCursor)
 	}
@@ -250,6 +267,9 @@ func nextSourceAccounts(ctx context.Context, db sourceBackfillDB, after string, 
 	readyCondition := "a.source_ready"
 	if includeReadState {
 		readyCondition += " AND a.read_state_epoch=a.epoch"
+	}
+	if visibility {
+		readyCondition += " AND NOT " + visibilityBackfillNeeded
 	}
 	rows, err := db.Query(ctx, `SELECT page.user_id,COALESCE((
 		SELECT `+readyCondition+` FROM newim.im_conversation_sync_accounts a WHERE a.user_id=page.user_id
@@ -318,13 +338,13 @@ func (r *Repository) RunSourceBackfill(ctx context.Context, limit int) (err erro
 	var after string
 	for {
 		// A disconnected session loses both the lock and the ability to write.
-		next, pending, err := nextSourceAccounts(ctx, conn, after, r.includeReadState)
+		next, pending, err := nextSourceAccounts(ctx, conn, after, r.includeReadState, r.visibility)
 		if err != nil || next == "" {
 			return err
 		}
 		for _, userID := range pending {
 			for {
-				ready, err := backfillStep(ctx, conn, userID, limit, r.includeReadState, r.accountSettings)
+				ready, err := backfillStep(ctx, conn, userID, limit, r.includeReadState, r.accountSettings, r.visibility)
 				if err != nil {
 					return err
 				}

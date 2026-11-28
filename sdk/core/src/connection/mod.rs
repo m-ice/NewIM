@@ -48,6 +48,8 @@ pub struct Subscription {
     published_round: u64,
     after_seq: i64,
     through_seq: i64,
+    after_visibility_revision: i64,
+    through_visibility_revision: i64,
 }
 
 impl Subscription {
@@ -66,6 +68,19 @@ impl Subscription {
     pub const fn through_seq(&self) -> i64 {
         self.through_seq
     }
+
+    pub const fn after_visibility_revision(&self) -> i64 {
+        self.after_visibility_revision
+    }
+
+    pub const fn through_visibility_revision(&self) -> i64 {
+        self.through_visibility_revision
+    }
+
+    fn needs_recovery(&self) -> bool {
+        self.after_seq < self.through_seq
+            || self.after_visibility_revision < self.through_visibility_revision
+    }
 }
 
 impl fmt::Debug for Subscription {
@@ -74,6 +89,11 @@ impl fmt::Debug for Subscription {
             .field("published_round", &self.published_round)
             .field("after_seq", &self.after_seq)
             .field("through_seq", &self.through_seq)
+            .field("after_visibility_revision", &self.after_visibility_revision)
+            .field(
+                "through_visibility_revision",
+                &self.through_visibility_revision,
+            )
             .finish()
     }
 }
@@ -115,7 +135,11 @@ impl CommittedDirectory {
         let after_seq = messages.state.after_seq();
         let through_seq =
             i64::try_from(summary.latest_conversation_seq).map_err(|_| StoreError::InvalidInput)?;
-        if after_seq < 0 {
+        let after_visibility_revision = messages.state.visibility_revision;
+        let through_visibility_revision = summary
+            .unread
+            .map_or(0, |unread| unread.visibility_revision as i64);
+        if after_seq < 0 || after_visibility_revision < 0 {
             return Err(StoreError::InvalidInput);
         }
         Ok(Self(Some(Subscription {
@@ -123,6 +147,8 @@ impl CommittedDirectory {
             published_round: round,
             after_seq,
             through_seq,
+            after_visibility_revision,
+            through_visibility_revision,
         })))
     }
 }
@@ -385,7 +411,7 @@ impl Connection {
             }
             Event::Subscribed(ticket) if self.accepts(ticket) => {
                 if let Phase::Subscribing(target) = &self.phase {
-                    if target.after_seq < target.through_seq {
+                    if target.needs_recovery() {
                         effects.push(Effect::RecoverMessages {
                             ticket: ticket.clone(),
                             target: target.clone(),
@@ -401,6 +427,7 @@ impl Connection {
                     && snapshot.visible
                     && snapshot.conversation_id == target.conversation_id
                     && snapshot.state.after_seq() >= target.through_seq
+                    && snapshot.state.visibility_revision >= target.through_visibility_revision
                 {
                     self.ready(ticket, now_ms, &mut effects);
                 }

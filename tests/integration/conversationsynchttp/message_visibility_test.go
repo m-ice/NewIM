@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"encoding/json"
 	"net/http"
+	"os"
 	"strconv"
 	"testing"
 
@@ -197,4 +198,42 @@ func visibilityPage(t *testing.T, f *fixture, gateway *process, token, id string
 		}
 	}
 	return page
+}
+
+func TestMessageVisibilityUpgrade(t *testing.T) {
+	f := openFixture(t)
+	keys := writeKeys(t, "visibility_upgrade", "visibility_upgrade")
+	gateway := f.accountSettingsGateway(keys)
+	switch os.Getenv("NEWIM_SYNC_HTTP_PHASE") {
+	case "prepare":
+		f.requireMigration(20)
+		pair := accountPair(t, f, gateway, "visibility_upgrade")
+		id := pair.conversation
+		send(t, f, gateway, pair.owner, id, "upgrade_own", "own before upgrade")
+		send(t, f, gateway, pair.peer, id, "upgrade_peer", "incoming before upgrade")
+		advanceWatermark(t, f, gateway, pair.owner, id, "1")
+		page := readPage(t, f, gateway, bootstrapPath, pair.owner, map[string]any{})
+		if len(page.Items) != 1 || page.Items[0].UnreadCount != nil || page.Items[0].LastReadSeq == nil ||
+			*page.Items[0].LastReadSeq != 1 {
+			t.Fatal("pre-upgrade directory did not preserve the legacy watermark")
+		}
+	case "restart":
+		f.requireMigration(21)
+		const account = "visibility_upgrade_owner"
+		token := f.admit(account, "restarted")
+		legacy := readPage(t, f, gateway, bootstrapPath, token, map[string]any{})
+		if len(legacy.Items) != 1 || legacy.Items[0].UnreadCount != nil {
+			t.Fatal("migration silently modified an existing directory version")
+		}
+		id := legacy.Items[0].ConversationID
+		runAccountSDKBackfill(t, f, "SYNC_SOURCE_COMPLETE", "run", "--limit", "1")
+		requireSyncError(t, f.call(gateway, http.MethodPost, deltaPath, token, encode(t, checkpoint(legacy.NextCursor)), nil),
+			http.StatusConflict, "SYNC_CURSOR_EXPIRED")
+		fresh := readPage(t, f, gateway, bootstrapPath, token, map[string]any{})
+		requireUnread(t, fresh, id, 1, 1, 0)
+		runAccountSDKBackfill(t, f, "SYNC_SOURCE_COMPLETE", "run", "--limit", "1")
+		requireAccountQuiet(t, f, gateway, token, fresh.NextCursor)
+	default:
+		t.Fatal("message visibility upgrade requires a prepare or restart phase")
+	}
 }

@@ -29,6 +29,7 @@ TESTS = {
     'conversation-account-sync-recovery': 'TestAccountSettingsHTTPRecovery',
     'conversation-account-sync-query-plan': 'TestAccountSettingsHTTPWide',
     'message-event-check': 'TestMessageVisibilityProjection',
+    'message-event-recovery': 'TestMessageVisibilityUpgrade',
 }
 SDK_TESTS = {
     'conversation-account-sdk-check': 'tls_sqlite_conversation_account_sync',
@@ -36,6 +37,7 @@ SDK_TESTS = {
     'message-sdk-sync-convergence': 'message_sync::tls_sqlite_message_convergence',
     'message-sdk-sync-recovery': 'message_sync::tls_sqlite_message_recovery',
     'sdk-connection-integration': 'connection::tls_sdk_connection',
+    'message-event-integration': 'connection::tls_sdk_message_visibility',
 }
 
 
@@ -87,7 +89,7 @@ def main():
         read_suite = args.suite.startswith('read-')
         account_sync = args.suite.startswith('conversation-account-')
         sdk_bridge = SDK_TESTS.get(args.suite)
-        query_plan = args.suite.endswith('query-plan')
+        query_plan = args.suite.endswith('query-plan') or args.suite == 'message-event-check'
         servers = ('newim-gateway', 'newim-server')
         if not read_suite or read_sync:
             servers += ('newim-sync-backfill',)
@@ -106,7 +108,8 @@ def main():
             target = 21 if args.suite.startswith('message-event-') else (
                 18 if account_sync or sdk_bridge else 17 if read_sync else 15 if read_suite else 14
             )
-            db.sql(migration_sql(target))
+            upgrades_visibility = args.suite == 'message-event-recovery'
+            db.sql(migration_sql(20 if upgrades_visibility else target))
             for name in paths:
                 commands.run(['docker', 'cp', str(directory / name), db.name + ':/tmp/' + name],
                              label='copy-owned-' + name)
@@ -118,11 +121,16 @@ def main():
             elif args.suite.endswith('recovery'):
                 run_test(db, TESTS[args.suite], 'prepare')
                 restart_database(db)
+                if upgrades_visibility:
+                    db.sql(migration_sql(21))
                 run_test(db, TESTS[args.suite], 'restart')
             else:
                 run_test(db, TESTS[args.suite])
                 if query_plan:
-                    test = 'TestAccountSettingsSourceQueryPlan' if account_sync else 'TestReadSyncQueryPlan'
+                    if args.suite == 'message-event-check':
+                        test = 'TestMessageVisibilityQueryPlan'
+                    else:
+                        test = 'TestAccountSettingsSourceQueryPlan' if account_sync else 'TestReadSyncQueryPlan'
                     run_test(db, test, 'plan', plan.name)
         print('TLS conversation sync suite passed; command records: ' + str(directory))
     except (Failure, OSError) as exc:

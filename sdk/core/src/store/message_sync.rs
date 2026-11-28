@@ -1,6 +1,6 @@
 //! Typed state for bounded message history recovery.
 
-use super::{Message, MessageWrite, Pending, StoreError};
+use super::{Blob, Message, MessageWrite, Pending, StoreError};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MessageSyncLookup {
@@ -30,6 +30,7 @@ pub struct MessageSyncState {
     pub continuous_seq: i64,
     pub history_after_seq: i64,
     pub highest_observed_seq: i64,
+    pub visibility_revision: i64,
     pub job: Option<GapJob>,
 }
 
@@ -97,6 +98,72 @@ pub enum MessageSyncMutation {
         published_round: u64,
         through_seq: i64,
     },
+    ApplyVisibility(VisibilityPage),
+}
+
+pub const HIDDEN_MESSAGE_TYPE: &str = "message_hidden";
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VisibilityAction {
+    Recall,
+    DeleteForMe,
+    AdminRemove,
+}
+
+impl VisibilityAction {
+    pub const fn code(self) -> u8 {
+        match self {
+            Self::Recall => 1,
+            Self::DeleteForMe => 2,
+            Self::AdminRemove => 3,
+        }
+    }
+
+    pub const fn from_code(code: u8) -> Option<Self> {
+        match code {
+            1 => Some(Self::Recall),
+            2 => Some(Self::DeleteForMe),
+            3 => Some(Self::AdminRemove),
+            _ => None,
+        }
+    }
+
+    pub fn from_payload(payload: &Blob) -> Option<Self> {
+        [Self::Recall, Self::DeleteForMe, Self::AdminRemove]
+            .into_iter()
+            .find(|action| action.payload() == payload.0)
+    }
+
+    pub fn hide(self, message: &mut Message) {
+        message.message_type = HIDDEN_MESSAGE_TYPE.into();
+        message.schema_version = 1;
+        message.payload = Some(Blob(self.payload().to_vec()));
+    }
+
+    const fn payload(self) -> &'static [u8] {
+        match self {
+            Self::Recall => br#"{"action":"recall","countAsUnread":false}"#,
+            Self::DeleteForMe => br#"{"action":"deleteForMe","countAsUnread":false}"#,
+            Self::AdminRemove => br#"{"action":"adminRemove","countAsUnread":false}"#,
+        }
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VisibilityEvent {
+    pub server_id: String,
+    pub sequence: i64,
+    pub revision: i64,
+    pub action: VisibilityAction,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct VisibilityPage {
+    pub published_round: u64,
+    pub after_revision: i64,
+    pub next_revision: i64,
+    pub through_revision: i64,
+    pub events: Vec<VisibilityEvent>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

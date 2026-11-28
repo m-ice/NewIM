@@ -758,3 +758,91 @@ fn new_generation_resumes_and_missing_bootstrap_invalidates_attempt() {
     assert!(hidden.state.job.is_none());
     assert!(found(&mut store, 3).is_some());
 }
+
+#[test]
+fn visibility_events_before_delivery_survive_reopen_and_reject_identity_conflicts() {
+    let dir = Directory::new();
+    let mut store = dir.open();
+    let mut summary = upsert_at(1, 0);
+    let ConversationSyncChange::Upsert(details) = &mut summary.change else {
+        unreachable!();
+    };
+    details.unread = Some(ConversationUnread {
+        count: 0,
+        visibility_revision: 2,
+    });
+    directory_page(&mut store, 1, vec![summary]);
+    commit(
+        &mut store,
+        2,
+        10,
+        MessageSyncMutation::ApplyVisibility(VisibilityPage {
+            published_round: 1,
+            after_revision: 0,
+            next_revision: 1,
+            through_revision: 2,
+            events: vec![VisibilityEvent {
+                server_id: "s1".into(),
+                sequence: 1,
+                revision: 1,
+                action: VisibilityAction::Recall,
+            }],
+        }),
+    );
+    drop(store);
+
+    let mut store = dir.open();
+    assert_eq!(state(&mut store).state.visibility_revision, 1);
+    commit(&mut store, 3, 12, observe(1));
+    let Response::Found(Some(message)) = run(
+        &mut store,
+        1,
+        Action::Lookup {
+            server_id: "s1".into(),
+        },
+    )
+    .unwrap() else {
+        panic!("late message lost its sequence slot");
+    };
+    assert_eq!(message.sequence, 1);
+    assert!(message.is_hidden());
+    assert_eq!(
+        message
+            .payload
+            .as_ref()
+            .and_then(VisibilityAction::from_payload),
+        Some(VisibilityAction::Recall)
+    );
+
+    let conflict = action(
+        &mut store,
+        13,
+        MessageSyncMutation::ApplyVisibility(VisibilityPage {
+            published_round: 1,
+            after_revision: 1,
+            next_revision: 2,
+            through_revision: 2,
+            events: vec![VisibilityEvent {
+                server_id: "other".into(),
+                sequence: 1,
+                revision: 2,
+                action: VisibilityAction::DeleteForMe,
+            }],
+        }),
+    );
+    assert_eq!(
+        run(&mut store, 4, conflict),
+        Err(StoreError::IdentityConflict)
+    );
+    assert_eq!(state(&mut store).state.visibility_revision, 1);
+    assert_eq!(
+        run(
+            &mut store,
+            1,
+            Action::Lookup {
+                server_id: "s1".into()
+            }
+        ),
+        Ok(Response::Found(Some(message)))
+    );
+}

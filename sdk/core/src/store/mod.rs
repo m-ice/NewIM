@@ -103,6 +103,19 @@ pub struct Message {
     pub payload: Option<Blob>,
 }
 impl Message {
+    pub fn is_hidden(&self) -> bool {
+        self.message_type == HIDDEN_MESSAGE_TYPE
+    }
+
+    pub fn same_position(&self, other: &Self) -> bool {
+        self.server_id == other.server_id
+            && self.sender_id == other.sender_id
+            && self.client_id == other.client_id
+            && self.conversation_id == other.conversation_id
+            && self.sequence == other.sequence
+            && self.server_time == other.server_time
+    }
+
     /// 校验本地持久化快照的字段与边界 / Validate a persisted local snapshot and its bounds.
     pub fn validate(&self) -> Result<(), StoreError> {
         if validation::message(self, false) {

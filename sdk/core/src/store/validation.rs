@@ -31,6 +31,11 @@ pub(crate) fn message(m: &Message, insert: bool) -> bool {
             .bytes()
             .all(|b| b.is_ascii_lowercase() || b.is_ascii_digit() || b == b'_')
         && m.payload.as_ref().is_none_or(blob)
+        && (!m.is_hidden()
+            || (m.schema_version == 1
+                && m.payload
+                    .as_ref()
+                    .is_none_or(|payload| VisibilityAction::from_payload(payload).is_some())))
         && (!insert || m.payload.is_some())
 }
 fn limit(n: usize) -> bool {
@@ -78,7 +83,31 @@ fn message_sync_batch(batch: &MessageSyncBatch) -> bool {
                 published_round,
                 through_seq,
             } => (1..=i64::MAX as u64).contains(published_round) && *through_seq >= 0,
+            MessageSyncMutation::ApplyVisibility(page) => visibility_page(page),
         }
+}
+
+fn visibility_page(page: &VisibilityPage) -> bool {
+    (1..=i64::MAX as u64).contains(&page.published_round)
+        && page.after_revision >= 0
+        && page.next_revision > page.after_revision
+        && page.through_revision >= page.next_revision
+        && page.events.len() <= MAX_ITEMS
+        && (page.next_revision == page.through_revision
+            || page
+                .events
+                .last()
+                .is_some_and(|event| event.revision == page.next_revision))
+        && page.events.iter().all(|event| {
+            id(&event.server_id)
+                && event.sequence > 0
+                && event.revision > page.after_revision
+                && event.revision <= page.next_revision
+        })
+        && page
+            .events
+            .windows(2)
+            .all(|pair| pair[0].revision < pair[1].revision)
 }
 
 fn sync_cursor(cursor: &Blob) -> bool {
@@ -540,6 +569,20 @@ impl Writer {
                         self.number(5);
                         self.number(*published_round);
                         self.number(*through_seq as u64);
+                    }
+                    MessageSyncMutation::ApplyVisibility(page) => {
+                        self.number(6);
+                        self.number(page.published_round);
+                        self.number(page.after_revision as u64);
+                        self.number(page.next_revision as u64);
+                        self.number(page.through_revision as u64);
+                        self.number(page.events.len() as u64);
+                        for event in &page.events {
+                            self.text(&event.server_id);
+                            self.number(event.sequence as u64);
+                            self.number(event.revision as u64);
+                            self.number(u64::from(event.action.code()));
+                        }
                     }
                 }
             }

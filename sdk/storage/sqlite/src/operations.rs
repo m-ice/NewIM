@@ -134,6 +134,8 @@ pub(crate) fn insert_message(
     if count >= max_records as i64 {
         return Err(StoreError::CapacityExceeded);
     }
+    let hidden = crate::visibility::sanitize_insert(conn, item)?;
+    let item = hidden.as_ref().unwrap_or(item);
     conn.execute(
         "INSERT INTO messages VALUES(?,?,?,?,?,?,?,?,?)",
         params![

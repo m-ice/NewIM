@@ -142,13 +142,14 @@ pub fn decode_page(request: &PageRequest, body: &[u8]) -> Result<Page, Error> {
         });
         previous = revision;
     }
-    if if has_next {
+    let invalid_position = if has_next {
         items.len() != limit
             || next_after_revision != previous
             || previous >= request.through_revision
     } else {
         next_after_revision != request.through_revision
-    } {
+    };
+    if invalid_position {
         return Err(Error::InvalidMessage);
     }
     Ok(Page {

@@ -794,12 +794,19 @@ pub fn resolve_ack<S: LocalStore>(
             revision: receipt.revision,
         })),
         Ok(Response::Existing(existing)) => {
-            if !identity_matches(&existing, &message) {
+            let same = if existing.is_hidden() {
+                existing.same_position(&message)
+            } else {
+                identity_matches(&existing, &message)
+            };
+            if !same {
                 return Err(OutboxError::AckResultConflict);
             }
             match &existing.payload {
-                None => Err(OutboxError::AckIntentUnverified),
-                Some(payload) if payload == &record.intent.payload => {
+                None if !existing.is_hidden() => Err(OutboxError::AckIntentUnverified),
+                payload
+                    if existing.is_hidden() || payload.as_ref() == Some(&record.intent.payload) =>
+                {
                     let request = Request {
                         fence: context.fence.clone(),
                         operation_id,
@@ -824,7 +831,7 @@ pub fn resolve_ack<S: LocalStore>(
                         _ => Err(OutboxError::UnexpectedResponse),
                     }
                 }
-                Some(_) => Err(OutboxError::AckResultConflict),
+                _ => Err(OutboxError::AckResultConflict),
             }
         }
         Ok(_) => Err(OutboxError::UnexpectedResponse),

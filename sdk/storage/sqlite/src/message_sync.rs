@@ -4,6 +4,7 @@ use crate::{
         COLUMNS, existing_message, insert_message, message, pending, revision, row_read_error,
         unsigned, validate_message_read,
     },
+    visibility,
 };
 use newim_sdk_core::{
     outbox::{BASE_RETRY_DELAY_MS, MAX_ATTEMPTS, MAX_RETRY_AGE_MS, MAX_RETRY_DELAY_MS},
@@ -48,6 +49,7 @@ fn state_row(row: &Row<'_>) -> rusqlite::Result<MessageSyncState> {
         continuous_seq: row.get(0)?,
         history_after_seq: row.get(1)?,
         highest_observed_seq: row.get(2)?,
+        visibility_revision: row.get(12)?,
         job,
     })
 }
@@ -55,6 +57,7 @@ fn state_row(row: &Row<'_>) -> rusqlite::Result<MessageSyncState> {
 struct PublishedItem {
     round: u64,
     latest_seq: i64,
+    visibility_revision: Option<i64>,
 }
 
 fn state(
@@ -64,7 +67,7 @@ fn state(
     let mut state = tx
         .query_row(
             "SELECT continuous_seq,history_after_seq,highest_observed_seq,phase,started_at_ms,
-             failures,page_limit,wake_at_ms,attempt_id,generation,attempt_after_seq,expires_at_ms
+             failures,page_limit,wake_at_ms,attempt_id,generation,attempt_after_seq,expires_at_ms,visibility_revision
              FROM message_sync WHERE conversation_id=?",
             [id],
             state_row,
@@ -74,7 +77,7 @@ fn state(
         .unwrap_or_default();
     let published = tx
         .query_row(
-            "SELECT round,latest_seq FROM conversation_sync_items
+            "SELECT round,latest_seq,visibility_revision FROM conversation_sync_items
              WHERE round=(SELECT published_round FROM conversation_sync_state WHERE id=1)
                AND conversation_id=? AND latest_seq IS NOT NULL",
             [id],
@@ -82,6 +85,7 @@ fn state(
                 Ok(PublishedItem {
                     round: unsigned(row, 0)?,
                     latest_seq: row.get(1)?,
+                    visibility_revision: row.get(2)?,
                 })
             },
         )
@@ -261,6 +265,25 @@ pub(crate) fn apply(
             let after = state.after_seq();
             observe_position(&mut state, after, now);
         }
+        MessageSyncMutation::ApplyVisibility(page) => {
+            if page.published_round != published.round
+                || page.after_revision != state.visibility_revision
+                || published
+                    .visibility_revision
+                    .is_none_or(|through| page.through_revision > through)
+            {
+                return Err(StoreError::StaleRevision);
+            }
+            for event in &page.events {
+                if event.sequence > published.latest_seq {
+                    return Err(StoreError::StaleRevision);
+                }
+                if event.sequence > state.history_after_seq {
+                    affected += visibility::apply_event(tx, id, event, max_records)?;
+                }
+            }
+            state.visibility_revision = page.next_revision;
+        }
         MessageSyncMutation::StartAttempt => {
             let before = state.after_seq();
             advance_cached(tx, id, &mut state)?;
@@ -353,6 +376,25 @@ fn write_message(
 ) -> Result<u32, StoreError> {
     let incoming = message_from_write(write);
     let existing = existing_message(tx, incoming)?;
+    if let (MessageWrite::Insert(_), Some(old)) = (write, &existing)
+        && incoming.is_hidden()
+    {
+        if !old.same_position(incoming) {
+            return Err(StoreError::IdentityConflict);
+        }
+        let action = incoming
+            .payload
+            .as_ref()
+            .and_then(VisibilityAction::from_payload)
+            .ok_or(StoreError::InvalidInput)?;
+        let sanitized = visibility::sanitize_insert(tx, incoming)?;
+        let action = sanitized
+            .as_ref()
+            .and_then(|message| message.payload.as_ref())
+            .and_then(VisibilityAction::from_payload)
+            .unwrap_or(action);
+        return visibility::hide_message(tx, old, action);
+    }
     match (write, existing) {
         (MessageWrite::Insert(_), None) => {
             insert_message(tx, incoming, max_records)?;
@@ -520,17 +562,18 @@ fn save(tx: &Transaction<'_>, id: &str, state: &MessageSyncState) -> Result<(), 
         Some(GapStatus::Stopped) => 4,
     };
     tx.execute(
-        "INSERT INTO message_sync VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+        "INSERT INTO message_sync VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
          ON CONFLICT(conversation_id) DO UPDATE SET continuous_seq=excluded.continuous_seq,
          history_after_seq=excluded.history_after_seq,highest_observed_seq=excluded.highest_observed_seq,
          phase=excluded.phase,started_at_ms=excluded.started_at_ms,failures=excluded.failures,
          page_limit=excluded.page_limit,wake_at_ms=excluded.wake_at_ms,attempt_id=excluded.attempt_id,
-         generation=excluded.generation,attempt_after_seq=excluded.attempt_after_seq,expires_at_ms=excluded.expires_at_ms",
+         generation=excluded.generation,attempt_after_seq=excluded.attempt_after_seq,expires_at_ms=excluded.expires_at_ms,
+         visibility_revision=excluded.visibility_revision",
         params![id, state.continuous_seq, state.history_after_seq, state.highest_observed_seq,
             phase, job.map(|job| job.started_at_ms as i64), job.map(|job| job.failures),
             job.map(|job| job.limit as i64), wake, attempt.map(|attempt| attempt.operation_id as i64),
             attempt.map(|attempt| attempt.generation as i64), attempt.map(|attempt| attempt.after_seq),
-            attempt.map(|attempt| attempt.expires_at_ms as i64)],
+            attempt.map(|attempt| attempt.expires_at_ms as i64), state.visibility_revision],
     ).map_err(db)?;
     Ok(())
 }

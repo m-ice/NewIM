@@ -4,7 +4,7 @@ use crate::outbox::{OutboxRecord, identity_matches};
 use crate::store::{
     Action, Blob, Fence, GapAttempt, GapFailure, GapStatus, MAX_ITEMS, Message, MessageSyncBatch,
     MessageSyncLookup, MessageSyncMutation, MessageSyncPage, MessageSyncQuery, MessageSyncSnapshot,
-    MessageWrite, StoreError,
+    MessageWrite, StoreError, VisibilityPage,
 };
 
 pub struct IncomingMessage {
@@ -83,6 +83,17 @@ pub fn observe_target(
             through_seq,
         },
     )
+}
+
+pub fn apply_visibility(
+    snapshot: &MessageSyncSnapshot,
+    now_ms: u64,
+    page: VisibilityPage,
+) -> Result<Action, StoreError> {
+    if snapshot.state.visibility_revision != page.after_revision {
+        return Err(StoreError::StaleRevision);
+    }
+    batch(snapshot, now_ms, MessageSyncMutation::ApplyVisibility(page))
 }
 
 pub fn schedule(snapshot: &MessageSyncSnapshot, now_ms: u64) -> Result<Option<Action>, StoreError> {
@@ -239,6 +250,21 @@ fn merge_message(
     if message.conversation_id != snapshot.conversation_id || message.sequence <= 0 {
         return Err(StoreError::InvalidInput);
     }
+    let existing = snapshot
+        .messages
+        .iter()
+        .find(|existing| existing.server_id == message.server_id);
+    if message.is_hidden() || existing.is_some_and(Message::is_hidden) {
+        if let Some(previous) = existing {
+            if !previous.same_position(&message) {
+                return Err(StoreError::IdentityConflict);
+            }
+            if !message.is_hidden() {
+                return Ok(MessageWrite::PreserveExisting(previous.clone()));
+            }
+        }
+        return Ok(MessageWrite::Insert(message));
+    }
     let wire = message.payload.as_ref().ok_or(StoreError::InvalidInput)?;
     if let Some(pending) = snapshot.pending.iter().find(|pending| {
         pending.sender_id == message.sender_id && pending.client_id == message.client_id
@@ -256,11 +282,7 @@ fn merge_message(
         }
         message.payload = Some(record.intent.payload);
     }
-    if let Some(existing) = snapshot
-        .messages
-        .iter()
-        .find(|existing| existing.server_id == message.server_id)
-    {
+    if let Some(existing) = existing {
         if !identity_matches(existing, &message) {
             return Err(StoreError::IdentityConflict);
         }

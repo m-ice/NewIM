@@ -166,6 +166,15 @@ func (s *connectionSocket) poll(t *testing.T) {
 }
 
 func TestConnectionSDKBridge(t *testing.T) {
+	runConnectionSDKBridge(t, 18, messageSDKHistory)
+}
+
+func TestMessageVisibilitySDKBridge(t *testing.T) {
+	runConnectionSDKBridge(t, 21, 2)
+}
+
+func runConnectionSDKBridge(t *testing.T, migration, messages int) {
+	t.Helper()
 	phase := "database"
 	defer func() {
 		if t.Failed() {
@@ -173,7 +182,7 @@ func TestConnectionSDKBridge(t *testing.T) {
 		}
 	}()
 	f := openFixture(t)
-	f.requireMigration(18)
+	f.requireMigration(migration)
 	ctx, cancel := context.WithTimeout(t.Context(), 100*time.Second)
 	defer cancel()
 	f.ctx = ctx
@@ -205,7 +214,7 @@ func TestConnectionSDKBridge(t *testing.T) {
 	createGroup(t, f, gateway, phone.Token, bridgeRoom, []string{bridgePeer}, true)
 	createGroup(t, f, gateway, phone.Token, connectionEmptyRoom, []string{bridgePeer}, true)
 	phase = "messages"
-	for number := 1; number <= messageSDKHistory; number++ {
+	for number := 1; number <= messages; number++ {
 		send(t, f, gateway, peer.Token, bridgeRoom, fmt.Sprintf("connect_%03d", number), "connection history")
 	}
 

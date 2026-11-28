@@ -23,10 +23,13 @@ func VisibilityAvailable(ctx context.Context, db visibilitySchemaQuery) (bool, e
 	if err != nil {
 		return false, fixed(err)
 	}
-	if events != (columns == 2) || !events && columns != 0 {
+	if !events && columns == 0 {
+		return false, nil
+	}
+	if !events || columns != 2 {
 		return false, app.Fail(app.StorageUnavailable)
 	}
-	return events, nil
+	return true, nil
 }
 
 const visibilityColumns = ",unread_count,visibility_revision"
@@ -73,4 +76,52 @@ func visibilitySummary(freshSend bool) string {
 					  AND e.audience_user_id=h.user_id))
 		END AS unread_count OFFSET 0
 	) summary ON true`
+}
+
+// The latest projection is enough to tell whether an active, visible legacy
+// conversation still needs its first authoritative count.
+const visibilityBackfillNeeded = `EXISTS (
+	SELECT 1 FROM newim.im_conversation_members m
+	LEFT JOIN newim.im_conversation_account_settings settings USING (conversation_id,user_id)
+	LEFT JOIN LATERAL (
+		SELECT unread_count FROM newim.im_conversation_sync_changes p
+		WHERE p.user_id=m.user_id AND p.conversation_id=m.conversation_id
+		ORDER BY p.change_seq DESC LIMIT 1
+	) previous ON true
+	WHERE m.user_id=a.user_id AND m.departed_at IS NULL
+	  AND settings.deleted_through_seq IS NULL AND previous.unread_count IS NULL
+)`
+
+func unreadBackfillNeeded(ctx context.Context, tx pgx.Tx, userID string) (bool, error) {
+	var needed bool
+	err := tx.QueryRow(ctx, `SELECT `+visibilityBackfillNeeded+` FROM newim.im_conversation_sync_accounts a
+		WHERE a.user_id=$1`, userID).Scan(&needed)
+	return needed, fixed(err)
+}
+
+func prepareVisibilityBackfillAccount(ctx context.Context, db sourceBackfillDB, userID string) error {
+	tx, err := db.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.ReadCommitted})
+	if err != nil {
+		return fixed(err)
+	}
+	defer rollback(tx)
+	if err = configure(ctx, tx); err != nil {
+		return err
+	}
+	state, err := readSourceBackfillState(ctx, tx, userID, true, true)
+	if err != nil {
+		return err
+	}
+	if state.ready {
+		needed, err := unreadBackfillNeeded(ctx, tx, userID)
+		if err != nil {
+			return err
+		}
+		if needed {
+			if err = resetReadSourceAccount(ctx, tx, userID, false); err != nil {
+				return err
+			}
+		}
+	}
+	return fixed(tx.Commit(ctx))
 }

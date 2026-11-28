@@ -24,3 +24,8 @@ SDK 从已发布会话目录接收 WSS 消息。每会话保存最后连续实�
 SQLite 004 增加补拉事务的状态。命令 `make message-sdk-sync-check`、
 `message-sdk-sync-convergence`、`message-sdk-sync-retries` 和
 `message-sdk-sync-recovery` 覆盖实际 TLS/WSS、原生存储和进程恢复。
+
+
+当目录给出新的可见性修订时，宿主按 [消息可见性同步](../message/visibility.md) 补齐事件。
+即使消息尾部没变，连接也等待可见性位点持久化。SQLite 在同一批次隐藏正文并推进位点。
+对恢复前已经确认的撤回或删除，迟到的消息与发送回执只能关联原身份和序号。

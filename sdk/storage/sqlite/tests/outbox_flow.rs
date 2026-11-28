@@ -992,3 +992,64 @@ fn stale_store_generation_cannot_dispatch() {
         "stale store generation must not dispatch: {transition:?}"
     );
 }
+
+#[test]
+fn authoritative_ack_resolves_a_send_whose_body_is_already_hidden() {
+    let directory = Directory::new();
+    let mut store = directory.open();
+    let context = send_context(&store);
+    let sent = intent();
+    outbox::enqueue(&mut store, 1, &context, sent.clone(), 0).unwrap();
+    let row = pending(&mut store, "stable");
+    let ack = PersistedAck {
+        sender_id: "alice".into(),
+        client_id: sent.client_id,
+        conversation_id: sent.conversation_id,
+        server_id: "recalled".into(),
+        sequence: 1,
+        server_time: 10,
+        protocol_version: 1,
+        schema_version: sent.schema_version,
+        message_type: sent.message_type,
+        payload: sent.payload,
+    };
+    let mut message = Message {
+        server_id: ack.server_id.clone(),
+        sender_id: ack.sender_id.clone(),
+        client_id: ack.client_id.clone(),
+        conversation_id: ack.conversation_id.clone(),
+        sequence: ack.sequence,
+        server_time: ack.server_time,
+        schema_version: ack.schema_version,
+        message_type: ack.message_type.clone(),
+        payload: None,
+    };
+    VisibilityAction::Recall.hide(&mut message);
+    let action = Action::Apply(Batch {
+        expected_revision: revision(&mut store),
+        messages: vec![MessageWrite::Insert(message.clone())],
+        conversations: Vec::new(),
+        cursor: None,
+        resolve_pending: Vec::new(),
+    });
+    assert!(matches!(
+        run(&mut store, 2, action),
+        Ok(Response::Committed(_))
+    ));
+    let rev = revision(&mut store);
+    assert!(matches!(
+        outbox::resolve_ack(&mut store, 3, &row, rev, &context, &ack),
+        Ok(AckResolution::Resolved(_))
+    ));
+    assert_eq!(pending_count(&directory), 0);
+    assert_eq!(
+        run(
+            &mut store,
+            1,
+            Action::Lookup {
+                server_id: "recalled".into()
+            }
+        ),
+        Ok(Response::Found(Some(message)))
+    );
+}

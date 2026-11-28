@@ -451,3 +451,256 @@ fn tls_sdk_connection() {
     );
     bridge.finish();
 }
+
+#[test]
+#[ignore = "run with make message-event-integration"]
+fn tls_sdk_message_visibility() {
+    use newim_protocol::visibility as wire;
+
+    let mut bridge = Bridge::start_fixture("TestMessageVisibilitySDKBridge");
+    let path = Directory::new();
+    let mut native = Native::open(&path.0, 1);
+    let mut connection = Connection::new(native.store.fence().clone(), 0).unwrap();
+
+    let revision = progress(&mut native, ROOM).revision;
+    commit(
+        &mut native.store,
+        &mut native.next,
+        Action::Apply(Batch {
+            expected_revision: revision,
+            messages: Vec::new(),
+            conversations: vec![Conversation {
+                id: ROOM.into(),
+                unread: 7,
+                summary: Blob(vec![1]),
+            }],
+            cursor: None,
+            resolve_pending: Vec::new(),
+        }),
+    );
+    let first = credential_ticket(
+        event(&mut connection, Event::NetworkAvailable, NOW),
+        AuthCause::Missing,
+    );
+    authorize(&mut connection, &first, NOW);
+    let [Effect::RecoverMessages { target, .. }]: [Effect; 1] = bind(
+        &mut bridge,
+        &mut native,
+        &mut connection,
+        &first,
+        "phone",
+        (ROOM, 0),
+        NOW,
+    )
+    .try_into()
+    .unwrap() else {
+        panic!("expected initial message recovery");
+    };
+    assert_eq!(target.through_seq(), 2);
+    assert_eq!(target.through_visibility_revision(), 0);
+    assert_eq!(unread_count(&mut native), 2);
+    let start = progress(&mut native, ROOM);
+    let action =
+        recovery::observe_target(&start, NOW, target.published_round(), target.through_seq())
+            .unwrap();
+    commit(&mut native.store, &mut native.next, action);
+    let flight = native.start(NOW + 1).unwrap();
+    let page = get_page_for(&mut bridge, "phone", &flight);
+    native.receive(&flight, page, NOW + 2);
+    let snapshot = progress(&mut native, ROOM);
+    assert_eq!(
+        event(
+            &mut connection,
+            Event::MessageProgress {
+                ticket: &first,
+                snapshot: &snapshot
+            },
+            NOW + 2
+        ),
+        vec![Effect::Ready(first.clone())]
+    );
+
+    let before = room_messages(&mut native);
+    assert_eq!(before.len(), 2);
+    assert!(before.iter().all(|message| !message.is_hidden()));
+    assert_eq!(
+        event(&mut connection, Event::NetworkLost, NOW + 3),
+        vec![Effect::Cancel(first.clone())]
+    );
+    close(&mut bridge);
+    change_visibility(&mut bridge, "peer", &before[0], "sdk_recall", "recall");
+    change_visibility(&mut bridge, "next", &before[1], "sdk_hide", "deleteForMe");
+    assert_eq!(unread_count(&mut native), 2);
+    assert_eq!(room_messages(&mut native), before);
+
+    let next_operation = native.next;
+    drop(native);
+    let mut native = Native::open(&path.0, next_operation);
+    let current = directory_ticket(event(&mut connection, Event::NetworkAvailable, NOW + 4));
+    assert!(!connection.accepts(&first));
+    let [Effect::RecoverMessages { target, .. }]: [Effect; 1] = bind(
+        &mut bridge,
+        &mut native,
+        &mut connection,
+        &current,
+        "phone",
+        (ROOM, 2),
+        NOW + 4,
+    )
+    .try_into()
+    .unwrap() else {
+        panic!("visibility must catch up even when the message tail stayed put");
+    };
+    assert_eq!(target.after_seq(), target.through_seq());
+    assert_eq!(target.through_visibility_revision(), 2);
+    assert_eq!(unread_count(&mut native), 0);
+
+    for expected_revision in 1..=2 {
+        let snapshot = progress(&mut native, ROOM);
+        let request = wire::PageRequest {
+            conversation_id: ROOM.into(),
+            after_revision: snapshot.state.visibility_revision,
+            through_revision: target.through_visibility_revision(),
+            limit: 1,
+        };
+        let reply = bridge.call(
+            "phone",
+            "POST",
+            wire::VISIBILITY_PATH,
+            &request.encode().unwrap(),
+        );
+        reply.require_status(200, "visibility page");
+        let page = wire::decode_page(&request, &reply.bytes).unwrap();
+        assert_eq!(page.next_after_revision, expected_revision);
+        assert!(connection.accepts(&current));
+        let action = recovery::apply_visibility(
+            &snapshot,
+            NOW + 4 + expected_revision as u64,
+            VisibilityPage {
+                published_round: target.published_round(),
+                after_revision: request.after_revision,
+                next_revision: page.next_after_revision,
+                through_revision: request.through_revision,
+                events: page
+                    .items
+                    .into_iter()
+                    .map(|item| VisibilityEvent {
+                        server_id: item.server_msg_id,
+                        sequence: item.conversation_seq,
+                        revision: item.revision,
+                        action: match item.action {
+                            wire::Action::Recall => VisibilityAction::Recall,
+                            wire::Action::DeleteForMe => VisibilityAction::DeleteForMe,
+                            wire::Action::AdminRemove => VisibilityAction::AdminRemove,
+                        },
+                    })
+                    .collect(),
+            },
+        )
+        .unwrap();
+        commit(&mut native.store, &mut native.next, action);
+        let snapshot = progress(&mut native, ROOM);
+        let effects = event(
+            &mut connection,
+            Event::MessageProgress {
+                ticket: &current,
+                snapshot: &snapshot,
+            },
+            NOW + 4 + expected_revision as u64,
+        );
+        if expected_revision == 1 {
+            assert!(effects.is_empty());
+            assert_eq!(connection.status(), Status::Recovering);
+        } else {
+            assert_eq!(effects, vec![Effect::Ready(current.clone())]);
+        }
+    }
+
+    let delayed = recovery::IncomingMessage {
+        protocol_version: 1,
+        message: before[0].clone(),
+    };
+    let query = recovery::snapshot_query(ROOM, std::slice::from_ref(&delayed)).unwrap();
+    let Response::MessageSyncSnapshot(snapshot) = run(&mut native.store, 1, query).unwrap() else {
+        unreachable!()
+    };
+    let action = recovery::observe(
+        native.store.fence(),
+        &snapshot,
+        delayed,
+        NOW + 7,
+        |left, right| Ok(left == right),
+    )
+    .unwrap();
+    commit(&mut native.store, &mut native.next, action);
+
+    let next_operation = native.next;
+    drop(native);
+    let mut native = Native::open(&path.0, next_operation);
+    let after = room_messages(&mut native);
+    assert_eq!(after.len(), 2);
+    assert_eq!(progress(&mut native, ROOM).state.visibility_revision, 2);
+    for (record, original, expected) in [
+        (&after[0], &before[0], VisibilityAction::Recall),
+        (&after[1], &before[1], VisibilityAction::DeleteForMe),
+    ] {
+        assert!(record.same_position(original));
+        assert!(record.is_hidden());
+        assert_eq!(
+            record
+                .payload
+                .as_ref()
+                .and_then(VisibilityAction::from_payload),
+            Some(expected)
+        );
+        assert_ne!(record.payload, original.payload);
+    }
+    assert_eq!(unread_count(&mut native), 0);
+    bridge.finish();
+}
+
+fn room_messages(native: &mut Native) -> Vec<Message> {
+    let Response::Messages(page) = run(
+        &mut native.store,
+        1,
+        Action::Messages {
+            conversation: ROOM.into(),
+            after: None,
+            limit: 16,
+        },
+    )
+    .unwrap() else {
+        panic!("message cache returned an unexpected response")
+    };
+    assert!(page.next.is_none());
+    page.items
+}
+
+fn unread_count(native: &mut Native) -> u64 {
+    let Response::Snapshot(snapshot) = run(
+        &mut native.store,
+        1,
+        Action::Snapshot {
+            conversation: Some(ROOM.into()),
+        },
+    )
+    .unwrap() else {
+        panic!("missing cached conversation")
+    };
+    snapshot.conversation.unwrap().unread
+}
+
+fn change_visibility(
+    bridge: &mut Bridge,
+    device: &str,
+    message: &Message,
+    request: &str,
+    action: &str,
+) {
+    let wire = serde_json::to_vec(&json!({
+        "conversationId": ROOM, "serverMsgId": message.server_id, "requestId": request, "action": action,
+    })).unwrap();
+    bridge
+        .call(device, "POST", "/api/v1/messages/visibility", &wire)
+        .require_status(200, "change visibility");
+}

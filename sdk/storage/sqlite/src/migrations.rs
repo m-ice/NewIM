@@ -7,7 +7,7 @@ pub const HASH3: &str = "1d5e4cb321646511f624866c33c0bdab239a0c5320af3ec2ff940ee
 pub const SQL4: &str = include_str!("../migrations/004-message-sync.sql");
 pub const HASH4: &str = "5482c1543d5d29318011a2caedf5a6c2549b98337d05c4eaf013464b1548bcee";
 pub const SQL5: &str = include_str!("../migrations/005-message-visibility.sql");
-pub const HASH5: &str = "0a3c4209f721aaa69e9e06366f87d3472d428ecfc4b1bfb08474a2a5bf548ae9";
+pub const HASH5: &str = "d90acab37537bcbcb0225f2faa93c3ea2682dba277e2421b2e32b55d288e926e";
 use crate::{StoreError, db};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 pub const VERSION: i64 = 5;

@@ -442,9 +442,15 @@ message-sdk-sync-retries: toolchain
 message-sdk-sync-recovery: toolchain
 	python3 -B infra/db/sync_http_suite.py message-sdk-sync-recovery
 
-.PHONY: message-event-check
+.PHONY: message-event-check message-event-integration message-event-recovery
 message-event-check: toolchain
 	python3 -B infra/db/sync_http_suite.py message-event-check
+
+message-event-integration: toolchain
+	python3 -B infra/db/sync_http_suite.py message-event-integration
+
+message-event-recovery: toolchain store-migrations
+	python3 -B infra/db/sync_http_suite.py message-event-recovery
 
 .PHONY: sdk-connection-check sdk-connection-integration
 sdk-connection-check: toolchain

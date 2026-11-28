@@ -136,7 +136,8 @@ func forwardAccountSDKRequest(t *testing.T, f *fixture, gateway, legacy *process
 
 func allowedAccountSDKRoute(method, path string) bool {
 	switch path {
-	case bootstrapPath, deltaPath, "/api/v1/sync/messages", "/api/v1/conversations/" + bridgeRoom + "/read",
+	case bootstrapPath, deltaPath, "/api/v1/sync/messages", "/api/v1/sync/message-visibility", "/api/v1/messages/visibility",
+		"/api/v1/conversations/" + bridgeRoom + "/read",
 		"/api/v1/conversations/" + bridgeRoom + "/clear", "/api/v1/conversations/" + bridgeRoom + "/delete":
 		return method == http.MethodPost
 	case "/api/v1/conversations/" + bridgeRoom + "/settings":
