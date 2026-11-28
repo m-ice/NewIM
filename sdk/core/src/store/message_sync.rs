@@ -93,6 +93,10 @@ pub enum MessageSyncMutation {
         failure: GapFailure,
     },
     Resume,
+    ObserveTarget {
+        published_round: u64,
+        through_seq: i64,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

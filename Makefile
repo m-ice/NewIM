@@ -442,6 +442,15 @@ message-sdk-sync-retries: toolchain
 message-sdk-sync-recovery: toolchain
 	python3 -B infra/db/sync_http_suite.py message-sdk-sync-recovery
 
+.PHONY: sdk-connection-check sdk-connection-integration
+sdk-connection-check: toolchain
+	cargo test -p newim-sdk-core --locked --offline --test connection
+	cargo test -p newim-protocol --locked --offline --lib gateway
+	python3 sdk/storage/sqlite/engine.py run cargo test -p newim-store-sqlite --locked --offline --test message_sync
+
+sdk-connection-integration: toolchain
+	python3 -B infra/db/sync_http_suite.py sdk-connection-integration
+
 .PHONY: message-delta-http-check message-delta-http-security message-delta-http-recovery
 message-delta-http-check: toolchain
 	python3 -B infra/db/message_delta_http_suite.py check

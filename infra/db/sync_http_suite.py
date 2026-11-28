@@ -34,6 +34,7 @@ SDK_TESTS = {
     'message-sdk-sync-check': 'message_sync::tls_sqlite_message_sync',
     'message-sdk-sync-convergence': 'message_sync::tls_sqlite_message_convergence',
     'message-sdk-sync-recovery': 'message_sync::tls_sqlite_message_recovery',
+    'sdk-connection-integration': 'connection::tls_sdk_connection',
 }
 
 

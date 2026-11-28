@@ -147,7 +147,7 @@ func forwardMessageSDKRequest(t *testing.T, f *fixture, gateway *process, tokens
 	if reply.err != nil || !reply.verified || len(reply.body) > responseLimit {
 		t.Fatalf("message SDK fixture TLS response unavailable: status=%d verified=%t", reply.status, reply.verified)
 	}
-	if isSend && reply.status == http.StatusOK {
+	if capture != nil && isSend && reply.status == http.StatusOK {
 		capture.record(t, f.ctx, expectACK(t, reply))
 	}
 	mustBridgeWrite(t, fmt.Sprintf("HTTP\t%d\t%s", reply.status, hex.EncodeToString(reply.body)))

@@ -74,6 +74,10 @@ fn message_sync_batch(batch: &MessageSyncBatch) -> bool {
                 gap_attempt(attempt) && page.validate(&batch.conversation_id, attempt).is_ok()
             }
             MessageSyncMutation::FailAttempt { attempt, .. } => gap_attempt(attempt),
+            MessageSyncMutation::ObserveTarget {
+                published_round,
+                through_seq,
+            } => (1..=i64::MAX as u64).contains(published_round) && *through_seq >= 0,
         }
 }
 
@@ -510,6 +514,14 @@ impl Writer {
                         });
                     }
                     MessageSyncMutation::Resume => self.number(4),
+                    MessageSyncMutation::ObserveTarget {
+                        published_round,
+                        through_seq,
+                    } => {
+                        self.number(5);
+                        self.number(*published_round);
+                        self.number(*through_seq as u64);
+                    }
                 }
             }
             Action::ApplyConversationSyncWithRemovals { batch, removed } => {

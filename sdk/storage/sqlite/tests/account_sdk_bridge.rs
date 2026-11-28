@@ -1,4 +1,6 @@
 mod common;
+#[path = "bridge/connection.rs"]
+mod connection;
 #[path = "bridge/message_sync.rs"]
 mod message_sync;
 

@@ -4,6 +4,7 @@
 //! authorizes a send. Unknown payload schemas remain opaque and unsupported.
 
 pub mod conversation_sync;
+pub mod gateway;
 mod intent;
 pub mod media;
 pub mod message_delta;

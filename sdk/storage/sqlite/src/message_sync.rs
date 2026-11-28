@@ -52,7 +52,15 @@ fn state_row(row: &Row<'_>) -> rusqlite::Result<MessageSyncState> {
     })
 }
 
-fn state(tx: &Transaction<'_>, id: &str) -> Result<(MessageSyncState, bool), StoreError> {
+struct PublishedItem {
+    round: u64,
+    latest_seq: i64,
+}
+
+fn state(
+    tx: &Transaction<'_>,
+    id: &str,
+) -> Result<(MessageSyncState, Option<PublishedItem>), StoreError> {
     let mut state = tx
         .query_row(
             "SELECT continuous_seq,history_after_seq,highest_observed_seq,phase,started_at_ms,
@@ -64,15 +72,21 @@ fn state(tx: &Transaction<'_>, id: &str) -> Result<(MessageSyncState, bool), Sto
         .optional()
         .map_err(row_read_error)?
         .unwrap_or_default();
-    let visible = tx
+    let published = tx
         .query_row(
-            "SELECT EXISTS(SELECT 1 FROM conversation_sync_items
+            "SELECT round,latest_seq FROM conversation_sync_items
              WHERE round=(SELECT published_round FROM conversation_sync_state WHERE id=1)
-               AND conversation_id=? AND latest_seq IS NOT NULL)",
+               AND conversation_id=? AND latest_seq IS NOT NULL",
             [id],
-            |row| row.get(0),
+            |row| {
+                Ok(PublishedItem {
+                    round: unsigned(row, 0)?,
+                    latest_seq: row.get(1)?,
+                })
+            },
         )
-        .map_err(db)?;
+        .optional()
+        .map_err(row_read_error)?;
     let prior_after = state.after_seq();
     state.history_after_seq = state
         .history_after_seq
@@ -85,10 +99,10 @@ fn state(tx: &Transaction<'_>, id: &str) -> Result<(MessageSyncState, bool), Sto
             *until_ms = job.started_at_ms;
         }
     }
-    if visible {
+    if published.is_some() {
         observe_cached_high(tx, id, &mut state)?;
     }
-    Ok((state, visible))
+    Ok((state, published))
 }
 
 fn observe_cached_high(
@@ -138,7 +152,8 @@ pub(crate) fn snapshot(
     tx: &Transaction<'_>,
     query: &MessageSyncQuery,
 ) -> Result<MessageSyncSnapshot, StoreError> {
-    let (state, visible) = state(tx, &query.conversation_id)?;
+    let (state, published) = state(tx, &query.conversation_id)?;
+    let visible = published.is_some();
     let mut result = MessageSyncSnapshot {
         conversation_id: query.conversation_id.clone(),
         revision: revision(tx)?,
@@ -219,10 +234,10 @@ pub(crate) fn apply(
     let id = &batch.conversation_id;
     let now = batch.now_ms;
     let generation = request.fence.generation;
-    let (mut state, visible) = state(tx, id)?;
-    if !visible {
+    let (mut state, published) = state(tx, id)?;
+    let Some(published) = published else {
         return Err(StoreError::StaleRevision);
-    }
+    };
     let mut affected = 0;
     match &batch.mutation {
         MessageSyncMutation::Observe(write) => {
@@ -234,6 +249,17 @@ pub(crate) fn apply(
             let before = state.after_seq();
             advance_cached(tx, id, &mut state)?;
             observe_position(&mut state, before, now);
+        }
+        MessageSyncMutation::ObserveTarget {
+            published_round,
+            through_seq,
+        } => {
+            if *published_round != published.round || *through_seq > published.latest_seq {
+                return Err(StoreError::StaleRevision);
+            }
+            state.highest_observed_seq = state.highest_observed_seq.max(*through_seq);
+            let after = state.after_seq();
+            observe_position(&mut state, after, now);
         }
         MessageSyncMutation::StartAttempt => {
             let before = state.after_seq();

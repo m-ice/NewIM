@@ -65,6 +65,26 @@ pub fn observe(
     batch(snapshot, now_ms, MessageSyncMutation::Observe(write))
 }
 
+/// Schedule history from a published directory target without observing a message.
+pub fn observe_target(
+    snapshot: &MessageSyncSnapshot,
+    now_ms: u64,
+    published_round: u64,
+    through_seq: i64,
+) -> Result<Action, StoreError> {
+    if !(1..=i64::MAX as u64).contains(&published_round) || through_seq < 0 {
+        return Err(StoreError::InvalidInput);
+    }
+    batch(
+        snapshot,
+        now_ms,
+        MessageSyncMutation::ObserveTarget {
+            published_round,
+            through_seq,
+        },
+    )
+}
+
 pub fn schedule(snapshot: &MessageSyncSnapshot, now_ms: u64) -> Result<Option<Action>, StoreError> {
     if !snapshot.visible {
         return Ok(None);

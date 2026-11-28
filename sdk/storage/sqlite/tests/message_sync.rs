@@ -2,6 +2,7 @@ mod common;
 
 use common::*;
 use newim_sdk_core::conversation_sync::{InFlightPage, Page};
+use newim_sdk_core::message_sync;
 use newim_sdk_core::store::*;
 use newim_store_sqlite::{Limits, SqliteStore};
 
@@ -133,6 +134,124 @@ fn directory_page(store: &mut SqliteStore, operation: u64, items: Vec<Conversati
         run(store, operation, action),
         Ok(Response::Committed(_))
     ));
+}
+
+#[test]
+fn published_target_starts_history_without_a_live_message() {
+    let dir = Directory::new();
+    let mut store = dir.open();
+    publish(&mut store, 1);
+    let empty = state(&mut store);
+    let target = message_sync::observe_target(&empty, 10, 1, 0).unwrap();
+    assert!(run(&mut store, 2, target).is_ok());
+    assert_eq!(
+        message_sync::schedule(&state(&mut store), 10).unwrap(),
+        None
+    );
+    directory_page(&mut store, 3, vec![upsert_at(2, 0)]);
+    let initial = state(&mut store);
+    assert_eq!(initial.state.highest_observed_seq, 0);
+    let target = message_sync::observe_target(&initial, 20, 1, 8).unwrap();
+    let request = req(&store, 4, target);
+    assert!(store.execute(request.clone()).result.is_ok());
+    assert!(matches!(
+        store.execute(request).result,
+        Ok(Response::Committed(Receipt { replayed: true, .. }))
+    ));
+    let scheduled = state(&mut store).state;
+    assert_eq!(
+        (scheduled.continuous_seq, scheduled.highest_observed_seq),
+        (0, 8)
+    );
+    assert!(matches!(
+        scheduled.job.as_ref().unwrap().status,
+        GapStatus::Waiting { until_ms: 20 }
+    ));
+
+    let duplicate = message_sync::observe_target(&state(&mut store), 21, 1, 7).unwrap();
+    assert!(run(&mut store, 5, duplicate).is_ok());
+    assert_eq!(state(&mut store).state, scheduled);
+    drop(store);
+    let mut store = dir.open();
+    let start = message_sync::schedule(&state(&mut store), 22)
+        .unwrap()
+        .unwrap();
+    assert!(run(&mut store, 6, start).is_ok());
+    let current = attempt(&mut store);
+    assert_eq!(current.after_seq, 0);
+    commit(
+        &mut store,
+        7,
+        23,
+        MessageSyncMutation::CommitPage {
+            attempt: current,
+            page: MessageSyncPage {
+                history_after_seq: 0,
+                latest_seq: 8,
+                has_next: false,
+                next_after_seq: Some(8),
+                messages: (1..=8).map(|seq| MessageWrite::Insert(msg(seq))).collect(),
+            },
+        },
+    );
+    let settled = state(&mut store).state;
+    assert_eq!(
+        (settled.continuous_seq, settled.highest_observed_seq),
+        (8, 8)
+    );
+    assert!(settled.job.is_none());
+}
+
+#[test]
+fn directory_target_requires_the_current_published_item_and_tail() {
+    let dir = Directory::new();
+    let mut store = dir.open();
+    directory_page(&mut store, 1, vec![upsert_at(1, 0)]);
+    let published = directory_state(&mut store, ConversationSyncQuery::State);
+    let restart = InFlightPage::new(store.fence(), &published)
+        .restart(store.fence(), &published, 409, "SYNC_CURSOR_EXPIRED")
+        .unwrap();
+    assert!(run(&mut store, 2, restart).is_ok());
+    let staging = directory_state(&mut store, ConversationSyncQuery::State);
+    assert_eq!(staging.position.round, 2);
+    assert_eq!(staging.published_round, Some(1));
+    let staged_item = Action::ApplyConversationSync(ConversationSyncBatch {
+        expected_revision: staging.revision,
+        expected_position: staging.position,
+        mutation: ConversationSyncMutation::CommitPage {
+            next_cursor: Blob(vec![3]),
+            has_more: true,
+            items: vec![upsert_at(2, 0)],
+        },
+    });
+    assert!(run(&mut store, 3, staged_item).is_ok());
+    let original = state(&mut store);
+    for (round, through) in [(2, 8), (1, 9)] {
+        let target = message_sync::observe_target(&original, 20, round, through).unwrap();
+        assert_eq!(run(&mut store, 4, target), Err(StoreError::StaleRevision));
+    }
+    assert_eq!(state(&mut store), original);
+
+    directory_page(&mut store, 4, vec![]);
+    let snapshot = state(&mut store);
+    let outdated = message_sync::observe_target(&snapshot, 21, 1, 8).unwrap();
+    assert_eq!(run(&mut store, 5, outdated), Err(StoreError::StaleRevision));
+    let target = message_sync::observe_target(&snapshot, 21, 2, 8).unwrap();
+    assert!(run(&mut store, 5, target).is_ok());
+    directory(&mut store, 6, ConversationSyncChange::Remove);
+    let hidden = state(&mut store);
+    assert!(!hidden.visible);
+    assert!(hidden.state.job.is_none());
+    let target = action(
+        &mut store,
+        22,
+        MessageSyncMutation::ObserveTarget {
+            published_round: 2,
+            through_seq: 8,
+        },
+    );
+    assert_eq!(run(&mut store, 7, target), Err(StoreError::StaleRevision));
+    assert_eq!(state(&mut store), hidden);
 }
 
 #[test]

@@ -12,13 +12,13 @@ use std::{
 
 const GUARD_TIMEOUT: Duration = Duration::from_secs(10);
 
-struct Native {
-    store: SqliteStore,
-    next: u64,
+pub(super) struct Native {
+    pub(super) store: SqliteStore,
+    pub(super) next: u64,
 }
 
 impl Native {
-    fn open(path: &Path, next: u64) -> Self {
+    pub(super) fn open(path: &Path, next: u64) -> Self {
         Self {
             store: SqliteStore::open(path, ACCOUNT, Limits::default()).unwrap(),
             next,
@@ -40,7 +40,7 @@ impl Native {
         commit(&mut self.store, &mut self.next, action);
     }
 
-    fn start(&mut self, now: u64) -> Option<flow::InFlightPage> {
+    pub(super) fn start(&mut self, now: u64) -> Option<flow::InFlightPage> {
         let snapshot = self.snapshot(&[]);
         let action = flow::schedule(&snapshot, now).unwrap()?;
         let operation = self.next;
@@ -49,7 +49,7 @@ impl Native {
         flow::InFlightPage::started(self.store.fence(), &snapshot, operation)
     }
 
-    fn receive(&mut self, flight: &flow::InFlightPage, page: flow::Page, now: u64) {
+    pub(super) fn receive(&mut self, flight: &flow::InFlightPage, page: flow::Page, now: u64) {
         let snapshot = self.snapshot(&page.messages);
         let action = flight
             .apply(self.store.fence(), &snapshot, page, now, compare)
@@ -57,13 +57,16 @@ impl Native {
         commit(&mut self.store, &mut self.next, action);
     }
 
-    fn queue(&mut self, intent: SendIntent, now: u64) -> (Pending, SendContext) {
-        let context = SendContext {
+    fn initial_context(&self) -> SendContext {
+        SendContext {
             sender_id: ACCOUNT.into(),
             fence: self.store.fence().clone(),
             connection_generation: ConnectionGeneration(1),
-        };
-        let record = outbox::OutboxRecord::new(intent, &context, now).unwrap();
+        }
+    }
+
+    fn queue_with(&mut self, intent: SendIntent, context: &SendContext, now: u64) -> Pending {
+        let record = outbox::OutboxRecord::new(intent, context, now).unwrap();
         let pending = Pending {
             sender_id: ACCOUNT.into(),
             client_id: record.intent.client_id.clone(),
@@ -75,10 +78,15 @@ impl Native {
             &mut self.next,
             Action::Enqueue(pending.clone()),
         );
-        (pending, context)
+        pending
     }
 
-    fn accept_ack(&mut self, pending: &Pending, context: &SendContext, ack: &PersistedAck) {
+    pub(super) fn accept_ack(
+        &mut self,
+        pending: &Pending,
+        context: &SendContext,
+        ack: &PersistedAck,
+    ) {
         let revision = self.snapshot(&[]).revision;
         let result =
             outbox::resolve_ack(&mut self.store, self.next, pending, revision, context, ack);
@@ -124,6 +132,14 @@ fn frame(bridge: &mut Bridge, sequence: i64) -> flow::IncomingMessage {
 }
 
 fn get_page(bridge: &mut Bridge, flight: &flow::InFlightPage) -> flow::Page {
+    get_page_for(bridge, "phone", flight)
+}
+
+pub(super) fn get_page_for(
+    bridge: &mut Bridge,
+    device: &str,
+    flight: &flow::InFlightPage,
+) -> flow::Page {
     let request = flight.request();
     let wire = delta::MessageDeltaRequest {
         conversation_id: request.conversation_id,
@@ -131,7 +147,7 @@ fn get_page(bridge: &mut Bridge, flight: &flow::InFlightPage) -> flow::Page {
         limit: request.limit,
     };
     let reply = bridge.call(
-        "phone",
+        device,
         "POST",
         delta::MESSAGE_DELTA_PATH,
         &delta::encode_message_delta_request(&wire).unwrap(),
@@ -175,8 +191,21 @@ fn queued_ack(
     client: &str,
     now: u64,
 ) -> (Pending, SendContext, PersistedAck) {
+    let context = native.initial_context();
+    let (pending, ack) = queued_ack_with(native, bridge, &context, "phone", client, now);
+    (pending, context, ack)
+}
+
+pub(super) fn queued_ack_with(
+    native: &mut Native,
+    bridge: &mut Bridge,
+    context: &SendContext,
+    device: &str,
+    client: &str,
+    now: u64,
+) -> (Pending, PersistedAck) {
     let raw = Blob(br#"{ "text" : "own message" }"#.to_vec());
-    let (pending, context) = native.queue(
+    let pending = native.queue_with(
         SendIntent {
             protocol_version: 1,
             client_id: client.into(),
@@ -185,9 +214,10 @@ fn queued_ack(
             message_type: "text".into(),
             payload: raw.clone(),
         },
+        context,
         now,
     );
-    let ack = send(bridge, "phone", client, br#"{"text":"own message"}"#);
+    let ack = send(bridge, device, client, br#"{"text":"own message"}"#);
     let ack = PersistedAck {
         sender_id: ack.sender_id,
         client_id: ack.client_msg_id,
@@ -200,7 +230,7 @@ fn queued_ack(
         message_type: "text".into(),
         payload: raw,
     };
-    (pending, context, ack)
+    (pending, ack)
 }
 
 fn drain(native: &mut Native, bridge: &mut Bridge, mut now: u64) {
