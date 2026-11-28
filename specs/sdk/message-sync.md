@@ -25,7 +25,13 @@ SQLite 004 增加补拉事务的状态。命令 `make message-sdk-sync-check`、
 `message-sdk-sync-convergence`、`message-sdk-sync-retries` 和
 `message-sdk-sync-recovery` 覆盖实际 TLS/WSS、原生存储和进程恢复。
 
-
 当目录给出新的可见性修订时，宿主按 [消息可见性同步](../message/visibility.md) 补齐事件。
 即使消息尾部没变，连接也等待可见性位点持久化。SQLite 在同一批次隐藏正文并推进位点。
 对恢复前已经确认的撤回或删除，迟到的消息与发送回执只能关联原身份和序号。
+
+
+在线连接收到新修订通知后，`Connection` 发出 `RefreshVisibility`。宿主在当前票据内串行
+刷新并发布目录，通过 `CommittedDirectory` 读取同一存储版本的选中会话。到已发布位点的
+可见性分页使用固定目标。宿主在每次目录和可见性持久写入前检查
+`accepts_visibility_refresh`，最后在事务提交后用 `VisibilityRefreshed` 确认。期间更高通知
+由协调器合并，达到更高修订的快照可以一次确认。超时或授权变化走现有连接故障处理。

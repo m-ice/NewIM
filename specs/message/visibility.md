@@ -17,8 +17,19 @@
 `POST /api/v1/sync/message-visibility` 接受 `conversationId`、十进制字符串
 `afterRevision`、`throughRevision` 和可选 `limit`。目标取自当前账号的已发布目录。
 读取只返回授权历史区间和当前受众的事件。客户端提交整页及返回的 `nextAfterRevision`。
+默认和最大页长均为 64 项，与 SDK 本地存储批次一致。
 终页在事件被过滤时仍推进到请求目标，分页期间保持原目标。连接恢复等待消息与可见性两个
 进度均落盘。普通重连沿用账号和设备的认证世代，授权变化后旧回调失效。
+
+从支持可见性的目录恢复后，WSS 首帧可带 `afterVisibilityRevision`，取已发布的可见性目标。
+确认授权后，当会话发生更高修订时，网关发送如下通知。
+
+```json
+{"protocolVersion":1,"kind":"visibility_changed","body":{"conversationId":"room","visibilityRevision":"2"}}
+```
+
+通知只携带会话和位点。客户端刷新目录，再补拉当前会话的事件。发件状态和原 WSS 在正常
+补拉期间继续可用。省略首帧可选字段的客户端继续接收原有消息帧。
 
 升级后运行现有会话目录回填，准备仍缺权威未读的旧账号。新目录修订发布后，旧游标按
 现有失效规则重新引导。三个验收命令覆盖 TLS 与 WSS、真实 SQLite、旧库重启和可见性分页。

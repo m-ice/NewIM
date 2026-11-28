@@ -5,7 +5,10 @@ import (
 	"encoding/json"
 )
 
-const VisibilityRequestLimit = 1024
+const (
+	VisibilityRequestLimit = 1024
+	VisibilityPageItems    = 64
+)
 
 type VisibilityAction string
 
@@ -64,6 +67,23 @@ type VisibilityEvent struct {
 	Revision        int64            `json:"visibilityRevision,string"`
 	Action          VisibilityAction `json:"action"`
 	CountAsUnread   bool             `json:"countAsUnread"`
+}
+
+// EncodeVisibilityNotice signals a newer visible revision on an opted-in gateway subscription.
+// EncodeVisibilityNotice 在显式订阅后通知客户端补齐可见性位点。
+func EncodeVisibilityNotice(conversationID string, revision int64) ([]byte, error) {
+	if !identifier(conversationID, 128, false) || revision <= 0 {
+		return nil, InvalidMessage
+	}
+	type notice struct {
+		ConversationID string `json:"conversationId"`
+		Revision       int64  `json:"visibilityRevision,string"`
+	}
+	return json.Marshal(struct {
+		ProtocolVersion int    `json:"protocolVersion"`
+		Kind            string `json:"kind"`
+		Body            notice `json:"body"`
+	}{1, "visibility_changed", notice{conversationID, revision}})
 }
 
 const HiddenMessageType = "message_hidden"

@@ -64,10 +64,11 @@ const (
 // ReadRequest is an internal continuation request. It is not a wire object.
 // ReadRequest 是内部续读请求，不是公共 wire 对象。
 type ReadRequest struct {
-	ConversationID string
-	HasAfterSeq    bool
-	AfterSeq       int64
-	Limit          int
+	ConversationID  string
+	HasAfterSeq     bool
+	AfterSeq        int64
+	Limit           int
+	TrackVisibility bool
 }
 
 // EffectiveAfterSeq clamps a cursor to the authorized start of its snapshot.
@@ -101,21 +102,23 @@ type Item struct {
 // Page is a bounded, deterministic message page.
 // Page 是有界且确定性的消息页。
 type Page struct {
-	Items           []Item
-	HistoryAfterSeq int64 // Exclusive lower bound from membership authorization.
-	LatestSeq       int64 // Inclusive visible head.
-	HasNext         bool
-	NextAfterSeq    *int64
+	Items              []Item
+	HistoryAfterSeq    int64 // Exclusive lower bound from membership authorization.
+	LatestSeq          int64 // Inclusive visible head.
+	HasNext            bool
+	NextAfterSeq       *int64
+	VisibilityRevision int64
 }
 
 // ReadResult is one consistent storage snapshot. Limit is the normalized
 // effective limit used by the adapter.
 // ReadResult 是一次一致性存储快照；Limit 是适配器实际使用的规范化上限。
 type ReadResult struct {
-	HistoryAfterSeq int64 // Exclusive lower bound from membership authorization.
-	LatestSeq       int64 // Inclusive visible head, possibly capped at departure.
-	Limit           int
-	Rows            []Item
+	HistoryAfterSeq    int64 // Exclusive lower bound from membership authorization.
+	LatestSeq          int64 // Inclusive visible head, possibly capped at departure.
+	Limit              int
+	Rows               []Item
+	VisibilityRevision int64
 }
 
 // Store is the application-to-storage port.

@@ -52,7 +52,7 @@ func (r *Repository) ReadVisibility(ctx context.Context, user string, request ap
 	if !identifier(user) || !identifier(request.ConversationID) {
 		return nil, app.Fail(app.Forbidden)
 	}
-	if request.AfterRevision < 0 || request.ThroughRevision < request.AfterRevision || request.Limit < 1 || request.Limit > app.MaxPageItems {
+	if request.AfterRevision < 0 || request.ThroughRevision < request.AfterRevision || request.Limit < 1 || request.Limit > protocol.VisibilityPageItems {
 		return nil, app.Fail(app.InvalidCursor)
 	}
 	tx, err := r.begin(ctx, r.readTxOptions)
@@ -67,15 +67,9 @@ func (r *Repository) ReadVisibility(ctx context.Context, user string, request ap
 	if err != nil {
 		return nil, err
 	}
-	var horizon int64
-	err = tx.QueryRow(ctx, `SELECT GREATEST(
-		COALESCE((SELECT visibility_revision FROM newim.im_message_visibility_events
-			WHERE conversation_id=$1 AND audience_user_id IS NULL AND target_seq<=$3 ORDER BY visibility_revision DESC LIMIT 1),0),
-		COALESCE((SELECT visibility_revision FROM newim.im_message_visibility_events
-			WHERE conversation_id=$1 AND audience_user_id=$2 AND target_seq<=$3 ORDER BY visibility_revision DESC LIMIT 1),0)
-	)`, request.ConversationID, user, tail).Scan(&horizon)
+	horizon, err := visibilityHorizon(ctx, tx, user, request.ConversationID, tail)
 	if err != nil {
-		return nil, fixed(err)
+		return nil, err
 	}
 	if request.ThroughRevision > horizon {
 		return nil, app.Fail(app.InvalidCursor)
@@ -88,6 +82,17 @@ func (r *Repository) ReadVisibility(ctx context.Context, user string, request ap
 		return nil, fixed(err)
 	}
 	return items, nil
+}
+
+func visibilityHorizon(ctx context.Context, tx pgx.Tx, user, conversationID string, tail int64) (int64, error) {
+	var horizon int64
+	err := tx.QueryRow(ctx, `SELECT GREATEST(
+		COALESCE((SELECT visibility_revision FROM newim.im_message_visibility_events
+			WHERE conversation_id=$1 AND audience_user_id IS NULL AND target_seq<=$3 ORDER BY visibility_revision DESC LIMIT 1),0),
+		COALESCE((SELECT visibility_revision FROM newim.im_message_visibility_events
+			WHERE conversation_id=$1 AND audience_user_id=$2 AND target_seq<=$3 ORDER BY visibility_revision DESC LIMIT 1),0)
+	)`, conversationID, user, tail).Scan(&horizon)
+	return horizon, fixed(err)
 }
 
 func readVisibilityRows(ctx context.Context, tx pgx.Tx, user string, request app.VisibilityRequest, floor, tail int64) ([]protocol.VisibilityEvent, error) {

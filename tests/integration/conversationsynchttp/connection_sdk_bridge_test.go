@@ -170,7 +170,7 @@ func TestConnectionSDKBridge(t *testing.T) {
 }
 
 func TestMessageVisibilitySDKBridge(t *testing.T) {
-	runConnectionSDKBridge(t, 21, 2)
+	runConnectionSDKBridge(t, 21, 3)
 }
 
 func runConnectionSDKBridge(t *testing.T, migration, messages int) {
@@ -260,6 +260,18 @@ func runConnectionSDKBridge(t *testing.T, migration, messages int) {
 		case "CLOSE":
 			socket.close()
 			mustBridgeWrite(t, "CLOSE_OK")
+		case "BULK_HIDE":
+			if migration != 21 {
+				t.Fatal("visibility fixture requires migration 021")
+			}
+			for offset := range protocol.VisibilityPageItems + 1 {
+				ack := send(t, f, gateway, peer.Token, bridgeRoom, fmt.Sprintf("visibility_bulk_%d", offset), "extra history")
+				messageVisibility(t, f, gateway, tablet.Token, protocol.VisibilityRequest{
+					ConversationID: bridgeRoom, ServerMsgID: ack.ServerMsgID,
+					RequestID: fmt.Sprintf("hide_bulk_%d", offset), Action: protocol.DeleteForMe,
+				}, http.StatusOK)
+			}
+			mustBridgeWrite(t, "BULK_HIDDEN")
 		case "KICK":
 			replacement := admitConnectionDevice(t, f, server, bridgeAccount, "replacement", "phone")
 			tokens["replacement"] = replacement.Token

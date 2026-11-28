@@ -11,6 +11,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/coder/websocket"
+	protocol "github.com/m-ice/NewIM/core/protocol/go"
 	"github.com/m-ice/NewIM/server/auth/bearerhttp"
 	"github.com/m-ice/NewIM/server/auth/session"
 	syncmessage "github.com/m-ice/NewIM/server/sync/message"
@@ -34,8 +35,9 @@ var (
 )
 
 type subscription struct {
-	conversationID string
-	afterSeq       int64
+	conversationID          string
+	afterSeq                int64
+	afterVisibilityRevision *int64
 }
 
 type peer struct {
@@ -107,11 +109,11 @@ func decodeSubscription(payload []byte) (subscription, bool) {
 	if err != nil || open != json.Delim('{') {
 		return sub, false
 	}
-	fields := make(map[string]string, 2)
+	fields := make(map[string]string, 3)
 	for decoder.More() {
 		token, err := decoder.Token()
 		name, ok := token.(string)
-		if err != nil || !ok || (name != "conversationId" && name != "afterSeq") {
+		if err != nil || !ok || (name != "conversationId" && name != "afterSeq" && name != "afterVisibilityRevision") {
 			return sub, false
 		}
 		if _, repeated := fields[name]; repeated {
@@ -131,11 +133,24 @@ func decodeSubscription(payload []byte) (subscription, bool) {
 		return sub, false
 	}
 	id, seq := fields["conversationId"], fields["afterSeq"]
-	after, err := strconv.ParseInt(seq, 10, 64)
-	if !validConversation(id) || err != nil || after < 0 || strconv.FormatInt(after, 10) != seq {
+	after, ok := decodeCursor(seq)
+	if !validConversation(id) || !ok {
 		return sub, false
 	}
-	return subscription{conversationID: id, afterSeq: after}, true
+	sub.conversationID, sub.afterSeq = id, after
+	if raw, present := fields["afterVisibilityRevision"]; present {
+		revision, ok := decodeCursor(raw)
+		if !ok {
+			return subscription{}, false
+		}
+		sub.afterVisibilityRevision = &revision
+	}
+	return sub, true
+}
+
+func decodeCursor(raw string) (int64, bool) {
+	value, err := strconv.ParseInt(raw, 10, 64)
+	return value, err == nil && value >= 0 && strconv.FormatInt(value, 10) == raw
 }
 
 func validConversation(id string) bool {
@@ -248,6 +263,7 @@ func (g *Gateway) sendPage(ctx context.Context, p *peer, request *subscription) 
 	}
 	page, err := g.messages.ReadAfterSeq(ctx, p.identity, syncmessage.ReadRequest{
 		ConversationID: request.conversationID, HasAfterSeq: true, AfterSeq: request.afterSeq, Limit: pageItems,
+		TrackVisibility: request.afterVisibilityRevision != nil,
 	})
 	if err != nil {
 		switch syncmessage.ErrorCode(err) {
@@ -265,7 +281,8 @@ func (g *Gateway) sendPage(ctx context.Context, p *peer, request *subscription) 
 		}
 		p.active = true
 	}
-	if len(page.Items) == 0 {
+	notice := request.afterVisibilityRevision != nil && page.VisibilityRevision > *request.afterVisibilityRevision
+	if len(page.Items) == 0 && !notice {
 		return end{}
 	}
 	if result := g.authenticate(ctx, p); result.code != 0 {
@@ -273,6 +290,19 @@ func (g *Gateway) sendPage(ctx context.Context, p *peer, request *subscription) 
 	}
 	write, cancel := context.WithTimeout(ctx, g.config.WriteTimeout)
 	defer cancel()
+	if notice {
+		if result := g.shouldStop(p); result.code != 0 {
+			return result
+		}
+		wire, err := protocol.EncodeVisibilityNotice(request.conversationID, page.VisibilityRevision)
+		if err != nil {
+			return unavailable
+		}
+		if err = p.ws.Write(write, websocket.MessageText, wire); err != nil {
+			return socketGone
+		}
+		*request.afterVisibilityRevision = page.VisibilityRevision
+	}
 	for _, item := range page.Items {
 		if result := g.shouldStop(p); result.code != 0 {
 			return result

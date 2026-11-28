@@ -153,8 +153,8 @@ fn message_type(value: &str) -> bool {
 pub fn decode(input: &[u8]) -> Result<Message, Error> {
     scan::check(input)?;
     let text = std::str::from_utf8(input).map_err(|_| Error::InvalidJson)?;
-    let message = decode_shape(text)?;
-    validate_semantics(&message)?;
+    let mut message = decode_shape(text)?;
+    validate_decoded(&mut message)?;
     Ok(message)
 }
 
@@ -197,7 +197,7 @@ fn decode_shape(text: &str) -> Result<Message, Error> {
     Ok(message)
 }
 
-fn validate_semantics(message: &Message) -> Result<(), Error> {
+fn validate_decoded(message: &mut Message) -> Result<(), Error> {
     if message.protocol_version != 1 {
         return Err(Error::UnsupportedVersion);
     }
@@ -213,7 +213,11 @@ fn validate_semantics(message: &Message) -> Result<(), Error> {
         }
         "media" => media::validate(message.payload.get())?,
         visibility::HIDDEN_MESSAGE_TYPE => {
-            visibility::decode_hidden_payload(message.payload.get())?;
+            let action = visibility::decode_hidden_payload(message.payload.get())?;
+            if message.payload.get() != action.canonical_payload() {
+                message.payload = RawValue::from_string(action.canonical_payload().into())
+                    .map_err(|_| Error::InvalidMessage)?;
+            }
         }
         _ => {}
     }

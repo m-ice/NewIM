@@ -6,8 +6,8 @@ use newim_sdk_core::message::ConnectionGeneration;
 use newim_sdk_core::outbox::{BASE_RETRY_DELAY_MS, MAX_RETRY_DELAY_MS};
 use newim_sdk_core::store::{
     Blob, ConversationSyncChange, ConversationSyncItem, ConversationSyncPhase,
-    ConversationSyncPosition, ConversationSyncSnapshot, ConversationSyncSummary, Fence,
-    MessageSyncSnapshot, MessageSyncState, StoreError,
+    ConversationSyncPosition, ConversationSyncSnapshot, ConversationSyncSummary,
+    ConversationUnread, Fence, MessageSyncSnapshot, MessageSyncState, StoreError,
 };
 
 const NOW: u64 = 10_000;
@@ -200,6 +200,107 @@ fn readiness_requires_directory_subscription_and_durable_target() {
     assert_eq!(send.fence, ticket.fence);
     assert_eq!(send.connection_generation, ticket.connection_generation);
     assert!(event(&mut connection, Event::Subscribed(&ticket), NOW).is_empty());
+}
+
+#[test]
+fn live_visibility_coalesces_notices_and_rejects_stale_completions() {
+    let mut connection = Connection::new(fence(1), 0).unwrap();
+    let ticket = online(&mut connection, NOW + 10_000);
+    let mut directory = directory(5);
+    let ConversationSyncChange::Upsert(summary) = &mut directory.items[0].change else {
+        unreachable!();
+    };
+    summary.unread = Some(ConversationUnread {
+        count: 3,
+        visibility_revision: 0,
+    });
+    let mut snapshot = messages(5);
+    let committed = CommittedDirectory::from_store(&directory, Some(&snapshot)).unwrap();
+    event(
+        &mut connection,
+        Event::Directory {
+            ticket: &ticket,
+            committed,
+        },
+        NOW,
+    );
+    event(&mut connection, Event::SocketOpened(&ticket), NOW);
+
+    let notice = |conversation_id, revision| Event::VisibilityChanged {
+        ticket: &ticket,
+        conversation_id,
+        revision,
+    };
+    assert!(event(&mut connection, notice(ROOM, 1), NOW).is_empty());
+    assert_eq!(
+        event(&mut connection, Event::Subscribed(&ticket), NOW),
+        vec![
+            Effect::Ready(ticket.clone()),
+            Effect::RefreshVisibility {
+                ticket: ticket.clone(),
+                through_revision: 1,
+            }
+        ],
+    );
+    assert!(event(&mut connection, notice("other", 10), NOW + 1).is_empty());
+    assert!(event(&mut connection, notice(ROOM, 3), NOW + 1).is_empty());
+    assert!(event(&mut connection, notice(ROOM, 2), NOW + 1).is_empty());
+    assert!(connection.accepts_visibility_refresh(&ticket, 1));
+    assert!(!connection.accepts_visibility_refresh(&ticket, 3));
+
+    assert!(
+        event(
+            &mut connection,
+            Event::VisibilityRefreshed {
+                ticket: &ticket,
+                through_revision: 1,
+                snapshot: &snapshot,
+            },
+            NOW + 2
+        )
+        .is_empty()
+    );
+    snapshot.state.visibility_revision = 2;
+    assert_eq!(
+        event(
+            &mut connection,
+            Event::VisibilityRefreshed {
+                ticket: &ticket,
+                through_revision: 1,
+                snapshot: &snapshot,
+            },
+            NOW + 2
+        ),
+        vec![Effect::RefreshVisibility {
+            ticket: ticket.clone(),
+            through_revision: 3
+        }],
+    );
+    assert!(!connection.accepts_visibility_refresh(&ticket, 1));
+    assert!(connection.accepts_visibility_refresh(&ticket, 3));
+    assert_eq!(
+        connection.send_context().unwrap().connection_generation,
+        ticket.connection_generation
+    );
+
+    assert_eq!(
+        event(&mut connection, Event::NetworkLost, NOW + 3),
+        vec![Effect::Cancel(ticket.clone())],
+    );
+    assert!(!connection.accepts_visibility_refresh(&ticket, 3));
+    snapshot.state.visibility_revision = 3;
+    assert!(
+        event(
+            &mut connection,
+            Event::VisibilityRefreshed {
+                ticket: &ticket,
+                through_revision: 3,
+                snapshot: &snapshot,
+            },
+            NOW + 4
+        )
+        .is_empty()
+    );
 }
 
 #[test]

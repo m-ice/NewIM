@@ -204,12 +204,13 @@ fn error_shape(fields: &Object) -> Result<SendError, Error> {
     Ok(error)
 }
 
-enum Frame {
+pub(crate) enum Frame {
     Send(Send),
     Server(ServerFrame),
+    VisibilityChanged(crate::gateway::VisibilityNotice),
     Unknown,
 }
-fn decode_frame(input: &[u8], client_direction: bool) -> Result<Frame, Error> {
+pub(crate) fn decode_frame(input: &[u8], client_direction: bool) -> Result<Frame, Error> {
     scan::check_with_limits(input, MAX_FRAME_BYTES, crate::MAX_DEPTH + 1)?;
     let text = std::str::from_utf8(input).map_err(|_| crate::Error::InvalidJson)?;
     let outer = object(text)?;
@@ -229,22 +230,25 @@ fn decode_frame(input: &[u8], client_direction: bool) -> Result<Frame, Error> {
         return Err(crate::Error::MessageTooLarge.into());
     }
     scan::check_with_limits(raw_body.as_bytes(), body_budget, crate::MAX_DEPTH)?;
-    let frame = match kind.as_str() {
+    let mut frame = match kind.as_str() {
         "send" => Frame::Send(send_shape(body, outer_version)?),
         "send_ack" => Frame::Server(ServerFrame::Ack(ack_shape(&body)?)),
         "send_error" => Frame::Server(ServerFrame::Error(error_shape(&body)?)),
         "message" => Frame::Server(ServerFrame::Message(crate::decode_shape(raw_body)?)),
+        "visibility_changed" if !client_direction && outer.len() == 3 => {
+            Frame::VisibilityChanged(crate::gateway::visibility_notice(&body)?)
+        }
         _ => Frame::Unknown,
     };
     if outer_version != 1 {
         return Err(crate::Error::UnsupportedVersion.into());
     }
-    match &frame {
+    match &mut frame {
         Frame::Send(send) if client_direction => send_semantics(send)?,
         Frame::Server(ServerFrame::Message(message)) if !client_direction => {
-            crate::validate_semantics(message)?
+            crate::validate_decoded(message)?
         }
-        Frame::Server(_) if !client_direction => (),
+        Frame::Server(_) | Frame::VisibilityChanged(_) if !client_direction => (),
         _ => return Err(Error::UnsupportedFrame),
     }
     Ok(frame)

@@ -14,6 +14,14 @@ pub enum Action {
 }
 
 impl Action {
+    pub(crate) const fn canonical_payload(self) -> &'static str {
+        match self {
+            Self::Recall => r#"{"action":"recall","countAsUnread":false}"#,
+            Self::DeleteForMe => r#"{"action":"deleteForMe","countAsUnread":false}"#,
+            Self::AdminRemove => r#"{"action":"adminRemove","countAsUnread":false}"#,
+        }
+    }
+
     fn decode(value: &str) -> Result<Self, Error> {
         match value {
             "recall" => Ok(Self::Recall),
@@ -35,7 +43,7 @@ pub fn decode_hidden_payload(payload: &str) -> Result<Action, Error> {
 }
 
 pub const VISIBILITY_PATH: &str = "/api/v1/sync/message-visibility";
-const MAX_PAGE_ITEMS: usize = 100;
+pub const MAX_PAGE_ITEMS: usize = 64;
 
 #[derive(Clone, PartialEq, Eq)]
 pub struct PageRequest {

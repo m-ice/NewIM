@@ -1,12 +1,14 @@
 use super::message_sync::{Native, get_page_for, queued_ack_with};
 use super::*;
 use newim_protocol::gateway::{
-    GATEWAY_SUBPROTOCOL, GatewayClose, GatewaySubscription, classify_gateway_close,
-    encode_gateway_subscription,
+    GATEWAY_SUBPROTOCOL, GatewayClose, GatewayFrame, GatewaySubscription, VisibilityNotice,
+    classify_gateway_close, decode_gateway_frame, encode_gateway_subscription,
 };
+use newim_protocol::visibility as visibility_wire;
 use newim_sdk_core::{
     connection::{
-        AuthCause, CommittedDirectory, Connection, Effect, Event, Failure, Status, Ticket,
+        AuthCause, CommittedDirectory, Connection, Effect, Event, Failure, Status, Subscription,
+        Ticket,
     },
     message::ConnectionGeneration,
     message_sync as recovery,
@@ -59,7 +61,7 @@ fn sync_directory(
     native: &mut Native,
     device: &str,
 ) -> ConversationSyncSnapshot {
-    for _ in 0..4 {
+    for _ in 0..8 {
         let flight = capture(&mut native.store);
         let page = decode_page(bridge.page_for(device, &flight));
         let action = apply_page(&mut native.store, &flight, &page);
@@ -121,6 +123,7 @@ fn bind(
     let wire = GatewaySubscription {
         conversation_id: target.conversation_id().to_owned(),
         after_seq: target.after_seq(),
+        after_visibility_revision: target.gateway_after_visibility_revision(),
     };
     bridge.send(&format!(
         "SUBSCRIBE\t{}",
@@ -455,8 +458,6 @@ fn tls_sdk_connection() {
 #[test]
 #[ignore = "run with make message-event-integration"]
 fn tls_sdk_message_visibility() {
-    use newim_protocol::visibility as wire;
-
     let mut bridge = Bridge::start_fixture("TestMessageVisibilitySDKBridge");
     let path = Directory::new();
     let mut native = Native::open(&path.0, 1);
@@ -496,9 +497,9 @@ fn tls_sdk_message_visibility() {
     .unwrap() else {
         panic!("expected initial message recovery");
     };
-    assert_eq!(target.through_seq(), 2);
+    assert_eq!(target.through_seq(), 3);
     assert_eq!(target.through_visibility_revision(), 0);
-    assert_eq!(unread_count(&mut native), 2);
+    assert_eq!(unread_count(&mut native), 3);
     let start = progress(&mut native, ROOM);
     let action =
         recovery::observe_target(&start, NOW, target.published_round(), target.through_seq())
@@ -521,22 +522,44 @@ fn tls_sdk_message_visibility() {
     );
 
     let before = room_messages(&mut native);
-    assert_eq!(before.len(), 2);
+    assert_eq!(before.len(), 3);
     assert!(before.iter().all(|message| !message.is_hidden()));
+
+    // The phone already displayed the third message and stays on the same socket.
+    change_visibility(&mut bridge, "peer", &before[2], "sdk_live_recall", "recall");
+    let (announced, live_target) =
+        start_live_visibility(&mut bridge, &mut native, &mut connection, &first, NOW + 3);
+    assert_eq!(announced, 1);
+    assert_eq!(unread_count(&mut native), 2);
+    assert_eq!(live_target.after_seq(), live_target.through_seq());
     assert_eq!(
-        event(&mut connection, Event::NetworkLost, NOW + 3),
+        commit_visibility_page(&mut bridge, &mut native, &live_target, 0, NOW + 3),
+        (1, 1),
+    );
+    complete_live_visibility(&mut native, &mut connection, &first, announced, NOW + 3);
+    let offline_cache = room_messages(&mut native);
+    assert!(offline_cache[2].same_position(&before[2]));
+    assert!(offline_cache[2].is_hidden());
+    assert!(
+        offline_cache[..2]
+            .iter()
+            .all(|message| !message.is_hidden())
+    );
+
+    assert_eq!(
+        event(&mut connection, Event::NetworkLost, NOW + 4),
         vec![Effect::Cancel(first.clone())]
     );
     close(&mut bridge);
     change_visibility(&mut bridge, "peer", &before[0], "sdk_recall", "recall");
     change_visibility(&mut bridge, "next", &before[1], "sdk_hide", "deleteForMe");
     assert_eq!(unread_count(&mut native), 2);
-    assert_eq!(room_messages(&mut native), before);
+    assert_eq!(room_messages(&mut native), offline_cache);
 
     let next_operation = native.next;
     drop(native);
     let mut native = Native::open(&path.0, next_operation);
-    let current = directory_ticket(event(&mut connection, Event::NetworkAvailable, NOW + 4));
+    let current = directory_ticket(event(&mut connection, Event::NetworkAvailable, NOW + 5));
     assert!(!connection.accepts(&first));
     let [Effect::RecoverMessages { target, .. }]: [Effect; 1] = bind(
         &mut bridge,
@@ -544,61 +567,24 @@ fn tls_sdk_message_visibility() {
         &mut connection,
         &current,
         "phone",
-        (ROOM, 2),
-        NOW + 4,
+        (ROOM, 3),
+        NOW + 5,
     )
     .try_into()
     .unwrap() else {
         panic!("visibility must catch up even when the message tail stayed put");
     };
     assert_eq!(target.after_seq(), target.through_seq());
-    assert_eq!(target.through_visibility_revision(), 2);
+    assert_eq!(target.through_visibility_revision(), 3);
     assert_eq!(unread_count(&mut native), 0);
 
-    for expected_revision in 1..=2 {
-        let snapshot = progress(&mut native, ROOM);
-        let request = wire::PageRequest {
-            conversation_id: ROOM.into(),
-            after_revision: snapshot.state.visibility_revision,
-            through_revision: target.through_visibility_revision(),
-            limit: 1,
-        };
-        let reply = bridge.call(
-            "phone",
-            "POST",
-            wire::VISIBILITY_PATH,
-            &request.encode().unwrap(),
-        );
-        reply.require_status(200, "visibility page");
-        let page = wire::decode_page(&request, &reply.bytes).unwrap();
-        assert_eq!(page.next_after_revision, expected_revision);
+    for expected_revision in 2..=3 {
         assert!(connection.accepts(&current));
-        let action = recovery::apply_visibility(
-            &snapshot,
-            NOW + 4 + expected_revision as u64,
-            VisibilityPage {
-                published_round: target.published_round(),
-                after_revision: request.after_revision,
-                next_revision: page.next_after_revision,
-                through_revision: request.through_revision,
-                events: page
-                    .items
-                    .into_iter()
-                    .map(|item| VisibilityEvent {
-                        server_id: item.server_msg_id,
-                        sequence: item.conversation_seq,
-                        revision: item.revision,
-                        action: match item.action {
-                            wire::Action::Recall => VisibilityAction::Recall,
-                            wire::Action::DeleteForMe => VisibilityAction::DeleteForMe,
-                            wire::Action::AdminRemove => VisibilityAction::AdminRemove,
-                        },
-                    })
-                    .collect(),
-            },
-        )
-        .unwrap();
-        commit(&mut native.store, &mut native.next, action);
+        let now = NOW + 5 + expected_revision as u64;
+        assert_eq!(
+            commit_visibility_page(&mut bridge, &mut native, &target, 1, now),
+            (expected_revision, 1),
+        );
         let snapshot = progress(&mut native, ROOM);
         let effects = event(
             &mut connection,
@@ -606,9 +592,9 @@ fn tls_sdk_message_visibility() {
                 ticket: &current,
                 snapshot: &snapshot,
             },
-            NOW + 4 + expected_revision as u64,
+            now,
         );
-        if expected_revision == 1 {
+        if expected_revision == 2 {
             assert!(effects.is_empty());
             assert_eq!(connection.status(), Status::Recovering);
         } else {
@@ -628,7 +614,7 @@ fn tls_sdk_message_visibility() {
         native.store.fence(),
         &snapshot,
         delayed,
-        NOW + 7,
+        NOW + 9,
         |left, right| Ok(left == right),
     )
     .unwrap();
@@ -638,11 +624,12 @@ fn tls_sdk_message_visibility() {
     drop(native);
     let mut native = Native::open(&path.0, next_operation);
     let after = room_messages(&mut native);
-    assert_eq!(after.len(), 2);
-    assert_eq!(progress(&mut native, ROOM).state.visibility_revision, 2);
+    assert_eq!(after.len(), 3);
+    assert_eq!(progress(&mut native, ROOM).state.visibility_revision, 3);
     for (record, original, expected) in [
         (&after[0], &before[0], VisibilityAction::Recall),
         (&after[1], &before[1], VisibilityAction::DeleteForMe),
+        (&after[2], &before[2], VisibilityAction::Recall),
     ] {
         assert!(record.same_position(original));
         assert!(record.is_hidden());
@@ -656,7 +643,162 @@ fn tls_sdk_message_visibility() {
         assert_ne!(record.payload, original.payload);
     }
     assert_eq!(unread_count(&mut native), 0);
+
+    // Use the HTTP default, with more than one full SQLite page already committed.
+    bridge.send("BULK_HIDE");
+    assert_eq!(bridge.line(), "BULK_HIDDEN");
+    let (announced, bulk_target) = start_live_visibility(
+        &mut bridge,
+        &mut native,
+        &mut connection,
+        &current,
+        NOW + 10,
+    );
+    assert_eq!(visibility_wire::MAX_PAGE_ITEMS, MAX_ITEMS);
+    let full = visibility_wire::MAX_PAGE_ITEMS;
+    let terminal = 3 + full as i64 + 1;
+    assert_eq!(bulk_target.through_visibility_revision(), terminal);
+    assert_eq!(unread_count(&mut native), 0);
+    assert_eq!(
+        commit_visibility_page(&mut bridge, &mut native, &bulk_target, 0, NOW + 11),
+        (terminal - 1, full),
+    );
+    assert_eq!(
+        commit_visibility_page(&mut bridge, &mut native, &bulk_target, 0, NOW + 12),
+        (terminal, 1),
+    );
+    complete_live_visibility(&mut native, &mut connection, &current, announced, NOW + 12);
     bridge.finish();
+}
+
+fn poll_visibility_notice(bridge: &mut Bridge) -> VisibilityNotice {
+    for _ in 0..82 {
+        bridge.send("POLL");
+        let line = bridge.line();
+        if line == "EMPTY" {
+            continue;
+        }
+        let raw = decode_hex(
+            line.strip_prefix("FRAME\t")
+                .expect("socket must stay connected"),
+        );
+        if let GatewayFrame::VisibilityChanged(notice) = decode_gateway_frame(&raw).unwrap() {
+            return notice;
+        }
+    }
+    panic!("live gateway did not send a visibility notice");
+}
+
+fn start_live_visibility(
+    bridge: &mut Bridge,
+    native: &mut Native,
+    connection: &mut Connection,
+    ticket: &Ticket,
+    now: u64,
+) -> (i64, Subscription) {
+    let notice = poll_visibility_notice(bridge);
+    assert_eq!(notice.conversation_id, ROOM);
+    assert_eq!(
+        event(
+            connection,
+            Event::VisibilityChanged {
+                ticket,
+                conversation_id: &notice.conversation_id,
+                revision: notice.revision,
+            },
+            now
+        ),
+        vec![Effect::RefreshVisibility {
+            ticket: ticket.clone(),
+            through_revision: notice.revision,
+        }],
+    );
+    assert_eq!(connection.status(), Status::Ready);
+    assert!(connection.send_context().is_some());
+    assert!(connection.accepts_visibility_refresh(ticket, notice.revision));
+    let directory = sync_directory(bridge, native, "phone");
+    let snapshot = progress(native, ROOM);
+    let committed = CommittedDirectory::from_store(&directory, Some(&snapshot)).unwrap();
+    let target = committed.into_subscription().unwrap();
+    assert!(target.through_visibility_revision() >= notice.revision);
+    (notice.revision, target)
+}
+
+fn complete_live_visibility(
+    native: &mut Native,
+    connection: &mut Connection,
+    ticket: &Ticket,
+    announced: i64,
+    now: u64,
+) {
+    let snapshot = progress(native, ROOM);
+    assert!(
+        event(
+            connection,
+            Event::VisibilityRefreshed {
+                ticket,
+                through_revision: announced,
+                snapshot: &snapshot,
+            },
+            now
+        )
+        .is_empty()
+    );
+    assert_eq!(connection.status(), Status::Ready);
+    assert!(connection.accepts(ticket));
+    assert!(!connection.accepts_visibility_refresh(ticket, announced));
+}
+
+fn commit_visibility_page(
+    bridge: &mut Bridge,
+    native: &mut Native,
+    target: &Subscription,
+    limit: usize,
+    now: u64,
+) -> (i64, usize) {
+    let snapshot = progress(native, ROOM);
+    let request = visibility_wire::PageRequest {
+        conversation_id: ROOM.into(),
+        after_revision: snapshot.state.visibility_revision,
+        through_revision: target.through_visibility_revision(),
+        limit,
+    };
+    let reply = bridge.call(
+        "phone",
+        "POST",
+        visibility_wire::VISIBILITY_PATH,
+        &request.encode().unwrap(),
+    );
+    reply.require_status(200, "visibility page");
+    let page = visibility_wire::decode_page(&request, &reply.bytes).unwrap();
+    let result = (page.next_after_revision, page.items.len());
+    let action = recovery::apply_visibility(
+        &snapshot,
+        now,
+        VisibilityPage {
+            published_round: target.published_round(),
+            after_revision: request.after_revision,
+            next_revision: page.next_after_revision,
+            through_revision: request.through_revision,
+            events: page
+                .items
+                .into_iter()
+                .map(|item| VisibilityEvent {
+                    server_id: item.server_msg_id,
+                    sequence: item.conversation_seq,
+                    revision: item.revision,
+                    action: match item.action {
+                        visibility_wire::Action::Recall => VisibilityAction::Recall,
+                        visibility_wire::Action::DeleteForMe => VisibilityAction::DeleteForMe,
+                        visibility_wire::Action::AdminRemove => VisibilityAction::AdminRemove,
+                    },
+                })
+                .collect(),
+        },
+    )
+    .unwrap();
+    commit(&mut native.store, &mut native.next, action);
+    result
 }
 
 fn room_messages(native: &mut Native) -> Vec<Message> {

@@ -50,6 +50,7 @@ pub struct Subscription {
     through_seq: i64,
     after_visibility_revision: i64,
     through_visibility_revision: i64,
+    watch_visibility: bool,
 }
 
 impl Subscription {
@@ -77,6 +78,12 @@ impl Subscription {
         self.through_visibility_revision
     }
 
+    /// Opt in only when the committed directory advertises visibility revisions.
+    pub fn gateway_after_visibility_revision(&self) -> Option<i64> {
+        self.watch_visibility
+            .then_some(self.through_visibility_revision)
+    }
+
     fn needs_recovery(&self) -> bool {
         self.after_seq < self.through_seq
             || self.after_visibility_revision < self.through_visibility_revision
@@ -102,6 +109,11 @@ impl fmt::Debug for Subscription {
 pub struct CommittedDirectory(Option<Subscription>);
 
 impl CommittedDirectory {
+    /// Return the selected conversation's durable recovery target.
+    pub fn into_subscription(self) -> Option<Subscription> {
+        self.0
+    }
+
     /// Both snapshots must be read through the ticket's store fence.
     pub fn from_store(
         directory: &ConversationSyncSnapshot,
@@ -149,6 +161,7 @@ impl CommittedDirectory {
             through_seq,
             after_visibility_revision,
             through_visibility_revision,
+            watch_visibility: summary.unread.is_some(),
         })))
     }
 }
@@ -170,6 +183,11 @@ pub enum Effect {
     RecoverMessages {
         ticket: Ticket,
         target: Subscription,
+    },
+    /// Refresh the authorized directory and selected visibility pages on the live socket.
+    RefreshVisibility {
+        ticket: Ticket,
+        through_revision: i64,
     },
     Cancel(Ticket),
     Ready(Ticket),
@@ -230,10 +248,27 @@ pub enum Event<'a> {
         ticket: &'a Ticket,
         snapshot: &'a MessageSyncSnapshot,
     },
+    VisibilityChanged {
+        ticket: &'a Ticket,
+        conversation_id: &'a str,
+        revision: i64,
+    },
+    VisibilityRefreshed {
+        ticket: &'a Ticket,
+        through_revision: i64,
+        snapshot: &'a MessageSyncSnapshot,
+    },
     Failed {
         ticket: &'a Ticket,
         failure: Failure,
     },
+}
+
+struct LiveVisibility {
+    conversation_id: String,
+    caught_through: i64,
+    announced_through: i64,
+    refreshing: Option<i64>,
 }
 
 /// One coordinator per store instance. A live host owns the credential, timers,
@@ -243,6 +278,7 @@ pub struct Connection {
     last_generation: u64,
     active: Option<Ticket>,
     phase: Phase,
+    live_visibility: Option<LiveVisibility>,
     online: bool,
     expires_at_ms: Option<u64>,
     auth_cause: AuthCause,
@@ -263,6 +299,7 @@ impl Connection {
             last_generation,
             active: None,
             phase: Phase::Idle,
+            live_visibility: None,
             online: false,
             expires_at_ms: None,
             auth_cause: AuthCause::Missing,
@@ -394,6 +431,15 @@ impl Connection {
                 if self.accepts(ticket) && matches!(self.phase, Phase::Directory) =>
             {
                 if let Some(target) = committed.0 {
+                    self.live_visibility =
+                        target
+                            .gateway_after_visibility_revision()
+                            .map(|revision| LiveVisibility {
+                                conversation_id: target.conversation_id.clone(),
+                                caught_through: revision,
+                                announced_through: revision,
+                                refreshing: None,
+                            });
                     self.phase = Phase::Opening(target);
                     effects.push(Effect::OpenSocket(ticket.clone()));
                 } else {
@@ -432,6 +478,33 @@ impl Connection {
                     self.ready(ticket, now_ms, &mut effects);
                 }
             }
+            Event::VisibilityChanged {
+                ticket,
+                conversation_id,
+                revision,
+            } if self.accepts(ticket) => {
+                if let Some(live) = &mut self.live_visibility
+                    && live.conversation_id == conversation_id
+                {
+                    live.announced_through = live.announced_through.max(revision);
+                    self.refresh_visibility(&mut effects);
+                }
+            }
+            Event::VisibilityRefreshed {
+                ticket,
+                through_revision,
+                snapshot,
+            } if self.accepts_visibility_refresh(ticket, through_revision) => {
+                if let Some(live) = &mut self.live_visibility
+                    && snapshot.visible
+                    && snapshot.conversation_id == live.conversation_id
+                    && snapshot.state.visibility_revision >= through_revision
+                {
+                    live.caught_through = snapshot.state.visibility_revision;
+                    live.refreshing = None;
+                    self.refresh_visibility(&mut effects);
+                }
+            }
             Event::Failed { ticket, failure } if self.accepts(ticket) => match failure {
                 Failure::Authentication(cause) if self.expires_at_ms.is_some() => {
                     self.advance_fence(Some(cause), &mut effects);
@@ -458,6 +531,16 @@ impl Connection {
     /// Persisted send ACKs use `accepts_ack` and the outbox's original correlation checks.
     pub fn accepts(&self, ticket: &Ticket) -> bool {
         self.active.as_ref() == Some(ticket)
+    }
+
+    /// Check before committing asynchronous directory and visibility results for a notice.
+    pub fn accepts_visibility_refresh(&self, ticket: &Ticket, through_revision: i64) -> bool {
+        self.accepts(ticket)
+            && matches!(self.phase, Phase::Ready(_))
+            && self
+                .live_visibility
+                .as_ref()
+                .is_some_and(|live| live.refreshing == Some(through_revision))
     }
 
     /// Authorize ACK reconciliation from the same auth session after a transport change.
@@ -502,9 +585,25 @@ impl Connection {
     fn ready(&mut self, ticket: &Ticket, now_ms: u64, effects: &mut Vec<Effect>) {
         self.phase = Phase::Ready(now_ms);
         effects.push(Effect::Ready(ticket.clone()));
+        self.refresh_visibility(effects);
+    }
+
+    fn refresh_visibility(&mut self, effects: &mut Vec<Effect>) {
+        if matches!(self.phase, Phase::Ready(_))
+            && let (Some(ticket), Some(live)) = (&self.active, &mut self.live_visibility)
+            && live.refreshing.is_none()
+            && live.announced_through > live.caught_through
+        {
+            live.refreshing = Some(live.announced_through);
+            effects.push(Effect::RefreshVisibility {
+                ticket: ticket.clone(),
+                through_revision: live.announced_through,
+            });
+        }
     }
 
     fn cancel(&mut self, effects: &mut Vec<Effect>) {
+        self.live_visibility = None;
         if let Some(ticket) = self.active.take() {
             effects.push(Effect::Cancel(ticket));
         }

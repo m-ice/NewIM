@@ -46,9 +46,9 @@ func (s *Service) ReadVisibility(ctx context.Context, identity session.Connectio
 		return VisibilityPage{}, Fail(InvalidCursor)
 	}
 	if request.Limit == 0 {
-		request.Limit = DefaultPageItems
+		request.Limit = protocol.VisibilityPageItems
 	}
-	if request.Limit > MaxPageItems || request.Limit < 1 {
+	if request.Limit > protocol.VisibilityPageItems || request.Limit < 1 {
 		return VisibilityPage{}, Fail(LimitExceeded)
 	}
 	ctx, cancel := context.WithTimeout(ctx, s.requestTimeout)

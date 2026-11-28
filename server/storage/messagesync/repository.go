@@ -193,10 +193,20 @@ func (r *Repository) read(ctx context.Context, user string, request app.ReadRequ
 	if err != nil {
 		return app.ReadResult{}, err
 	}
+	var visibilityRevision int64
+	if request.TrackVisibility && r.SupportsVisibility() {
+		visibilityRevision, err = visibilityHorizon(ctx, tx, user, request.ConversationID, visibleSeq)
+		if err != nil {
+			return app.ReadResult{}, err
+		}
+	}
 	if err = tx.Commit(ctx); err != nil {
 		return app.ReadResult{}, app.Fail(app.StorageUnavailable)
 	}
-	return app.ReadResult{HistoryAfterSeq: floor, LatestSeq: visibleSeq, Limit: limit, Rows: rows}, nil
+	return app.ReadResult{
+		HistoryAfterSeq: floor, LatestSeq: visibleSeq, Limit: limit, Rows: rows,
+		VisibilityRevision: visibilityRevision,
+	}, nil
 }
 
 func (r *Repository) begin(ctx context.Context, options pgx.TxOptions) (pgx.Tx, error) {

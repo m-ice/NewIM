@@ -60,7 +60,7 @@ func (s *Service) ReadAfterSeq(ctx context.Context, identity session.ConnectionI
 }
 
 func (s *Service) assemble(request ReadRequest, result ReadResult) (Page, error) {
-	if result.LatestSeq < 0 || result.LatestSeq > MaxSequence || result.Limit < 1 || result.Limit > MaxPageItems || len(result.Rows) > result.Limit+1 {
+	if result.LatestSeq < 0 || result.LatestSeq > MaxSequence || result.Limit < 1 || result.Limit > MaxPageItems || len(result.Rows) > result.Limit+1 || result.VisibilityRevision < 0 {
 		return Page{}, Fail(StorageUnavailable)
 	}
 	afterSeq, err := request.EffectiveAfterSeq(result.HistoryAfterSeq, result.LatestSeq)
@@ -94,10 +94,11 @@ func (s *Service) assemble(request ReadRequest, result ReadResult) (Page, error)
 		hasNext = true
 	}
 	page := Page{
-		Items:           items,
-		HistoryAfterSeq: result.HistoryAfterSeq,
-		LatestSeq:       result.LatestSeq,
-		HasNext:         hasNext,
+		Items:              items,
+		HistoryAfterSeq:    result.HistoryAfterSeq,
+		LatestSeq:          result.LatestSeq,
+		HasNext:            hasNext,
+		VisibilityRevision: result.VisibilityRevision,
 	}
 	if len(items) > 0 {
 		next := items[len(items)-1].ConversationSeq

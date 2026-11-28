@@ -49,7 +49,14 @@ func TestSubscriptionCursorIsUnambiguous(t *testing.T) {
 	if got, ok := decodeSubscription(correct); !ok || got.afterSeq != 9223372036854775807 || got.conversationID != "conv_1" {
 		t.Fatalf("valid subscription rejected: %+v", got)
 	}
+	watch := []byte(`{"afterSeq":"0","conversationId":"conv_1","afterVisibilityRevision":"42"}`)
+	if got, ok := decodeSubscription(watch); !ok || got.afterVisibilityRevision == nil || *got.afterVisibilityRevision != 42 {
+		t.Fatalf("valid visibility subscription rejected: %+v", got)
+	}
 	for _, data := range []string{
+		`{"conversationId":"conv_1","afterSeq":"0","afterVisibilityRevision":"00"}`,
+		`{"conversationId":"conv_1","afterSeq":"0","afterVisibilityRevision":0}`,
+		`{"conversationId":"conv_1","afterSeq":"0","afterVisibilityRevision":"0","afterVisibilityRevision":"1"}`,
 		`{"conversationId":"conv_1","afterSeq":"0","afterSeq":"1"}`,
 		`{"conversationId":"conv_1","afterSeq":0}`,
 		`{"conversationId":"conv_1","afterSeq":"00"}`,
