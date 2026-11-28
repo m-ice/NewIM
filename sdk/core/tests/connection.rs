@@ -514,3 +514,50 @@ fn exhausted_connection_generation_delivers_cancel_and_closes() {
     assert!(!connection.accepts(&ticket));
     assert!(event(&mut connection, Event::Resume, NOW).is_empty());
 }
+
+#[test]
+fn acknowledgments_can_survive_transport_loss_but_cannot_cross_auth_loss() {
+    let mut connection = Connection::new(fence(1), 0).unwrap();
+    let expiry = NOW + 10_000;
+    let ticket = online(&mut connection, expiry);
+    let committed = CommittedDirectory::from_store(&directory(0), None).unwrap();
+    event(
+        &mut connection,
+        Event::Directory {
+            ticket: &ticket,
+            committed,
+        },
+        NOW,
+    );
+    let sent = connection.send_context().unwrap();
+    event(&mut connection, Event::NetworkLost, NOW + 1);
+    assert!(!connection.accepts(&ticket));
+    assert!(connection.accepts_ack(&sent, expiry - 1));
+    assert!(!connection.accepts_ack(&sent, expiry));
+    assert_eq!(
+        event(&mut connection, Event::Tick, expiry),
+        vec![Effect::AdvanceFence(fence(1))]
+    );
+    assert!(!connection.accepts_ack(&sent, expiry));
+    event(
+        &mut connection,
+        Event::FenceAdvanced {
+            previous: &ticket.fence,
+            next: fence(2),
+        },
+        expiry,
+    );
+    let next = credential(
+        event(&mut connection, Event::NetworkAvailable, expiry),
+        AuthCause::Expired,
+    );
+    event(
+        &mut connection,
+        Event::Credentials {
+            ticket: &next,
+            expires_at_ms: expiry + 500,
+        },
+        expiry,
+    );
+    assert!(!connection.accepts_ack(&sent, expiry));
+}

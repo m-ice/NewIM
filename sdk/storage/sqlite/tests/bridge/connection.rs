@@ -285,6 +285,7 @@ fn tls_sdk_connection() {
     let next = directory_ticket(event(&mut connection, Event::Tick, switched_at + 500));
     assert_eq!(next.fence, history.fence);
     assert_ne!(next.connection_generation, history.connection_generation);
+    assert!(connection.accepts_ack(&original, switched_at + 500));
     native.accept_ack(&pending, &original, &ack);
     let now = switched_at + 510;
     let [Effect::RecoverMessages { target, .. }]: [Effect; 1] = bind(
@@ -342,6 +343,8 @@ fn tls_sdk_connection() {
             Effect::AdvanceFence(next.fence.clone())
         ]
     );
+    assert_eq!(native.store.fence(), &original.fence);
+    assert!(!connection.accepts_ack(&original, now + 3));
     let renewed = credential_ticket(
         advance(&mut native, &mut connection, &next, now + 3),
         AuthCause::Expired,

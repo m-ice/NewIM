@@ -428,9 +428,18 @@ impl Connection {
 
     /// Check before accepting incoming data or committing asynchronous sync results.
     /// Generation checking, clock updates and storage effects are serialized by the host.
-    /// Persisted send ACKs use the outbox's original correlation checks instead.
+    /// Persisted send ACKs use `accepts_ack` and the outbox's original correlation checks.
     pub fn accepts(&self, ticket: &Ticket) -> bool {
         self.active.as_ref() == Some(ticket)
+    }
+
+    /// Authorize ACK reconciliation from the same auth session after a transport change.
+    /// Check and commit in the host's serialized event loop.
+    pub fn accepts_ack(&self, context: &SendContext, now_ms: u64) -> bool {
+        self.expires_at_ms.is_some_and(|expiry| now_ms < expiry)
+            && !matches!(self.phase, Phase::Closed | Phase::Faulted)
+            && context.fence == self.fence
+            && context.validate().is_ok()
     }
 
     fn start_if_due(&mut self, now_ms: u64, effects: &mut Vec<Effect>) {
