@@ -37,6 +37,8 @@ type config struct {
 	media                *httpLimits
 	mediaRoot            string
 	mediaS3              *s3store.Config
+	pushRegistration     *httpLimits
+	pushKeysFile         string
 }
 
 type httpLimits struct {
@@ -79,6 +81,13 @@ func readConfig(getenv func(string) string) (config, error) {
 		SubscribeTimeout: time.Duration(limit("NEWIM_GATEWAY_SUBSCRIBE_TIMEOUT_MS", 3000, 100, 15000)) * time.Millisecond,
 		WriteTimeout:     time.Duration(limit("NEWIM_GATEWAY_WRITE_TIMEOUT_MS", 3000, 100, 5000)) * time.Millisecond,
 	}
+	switch getenv("NEWIM_GATEWAY_PUSH_PRESENCE") {
+	case "", "0":
+	case "1":
+		cfg.gateway.TrackSubscriptions = true
+	default:
+		return config{}, errConfig
+	}
 	cfg.drainTimeout = time.Duration(limit("NEWIM_GATEWAY_DRAIN_TIMEOUT_MS", 12000, 100, 15000)) * time.Millisecond
 	budget := func(toggle, ip, account string) *httpLimits {
 		switch getenv(toggle) {
@@ -98,6 +107,13 @@ func readConfig(getenv func(string) string) (config, error) {
 	cfg.conversationSync = budget("NEWIM_CONVERSATION_SYNC", "NEWIM_CONVERSATION_SYNC_IP_ATTEMPTS_PER_MINUTE", "NEWIM_CONVERSATION_SYNC_ACCOUNT_ATTEMPTS_PER_MINUTE")
 	cfg.readWatermark = budget("NEWIM_READ_WATERMARK_HTTP", "NEWIM_READ_WATERMARK_IP_ATTEMPTS_PER_MINUTE", "NEWIM_READ_WATERMARK_ACCOUNT_ATTEMPTS_PER_MINUTE")
 	cfg.media = budget("NEWIM_MEDIA_HTTP", "NEWIM_MEDIA_IP_ATTEMPTS_PER_MINUTE", "NEWIM_MEDIA_ACCOUNT_ATTEMPTS_PER_MINUTE")
+	cfg.pushRegistration = budget("NEWIM_PUSH_REGISTRATION_HTTP", "NEWIM_PUSH_IP_ATTEMPTS_PER_MINUTE", "NEWIM_PUSH_ACCOUNT_ATTEMPTS_PER_MINUTE")
+	if cfg.pushRegistration != nil {
+		cfg.pushKeysFile = getenv("NEWIM_PUSH_KEYS_FILE")
+		if !filepath.IsAbs(cfg.pushKeysFile) {
+			return config{}, errConfig
+		}
+	}
 	if cfg.privateMessages != nil && getenv("NEWIM_PRIVATE_MESSAGE_POLICY") != "1" {
 		return config{}, errConfig
 	}

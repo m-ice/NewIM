@@ -41,12 +41,18 @@ type HandshakeStore interface {
 	MarkGatewayActivity(context.Context, session.ConnectionIdentity) error
 }
 
+type subscriptionStore interface {
+	RenewGatewaySubscription(context.Context, session.ConnectionIdentity, string, time.Duration) error
+	ReleaseGatewaySubscription(context.Context, session.ConnectionIdentity) error
+}
+
 type Config struct {
-	MaxConnections   int
-	IPAttempts       int
-	DeviceAttempts   int
-	SubscribeTimeout time.Duration
-	WriteTimeout     time.Duration
+	TrackSubscriptions bool
+	MaxConnections     int
+	IPAttempts         int
+	DeviceAttempts     int
+	SubscribeTimeout   time.Duration
+	WriteTimeout       time.Duration
 }
 
 type deviceKey struct {
@@ -61,6 +67,7 @@ type Gateway struct {
 	auth     SessionService
 	messages MessageReader
 	store    HandshakeStore
+	presence subscriptionStore
 	config   Config
 
 	mu        sync.Mutex
@@ -81,8 +88,16 @@ func New(auth SessionService, messages MessageReader, store HandshakeStore, conf
 		config.WriteTimeout < 100*time.Millisecond || config.WriteTimeout > 5*time.Second {
 		return nil, errors.New("invalid gateway configuration")
 	}
+	var presence subscriptionStore
+	if config.TrackSubscriptions {
+		var ok bool
+		presence, ok = store.(subscriptionStore)
+		if !ok {
+			return nil, errors.New("gateway subscription storage required")
+		}
+	}
 	return &Gateway{
-		auth: auth, messages: messages, store: store, config: config,
+		auth: auth, messages: messages, store: store, presence: presence, config: config,
 		addresses: make(map[netip.Addr]int), devices: make(map[deviceKey]int),
 		sockets:  make(map[*socket]struct{}),
 		draining: make(chan struct{}), drained: make(chan struct{}),

@@ -30,6 +30,9 @@ TESTS = {
     'conversation-account-sync-query-plan': 'TestAccountSettingsHTTPWide',
     'message-event-check': 'TestMessageVisibilityProjection',
     'message-event-recovery': 'TestMessageVisibilityUpgrade',
+    'push-delivery-check': 'TestPushDelivery',
+    'push-token-check': 'TestPushTokenRotation',
+    'push-recovery': 'TestPushRecovery',
 }
 SDK_TESTS = {
     'conversation-account-sdk-check': 'tls_sqlite_conversation_account_sync',
@@ -105,7 +108,7 @@ def main():
             build(commands, ['go', 'build', '-o', str(directory / name), './server/cmd/' + name],
                   env, 'sync-http-' + name + '-build')
         with Database(commands, image, platform) as db:
-            target = 21 if args.suite.startswith('message-event-') else (
+            target = 22 if args.suite.startswith('push-') else 21 if args.suite.startswith('message-event-') else (
                 18 if account_sync or sdk_bridge else 17 if read_sync else 15 if read_suite else 14
             )
             upgrades_visibility = args.suite == 'message-event-recovery'

@@ -531,3 +531,7 @@ message-delta-redaction:
 	python3 -B infra/db/message_delta_suite.py redaction
 
 message-delta-check: toolchain message-delta-authz message-delta message-delta-query-plan message-delta-recovery message-delta-redaction
+
+.PHONY: push-delivery-check push-token-check push-recovery
+push-delivery-check push-token-check push-recovery: toolchain
+	python3 -B infra/db/sync_http_suite.py $@

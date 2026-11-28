@@ -45,6 +45,7 @@ CONVERSATION_ACCOUNT_TABLES = {'im_conversation_account_settings'}
 WEBHOOK_MANAGEMENT_TABLES = {'im_webhook_management_audit'}
 ACTOR_TYPE_TABLES = {'im_user_actor_types'}
 MESSAGE_VISIBILITY_TABLES = {'im_message_visibility_events'}
+PUSH_TABLES = {'im_gateway_subscriptions', 'im_push_state', 'im_push_deliveries'}
 
 
 def source_migrations():
@@ -80,6 +81,7 @@ def check_catalog(db, target=None):
     expected |= WEBHOOK_MANAGEMENT_TABLES if target >= 19 else set()
     expected |= ACTOR_TYPE_TABLES if target >= 20 else set()
     expected |= MESSAGE_VISIBILITY_TABLES if target >= 21 else set()
+    expected |= PUSH_TABLES if target >= 22 else set()
     actual_tables = set(db.sql("SELECT tablename FROM pg_tables WHERE schemaname='newim';").splitlines())
     if actual_tables != expected:
         raise Failure('exact catalog table set: missing='+repr(sorted(expected-actual_tables))+
@@ -405,6 +407,43 @@ def message_visibility_constraints(db):
     print(f'PASS message visibility shape and identity: {len(negatives)} rejected writes', flush=True)
 
 
+def push_constraints(db):
+    db.sql(
+        "INSERT INTO newim.im_auth_tokens(token_id,token_digest,session_id,expires_at) "
+        "VALUES (repeat('4',32),decode(repeat('44',32),'hex'),'session',clock_timestamp()+interval '1 hour'); "
+        "INSERT INTO newim.im_gateway_subscriptions VALUES "
+        "('push_connection','alice','phone','session',repeat('4',32),'room',"
+        "statement_timestamp(),statement_timestamp()+interval '40 seconds'); "
+        "UPDATE newim.im_push_tokens SET session_id='session',"
+        "registration_version=nextval('newim.im_push_registration_version'),key_id='push_key',"
+        "token_nonce=decode(repeat('11',12),'hex'),token_ciphertext=decode(repeat('22',32),'hex'),"
+        "registered_at=clock_timestamp() WHERE user_id='alice'; "
+        "INSERT INTO newim.im_push_deliveries(event_id,user_id,device_id,session_id,provider,registration_version) "
+        "SELECT 'e_one',user_id,device_id,session_id,provider,registration_version FROM newim.im_push_tokens "
+        "WHERE user_id='alice';"
+    )
+    failures = [
+        ("UPDATE newim.im_gateway_subscriptions SET expires_at=refreshed_at;", '23514'),
+        ("UPDATE newim.im_gateway_subscriptions SET token_id=repeat('2',32);", '23503'),
+        ("UPDATE newim.im_gateway_subscriptions SET conversation_id='other';", '23503'),
+        ("UPDATE newim.im_push_tokens SET token_nonce=decode('01','hex') WHERE user_id='alice';", '23514'),
+        ("UPDATE newim.im_push_tokens SET key_id=NULL WHERE user_id='alice';", '23514'),
+        ("UPDATE newim.im_push_tokens SET invalidated_at=registered_at-interval '1 second' WHERE user_id='alice';", '23514'),
+        ("INSERT INTO newim.im_push_tokens(user_id,device_id,provider,token_ciphertext,session_id,registration_version,"
+         "key_id,token_nonce,registered_at) SELECT user_id,device_id,'fcm',token_ciphertext,session_id,"
+         "registration_version+1,key_id,token_nonce,registered_at FROM newim.im_push_tokens WHERE user_id='alice';", '23505'),
+        ("UPDATE newim.im_push_deliveries SET status='leased';", '23514'),
+        ("UPDATE newim.im_push_deliveries SET attempts=9;", '23514'),
+        ("INSERT INTO newim.im_push_deliveries SELECT * FROM newim.im_push_deliveries;", '23505'),
+        ("INSERT INTO newim.im_push_state VALUES (false,clock_timestamp());", '23514'),
+    ]
+    before = snapshot(db)
+    for sql, state in failures:
+        db.sql(sql, error=state)
+    equal(snapshot(db), before, 'rejected push writes preserve registration and jobs')
+    print(f'PASS push registration, lease and dispatch shape: {len(failures)} rejected writes', flush=True)
+
+
 def schema(db, commands):
     check_identity_contract()
     previous = os.environ.get('NEWIM_DB_IMAGE')
@@ -480,6 +519,7 @@ def schema(db, commands):
     group_constraints(db)
     media_constraints(db)
     webhook_constraints(db)
+    push_constraints(db)
     print(f'PASS schema catalogs and {len(negatives)} negative writes', flush=True)
     codec_roundtrips(db, commands)
     db.sql("TRUNCATE newim.im_users CASCADE;")
@@ -874,8 +914,8 @@ def webhook_constraints(db):
     ensure_webhook_endpoint(db)
     scalar(db, "SELECT string_agg(column_name,',' ORDER BY ordinal_position) FROM information_schema.columns "
            "WHERE table_schema='newim' AND table_name='im_outbox_events';",
-           'event_id,server_msg_id,created_at,available_at,completed_at,webhook_fanout_at,webhook_fanout_error',
-           'exact outbox columns with webhook fan-out marker')
+           'event_id,server_msg_id,created_at,available_at,completed_at,webhook_fanout_at,webhook_fanout_error,push_fanout_at',
+           'exact outbox columns with independent delivery markers')
     scalar(db, "SELECT string_agg(column_name,',' ORDER BY ordinal_position) FROM information_schema.columns "
            "WHERE table_schema='newim' AND table_name='im_webhook_endpoints';",
            'destination_id,status,active_revision,created_at,updated_at,revoked_at',
@@ -1522,6 +1562,46 @@ def message_visibility_migration(db, commands):
     print('PASS populated 021 failure/termination rollback and additive visibility ledger', flush=True)
 
 
+def offline_push_migration(db, commands):
+    db.sql(
+        "INSERT INTO newim.im_devices(user_id,device_id) VALUES ('alice','legacy_push_device'); "
+        "INSERT INTO newim.im_push_tokens(user_id,device_id,provider,token_ciphertext) "
+        "VALUES ('alice','legacy_push_device','apns',decode('0102','hex'));"
+    )
+    historical = snapshot(db)
+    with tempfile.TemporaryDirectory(prefix='offline-push-migration-', dir=commands.directory) as owned:
+        directory = Path(owned)
+        for path in source_migrations():
+            (directory / path.name).write_bytes(path.read_bytes())
+        candidate = directory / '022_offline_push.sql'
+        original = candidate.read_text()
+        candidate.write_text(original + "\nSELECT 1/0;\n")
+        db.sql(migration_sql(22, directory=directory), error='22012')
+        check_catalog(db, 21)
+        equal(snapshot(db), historical, 'failed 022 preserves populated 021')
+        candidate.write_text(original + "\nSELECT pg_sleep(30);\n")
+        name = 'newim_push_migration_interrupt'
+        held = db.session(f"SET application_name='{name}'; " + migration_sql(22, directory=directory))
+        db.wait_sql(f"SELECT EXISTS(SELECT 1 FROM pg_stat_activity WHERE application_name='{name}' "
+                    "AND wait_event='PgSleep');")
+        db.sql(f"SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE application_name='{name}';")
+        held.finish(error='57P01')
+        check_catalog(db, 21)
+        equal(snapshot(db), historical, 'terminated 022 preserves populated 021')
+    db.sql(migration_sql(22))
+    check_catalog(db, 22)
+    changed = PUSH_TABLES | {'migrations', 'im_push_tokens', 'im_outbox_events'}
+    equal({k:v for k,v in snapshot(db).items() if k not in changed},
+          {k:v for k,v in historical.items() if k not in changed}, '022 preserves historical message state')
+    scalar(db, "SELECT count(*) FROM newim.im_push_tokens WHERE device_id='legacy_push_device' "
+               "AND token_ciphertext=decode('0102','hex') AND registration_version IS NULL;",
+           1, '022 keeps legacy ciphertext outside the versioned registration path')
+    scalar(db, "SELECT count(*) FROM newim.im_push_state;", 0, '022 does not schedule old events')
+    scalar(db, "SELECT count(*) FROM newim.im_outbox_events WHERE push_fanout_at IS NOT NULL;",
+           0, '022 preserves historical outbox pending markers')
+    print('PASS populated 022 failure/termination rollback and offline push state', flush=True)
+
+
 def migrations(db, commands):
     head = len(source_migrations())
     db.sql(migration_sql(1))
@@ -1556,6 +1636,7 @@ def migrations(db, commands):
     webhook_management_migration(db, commands)
     actor_type_migration(db, commands)
     message_visibility_migration(db, commands)
+    offline_push_migration(db, commands)
     after = snapshot(db)
     db.sql(migration_sql())
     equal(snapshot(db), after, 'head replay stable')

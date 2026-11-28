@@ -23,6 +23,7 @@ import (
 	"github.com/m-ice/NewIM/server/media/s3store"
 	"github.com/m-ice/NewIM/server/mediahttp"
 	messageservice "github.com/m-ice/NewIM/server/message"
+	"github.com/m-ice/NewIM/server/push"
 	"github.com/m-ice/NewIM/server/read"
 	"github.com/m-ice/NewIM/server/readhttp"
 	"github.com/m-ice/NewIM/server/storage/authsession"
@@ -33,6 +34,7 @@ import (
 	messagestore "github.com/m-ice/NewIM/server/storage/message"
 	"github.com/m-ice/NewIM/server/storage/messagesync"
 	"github.com/m-ice/NewIM/server/storage/postgresidentity"
+	pushstore "github.com/m-ice/NewIM/server/storage/push"
 	readstore "github.com/m-ice/NewIM/server/storage/read"
 	userstore "github.com/m-ice/NewIM/server/storage/user"
 	syncconversation "github.com/m-ice/NewIM/server/sync/conversation"
@@ -76,6 +78,11 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 	if err = authRepo.CheckGatewaySchema(startup); err != nil {
 		return errors.New("newim-gateway handshake storage unavailable")
 	}
+	if cfg.gateway.TrackSubscriptions {
+		if err = authRepo.CheckGatewaySubscriptionSchema(startup); err != nil {
+			return errors.New("newim-gateway subscription storage unavailable")
+		}
+	}
 	messageRepo, err := messagesync.Open(startup, messagesync.Config{
 		DSN: cfg.dsn, AllowLocalSocket: cfg.allowLocalSocket, ApplicationName: "newim-gateway-messages", Guard: guard,
 	})
@@ -95,6 +102,26 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 	handler, err := gateway.New(auth, messages, authRepo, cfg.gateway)
 	if err != nil {
 		return errConfig
+	}
+
+	var pushRegistration *push.RegistrationHandler
+	if limits := cfg.pushRegistration; limits != nil {
+		vault, err := push.LoadVault(cfg.pushKeysFile)
+		if err != nil {
+			return errConfig
+		}
+		repo, err := pushstore.Open(startup, pushstore.Config{
+			DSN: cfg.dsn, AllowLocalSocket: cfg.allowLocalSocket,
+			ApplicationName: "newim-gateway-push", Guard: guard,
+		}, vault)
+		if err != nil {
+			return errors.New("newim-gateway push registration storage unavailable")
+		}
+		defer repo.Close()
+		pushRegistration, err = push.NewRegistrationHandler(auth, repo, gateway.NewProfileBudget(limits.ip, limits.account))
+		if err != nil {
+			return errConfig
+		}
 	}
 
 	var profiles *userhttp.Handler
@@ -277,6 +304,8 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 	routes := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.EscapedPath()
 		switch {
+		case pushRegistration != nil && path == push.RegistrationRoute:
+			pushRegistration.ServeHTTP(w, r)
 		case profiles != nil && userhttp.ContainsRoute(path):
 			profiles.ServeHTTP(w, r)
 		case friends != nil && friendhttp.ContainsRoute(path):

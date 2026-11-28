@@ -17,7 +17,11 @@ import (
 	syncmessage "github.com/m-ice/NewIM/server/sync/message"
 )
 
-const maxSubscriptionBytes = 1024
+const (
+	maxSubscriptionBytes = 1024
+	presenceTimeout      = 250 * time.Millisecond
+	subscriptionTTL      = 45 * time.Second
+)
 
 type end struct {
 	code   websocket.StatusCode
@@ -75,6 +79,13 @@ func (g *Gateway) serveConnection(ctx context.Context, ws *websocket.Conn, raw s
 	case request = <-subscriptions:
 	}
 	timer.Stop()
+	defer func() {
+		if g.presence != nil && p.active {
+			cleanup, cancel := context.WithTimeout(context.WithoutCancel(ctx), presenceTimeout)
+			defer cancel()
+			_ = g.presence.ReleaseGatewaySubscription(cleanup, p.identity)
+		}
+	}()
 	return g.deliver(ctx, &p, request)
 }
 
@@ -180,7 +191,7 @@ func (g *Gateway) deliver(ctx context.Context, p *peer, request subscription) en
 
 		select {
 		case <-heartbeat.C:
-			if result := g.heartbeat(ctx, p); result.code != 0 {
+			if result := g.heartbeat(ctx, p, request.conversationID); result.code != 0 {
 				return result
 			}
 		default:
@@ -211,7 +222,7 @@ func (g *Gateway) shouldStop(p *peer) end {
 	}
 }
 
-func (g *Gateway) heartbeat(ctx context.Context, p *peer) end {
+func (g *Gateway) heartbeat(ctx context.Context, p *peer, conversationID string) end {
 	if result := g.authenticate(ctx, p); result.code != 0 {
 		return result
 	}
@@ -221,12 +232,18 @@ func (g *Gateway) heartbeat(ctx context.Context, p *peer) end {
 	if err != nil {
 		return socketGone
 	}
-	return g.markActivity(ctx, p)
+	return g.markActivity(ctx, p, conversationID)
 }
 
-func (g *Gateway) markActivity(ctx context.Context, p *peer) end {
+func (g *Gateway) markActivity(ctx context.Context, p *peer, conversationID string) end {
 	if err := g.store.MarkGatewayActivity(ctx, p.identity); err != nil {
 		return g.authorizationFailure(ctx, p, err)
+	}
+	if g.presence != nil {
+		// Presence helps the notification worker. Its availability does not gate websocket delivery.
+		write, cancel := context.WithTimeout(ctx, presenceTimeout)
+		defer cancel()
+		_ = g.presence.RenewGatewaySubscription(write, p.identity, conversationID, subscriptionTTL)
 	}
 	return end{}
 }
@@ -276,7 +293,7 @@ func (g *Gateway) sendPage(ctx context.Context, p *peer, request *subscription) 
 		}
 	}
 	if !p.active {
-		if result := g.markActivity(ctx, p); result.code != 0 {
+		if result := g.markActivity(ctx, p, request.conversationID); result.code != 0 {
 			return result
 		}
 		p.active = true
