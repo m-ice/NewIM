@@ -194,7 +194,7 @@ func TestPushDelivery(t *testing.T) {
 		if allowed || len(token) != 0 {
 			t.Fatal("recalled notification remained eligible")
 		}
-		must(t, repo.Finish(f.ctx, queued, push.Outcome{Result: push.Cancelled}))
+		finishPush(t, f, repo, queued, push.Outcome{Result: push.Cancelled}, push.Cancelled)
 	}
 	accountState(t, f, right, http.MethodPatch, pair.tablet, pair.conversation, "settings",
 		map[string]any{"expectedVersion": "0", "muted": true})
@@ -223,7 +223,7 @@ func TestPushTokenRotation(t *testing.T) {
 	if newVersion <= first {
 		t.Fatal("registration version did not advance")
 	}
-	must(t, repo.Finish(f.ctx, job, push.Outcome{Result: push.InvalidToken}))
+	finishPush(t, f, repo, job, push.Outcome{Result: push.InvalidToken}, push.InvalidToken)
 	reply := f.call(gateway, http.MethodDelete, push.RegistrationRoute, pair.owner,
 		encode(t, map[string]string{"provider": "fcm", "version": strconv.FormatInt(first, 10)}), nil)
 	requireStatus(t, reply, http.StatusNoContent)
@@ -235,7 +235,7 @@ func TestPushTokenRotation(t *testing.T) {
 		t.Fatal("late response or unregister changed the new registration")
 	}
 	requirePushToken(t, f, repo, next, tabletPushToken)
-	must(t, repo.Finish(f.ctx, next, push.Outcome{Result: push.InvalidToken}))
+	finishPush(t, f, repo, next, push.Outcome{Result: push.InvalidToken}, push.InvalidToken)
 
 	quiet := send(t, f, gateway, pair.peer, pair.conversation, "push_invalid", "removed vendor token")
 	fanoutOne(t, f, repo)
@@ -247,7 +247,7 @@ func TestPushTokenRotation(t *testing.T) {
 	fanoutOne(t, f, repo)
 	apns := claimPush(t, f, repo)
 	requirePushToken(t, f, repo, apns, apnsToken)
-	must(t, repo.Finish(f.ctx, apns, push.Outcome{Result: push.InvalidToken, InvalidAt: time.Now().Add(-time.Hour)}))
+	finishPush(t, f, repo, apns, push.Outcome{Result: push.InvalidToken, InvalidAt: time.Now().Add(-time.Hour)}, push.InvalidToken)
 	send(t, f, gateway, pair.peer, pair.conversation, "push_apns_next", "APNs registration remains usable")
 	fanoutOne(t, f, repo)
 	apns = claimPush(t, f, repo)
@@ -255,7 +255,7 @@ func TestPushTokenRotation(t *testing.T) {
 		t.Fatal("a stale APNs timestamp invalidated a newer registration")
 	}
 	requirePushToken(t, f, repo, apns, apnsToken)
-	must(t, repo.Finish(f.ctx, apns, push.Outcome{Result: push.Accepted}))
+	finishPush(t, f, repo, apns, push.Outcome{Result: push.Accepted}, push.Accepted)
 	gateway.requireRedacted(t, phonePushToken, tabletPushToken, apnsToken)
 }
 
@@ -263,6 +263,15 @@ type testPushProvider func(context.Context, []byte) push.Outcome
 
 func (provider testPushProvider) Send(ctx context.Context, token []byte) push.Outcome {
 	return provider(ctx, token)
+}
+
+func finishPush(t *testing.T, f *fixture, repo *pushstore.Repository, job push.Delivery, outcome push.Outcome, want push.Result) {
+	t.Helper()
+	got, err := repo.Finish(f.ctx, job, outcome)
+	must(t, err)
+	if got != want {
+		t.Fatalf("committed push result = %d, want %d", got, want)
+	}
 }
 
 func TestPushRecovery(t *testing.T) {
@@ -307,15 +316,15 @@ func TestPushRecovery(t *testing.T) {
 		}
 		stale := job
 		stale.LeaseID = expired
-		must(t, repo.Finish(f.ctx, stale, push.Outcome{Result: push.InvalidToken}))
+		finishPush(t, f, repo, stale, push.Outcome{Result: push.InvalidToken}, 0)
 		requirePushToken(t, f, repo, job, phonePushToken)
-		must(t, repo.Finish(f.ctx, job, push.Outcome{Result: push.TemporaryFailure}))
+		finishPush(t, f, repo, job, push.Outcome{Result: push.TemporaryFailure}, push.TemporaryFailure)
 		job = claimPush(t, f, repo)
 		if job.Attempts != 3 {
 			t.Fatal("temporary failure did not keep one retryable job")
 		}
 		requirePushToken(t, f, repo, job, phonePushToken)
-		must(t, repo.Finish(f.ctx, job, push.Outcome{Result: push.Accepted}))
+		finishPush(t, f, repo, job, push.Outcome{Result: push.Accepted}, push.Accepted)
 		var messages, jobs, delivered int
 		must(t, f.db.QueryRow(f.ctx, `SELECT
 			(SELECT count(*) FROM newim.im_messages WHERE client_msg_id='push_before_restart'),
@@ -323,6 +332,18 @@ func TestPushRecovery(t *testing.T) {
 			(SELECT count(*) FROM newim.im_push_deliveries WHERE status='accepted')`).Scan(&messages, &jobs, &delivered))
 		if messages != 1 || jobs != 1 || delivered != 1 {
 			t.Fatal("worker recovery duplicated or rolled back the message or its notification")
+		}
+		f.sql(`UPDATE newim.im_push_deliveries SET status='pending', attempts=$1, available_at=clock_timestamp()
+			WHERE event_id=$2`, push.MaxAttempts-1, job.EventID)
+		job = claimPush(t, f, repo)
+		if job.Attempts != push.MaxAttempts {
+			t.Fatal("unexpected final dispatch attempt")
+		}
+		finishPush(t, f, repo, job, push.Outcome{Result: push.TemporaryFailure}, push.PermanentFailure)
+		var state string
+		must(t, f.db.QueryRow(f.ctx, "SELECT status FROM newim.im_push_deliveries WHERE event_id=$1", job.EventID).Scan(&state))
+		if state != "failed" {
+			t.Fatalf("exhausted notification status = %q", state)
 		}
 	default:
 		t.Fatal("push recovery requires prepare and restart phases")

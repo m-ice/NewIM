@@ -64,6 +64,7 @@ pub(crate) struct Metrics {
     dialed: bool,
     gap: Option<(String, u64)>,
     last_store_revision: Option<u64>,
+    last_ack_revision: Option<u64>,
 }
 
 fn increment(count: &mut u32) -> bool {
@@ -199,6 +200,7 @@ impl Connection {
     }
 
     /// The protocol adapter must decode the ACK and take headers from the same verified TLS response.
+    /// The host clock must use the same non-decreasing time base as `attempted_at_ms`.
     /// If the optional trace is absent or malformed, normal ACK reconciliation still applies.
     pub fn resolve_http_ack<'a, S: LocalStore>(
         &mut self,
@@ -206,9 +208,9 @@ impl Connection {
         flight: AckFlight<'_>,
         ack: &'a PersistedAck,
         trace_headers: &[&'a str],
-        now_ms: u64,
+        mut now_ms: impl FnMut() -> u64,
     ) -> Result<(AckResolution, Option<ReceiptTrace<'a>>), OutboxError> {
-        if !self.accepts_ack(flight.context, now_ms) {
+        if !self.accepts_ack(flight.context, now_ms()) {
             return Err(OutboxError::GenerationMismatch);
         }
         let committed = outbox::resolve_ack(
@@ -220,19 +222,26 @@ impl Connection {
             ack,
         );
         match committed {
-            Ok(receipt) => {
-                if increment(&mut self.metrics.report.ack_committed) {
-                    self.metrics.report.ack_millis += now_ms
-                        .saturating_sub(flight.attempted_at_ms)
-                        .min(MAX_ACK_MS)
-                        as u32;
+            Ok(AckResolution::Resolved(receipt)) => {
+                if self
+                    .metrics
+                    .last_ack_revision
+                    .is_none_or(|last| receipt.revision > last)
+                {
+                    self.metrics.last_ack_revision = Some(receipt.revision);
+                    if increment(&mut self.metrics.report.ack_committed) {
+                        self.metrics.report.ack_millis += now_ms()
+                            .saturating_sub(flight.attempted_at_ms)
+                            .min(MAX_ACK_MS)
+                            as u32;
+                    }
                 }
                 let trace = single_trace(trace_headers).map(|trace_id| ReceiptTrace {
                     trace_id,
                     client_msg_id: &ack.client_id,
                     server_msg_id: &ack.server_id,
                 });
-                Ok((receipt, trace))
+                Ok((AckResolution::Resolved(receipt), trace))
             }
             Err(error) => {
                 increment(&mut self.metrics.report.ack_failed);

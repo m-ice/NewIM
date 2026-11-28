@@ -12,7 +12,7 @@ import (
 )
 
 type dispatchQueue struct {
-	completed []push.Result
+	committed push.Result
 }
 
 func (*dispatchQueue) Enable(context.Context) error          { return nil }
@@ -27,9 +27,8 @@ func (*dispatchQueue) Prepare(context.Context, push.Delivery) ([]byte, bool, err
 	return []byte("fixture-device-token"), true, nil
 }
 
-func (q *dispatchQueue) Finish(_ context.Context, _ push.Delivery, outcome push.Outcome) error {
-	q.completed = append(q.completed, outcome.Result)
-	return nil
+func (q *dispatchQueue) Finish(context.Context, push.Delivery, push.Outcome) (push.Result, error) {
+	return q.committed, nil
 }
 
 type dispatchProvider struct{ result push.Result }
@@ -45,23 +44,27 @@ func TestPushDispatchMetrics(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, result := range []push.Result{push.TemporaryFailure, push.Accepted, push.Accepted} {
-		provider.result = result
-		if progressed, err := worker.Cycle(t.Context()); !progressed || err != nil {
+	for _, attempt := range []struct {
+		provider, committed push.Result
+	}{
+		{push.TemporaryFailure, push.TemporaryFailure},
+		{push.TemporaryFailure, push.PermanentFailure},
+		{push.Accepted, 0},
+		{push.Accepted, push.Accepted},
+	} {
+		provider.result, queue.committed = attempt.provider, attempt.committed
+		if progressed, err := worker.Cycle(t.Context()); progressed != (attempt.committed != 0) || err != nil {
 			t.Fatalf("dispatch cycle: progress = %t, error = %v", progressed, err)
 		}
-	}
-	if len(queue.completed) != 3 {
-		t.Fatalf("committed decisions = %v", queue.completed)
 	}
 	recorder := httptest.NewRecorder()
 	api.NewOperationalMetricsHandler("test", api.NewMetricsRegistry(), &pushRuntime{worker: worker}).
 		ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, "/metrics", nil))
 	body := recorder.Body.String()
 	for _, sample := range []string{
-		"newim_push_dispatch_total{result=\"accepted\"} 2",
+		"newim_push_dispatch_total{result=\"accepted\"} 1",
 		"newim_push_dispatch_total{result=\"retry\"} 1",
-		"newim_push_dispatch_total{result=\"failed\"} 0",
+		"newim_push_dispatch_total{result=\"failed\"} 1",
 	} {
 		if recorder.Code != http.StatusOK || !strings.Contains(body, sample+"\n") {
 			t.Errorf("metrics status %d or missing %s", recorder.Code, sample)

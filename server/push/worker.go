@@ -42,7 +42,8 @@ type Queue interface {
 	Fanout(context.Context) (int64, error)
 	Claim(context.Context) (Delivery, bool, error)
 	Prepare(context.Context, Delivery) ([]byte, bool, error)
-	Finish(context.Context, Delivery, Outcome) error
+	// Finish returns the committed decision, or zero if the lease no longer applies.
+	Finish(context.Context, Delivery, Outcome) (Result, error)
 	PrunePresence(context.Context) error
 }
 
@@ -128,11 +129,12 @@ func (w *Worker) Cycle(ctx context.Context) (bool, error) {
 	if outcome.Result == TemporaryFailure {
 		outcome.RetryAfter = backoff(job.Attempts, outcome.RetryAfter)
 	}
-	err = w.queue.Finish(ctx, job, outcome)
-	if err == nil {
-		w.outcomes[outcome.Result].Add(1)
+	finished, err := w.queue.Finish(ctx, job, outcome)
+	if err == nil && finished >= Accepted && finished <= Cancelled {
+		w.outcomes[finished].Add(1)
+		return true, scheduleErr
 	}
-	return err == nil, errors.Join(scheduleErr, err)
+	return scheduled > 0, errors.Join(scheduleErr, err)
 }
 
 func (w *Worker) send(ctx context.Context, job Delivery) (Outcome, error) {

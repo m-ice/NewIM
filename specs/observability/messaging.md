@@ -11,9 +11,9 @@
 | `newim_gateway_operations_total{operation,result}` | 按固定动作和结果统计网关操作 |
 | `newim_gateway_operation_duration_seconds_{sum,count}{operation}` | 按动作累计经过时间和次数 |
 | `newim_sdk_events_total{event}` | SDK 上报的连接、重连、回执、缺口、页面及消息提交次数 |
-| `newim_sdk_ack_duration_seconds_{sum,count}` | SDK 从发送尝试到持久回执的累计时长和样本数 |
+| `newim_sdk_ack_duration_seconds_{sum,count}` | SDK 从发送尝试到本地提交回执的累计时长和样本数 |
 | `newim_sdk_outbox_depth_{sum,count}` | SDK 从存储读取的待发任务量之和、读取得到的样本数 |
-| `newim_push_dispatch_total{result}` | 推送工作进程记录的接受、重试、终止失败、无效及取消次数 |
+| `newim_push_dispatch_total{result}` | 推送工作进程持久提交的接受、重试、终止失败、无效及取消次数 |
 
 网关动作包括 `handshake`、`subscribe`、`delivery`、`visibility_notice`、
 `directory_bootstrap`、`directory_delta`、`message_page` 和 `visibility_page`。

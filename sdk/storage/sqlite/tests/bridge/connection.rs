@@ -1106,28 +1106,38 @@ fn tls_sdk_observability() {
     let revision = progress(&mut native, ROOM).revision;
     let operation_id = native.next;
     native.next += 1;
-    let (_, Some(trace)) = connection
-        .resolve_http_ack(
-            &mut native.store,
-            AckFlight {
-                context: &context,
-                pending: &pending,
-                expected_revision: revision,
-                operation_id,
-                attempted_at_ms: NOW + 3,
-            },
-            &persisted,
-            &[header],
-            NOW + 13,
-        )
+    let flight = || AckFlight {
+        context: &context,
+        pending: &pending,
+        expected_revision: revision,
+        operation_id,
+        attempted_at_ms: NOW + 3,
+    };
+    let mut clock = [NOW + 13, NOW + 15].into_iter();
+    let (resolution, Some(trace)) = connection
+        .resolve_http_ack(&mut native.store, flight(), &persisted, &[header], || {
+            clock.next().unwrap()
+        })
         .unwrap()
     else {
         panic!("the committed receipt did not retain diagnostic metadata");
     };
+    assert!(clock.next().is_none());
     assert_eq!(trace.trace_id, *header);
     assert_eq!(trace.client_msg_id, "observed_outbound");
     assert_eq!(trace.server_msg_id, persisted.server_id);
     assert!(!format!("{trace:?}").contains(*header));
+    let (replayed, duplicate_header) = connection
+        .resolve_http_ack(
+            &mut native.store,
+            flight(),
+            &persisted,
+            &[header, header],
+            || NOW + 15,
+        )
+        .unwrap();
+    assert_eq!(replayed, resolution);
+    assert!(duplicate_header.is_none());
     observed_store_action(&mut native, &mut connection, &first, Action::Metrics);
 
     bridge.send("OBS_NEXT");
@@ -1141,7 +1151,7 @@ fn tls_sdk_observability() {
         native.store.fence(),
         &snapshot,
         incoming,
-        NOW + 14,
+        NOW + 16,
         compare_observed_payload,
     )
     .unwrap();
@@ -1149,11 +1159,11 @@ fn tls_sdk_observability() {
     assert_eq!(room_messages(&mut native).len(), 3);
 
     assert_eq!(
-        event(&mut connection, Event::NetworkLost, NOW + 15),
+        event(&mut connection, Event::NetworkLost, NOW + 17),
         vec![Effect::Cancel(first)]
     );
     close(&mut bridge);
-    let current = directory_ticket(event(&mut connection, Event::NetworkAvailable, NOW + 16));
+    let current = directory_ticket(event(&mut connection, Event::NetworkAvailable, NOW + 18));
     assert_eq!(
         bind(
             &mut bridge,
@@ -1162,7 +1172,7 @@ fn tls_sdk_observability() {
             &current,
             "phone",
             (ROOM, 3),
-            NOW + 16
+            NOW + 18
         ),
         vec![Effect::Ready(current.clone())]
     );
@@ -1174,7 +1184,7 @@ fn tls_sdk_observability() {
         ("reconnect", 1),
         ("ready", 2),
         ("ack_committed", 1),
-        ("ack_millis", 10),
+        ("ack_millis", 12),
         ("gap_detected", 1),
         ("page_committed", 1),
         ("message_committed", 1),
@@ -1220,7 +1230,7 @@ fn tls_sdk_observability() {
         "newim_message_lifecycle_duration_seconds_count{component=\"send\",stage=\"persisted\"}",
         "newim_sdk_events_total{event=\"gap_detected\"} 1",
         "newim_sdk_events_total{event=\"reconnect\"} 1",
-        "newim_sdk_ack_duration_seconds_sum 0.01",
+        "newim_sdk_ack_duration_seconds_sum 0.012",
         "newim_sdk_outbox_depth_count 2",
         "newim_sdk_outbox_depth_sum 1",
     ] {

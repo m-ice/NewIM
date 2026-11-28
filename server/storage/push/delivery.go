@@ -131,26 +131,28 @@ func (r *Repository) Prepare(ctx context.Context, job app.Delivery) ([]byte, boo
 	return raw, err == nil, err
 }
 
-func (r *Repository) Finish(ctx context.Context, job app.Delivery, outcome app.Outcome) error {
+func (r *Repository) Finish(ctx context.Context, job app.Delivery, outcome app.Outcome) (app.Result, error) {
+	result := outcome.Result
+	if result == app.TemporaryFailure && job.Attempts >= app.MaxAttempts {
+		result = app.PermanentFailure
+	}
 	status := "failed"
-	switch outcome.Result {
+	switch result {
 	case app.Accepted:
 		status = "accepted"
 	case app.Cancelled, app.InvalidToken:
 		status = "cancelled"
 	case app.TemporaryFailure:
-		if job.Attempts < app.MaxAttempts {
-			status = "pending"
-		}
+		status = "pending"
 	case app.PermanentFailure:
 	default:
-		return app.ErrInvalidInput
+		return 0, app.ErrInvalidInput
 	}
 	ctx, cancel := context.WithTimeout(ctx, dbTimeout)
 	defer cancel()
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
-		return app.ErrStorage
+		return 0, app.ErrStorage
 	}
 	defer rollback(tx)
 	wait := min(max(outcome.RetryAfter, 0), 24*time.Hour)
@@ -161,18 +163,24 @@ func (r *Repository) Finish(ctx context.Context, job app.Delivery, outcome app.O
 		  AND status='leased' AND lease_until>clock_timestamp()`,
 		job.EventID, job.UserID, job.DeviceID, job.LeaseID, status, wait.Milliseconds())
 	if err != nil {
-		return app.ErrStorage
+		return 0, app.ErrStorage
 	}
-	if changed.RowsAffected() == 1 && outcome.Result == app.InvalidToken {
+	if changed.RowsAffected() == 0 {
+		return 0, nil
+	}
+	if result == app.InvalidToken {
 		var invalidAt *time.Time
 		if !outcome.InvalidAt.IsZero() {
 			invalidAt = &outcome.InvalidAt
 		}
 		if err := invalidate(ctx, tx, job.TokenBinding, invalidAt); err != nil {
-			return err
+			return 0, err
 		}
 	}
-	return storageError(tx.Commit(ctx))
+	if err := storageError(tx.Commit(ctx)); err != nil {
+		return 0, err
+	}
+	return result, nil
 }
 
 func (r *Repository) PrunePresence(ctx context.Context) error {
