@@ -60,6 +60,7 @@ func TestPushKitVendor(t *testing.T) {
 		http   int
 		retry  string
 		body   string
+		raw    string
 		msg    string
 		result Outcome
 	}{
@@ -80,6 +81,7 @@ func TestPushKitVendor(t *testing.T) {
 		{name: "vendor internal error", http: 200, body: "81000001", result: Outcome{Result: TemporaryFailure}},
 		{name: "known success body on unexpected status", http: 400, body: "80000000", result: Outcome{Result: PermanentFailure}},
 		{name: "success with unreadable body", http: 200, result: Outcome{Result: TemporaryFailure}},
+		{name: "success without a result code", http: 200, raw: "{}", result: Outcome{Result: TemporaryFailure}},
 	}
 	wantPayload := map[string]any{
 		"payload": map[string]any{"notification": map[string]any{
@@ -139,6 +141,8 @@ func TestPushKitVendor(t *testing.T) {
 		w.WriteHeader(test.http)
 		if test.body != "" {
 			_ = json.NewEncoder(w).Encode(map[string]string{"code": test.body, "msg": test.msg})
+		} else if test.raw != "" {
+			_, _ = w.Write([]byte(test.raw))
 		}
 	}))
 	defer server.Close()

@@ -149,7 +149,7 @@ func (p *PushKitProvider) Send(ctx context.Context, token []byte) Outcome {
 		Code string `json:"code"`
 		Msg  string `json:"msg"`
 	}
-	if jsonv2.Unmarshal(payload, &result) != nil {
+	if jsonv2.Unmarshal(payload, &result) != nil || result.Code == "" {
 		if resp.StatusCode == http.StatusOK {
 			return Outcome{Result: TemporaryFailure}
 		}
