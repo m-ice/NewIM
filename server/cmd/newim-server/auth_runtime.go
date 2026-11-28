@@ -316,6 +316,18 @@ func newAuthAndMessageRuntime(ctx context.Context, cfg api.Config, admission, pr
 		RejectQuery:    true,
 		Handler:        handler,
 	})
+	if messageRepo.SupportsVisibility() {
+		visibilityHandler, err := messagehttp.NewVisibilityHandler(runtime.service, messageRepo)
+		if err != nil {
+			runtime.Close()
+			return nil, nil, errInvalidMessageConfig
+		}
+		routes = append(routes, api.APIRoute{
+			Name: "message_visibility", Path: messagehttp.VisibilityRoute,
+			AllowedMethods: []string{http.MethodPost}, MaxBodyBytes: protocol.VisibilityRequestLimit,
+			RejectQuery: true, Handler: visibilityHandler,
+		})
+	}
 	if privatePolicy {
 		policyHandler, err := messagehttp.NewPrivatePolicyHandler(runtime.service, messageRepo)
 		if err != nil {

@@ -28,6 +28,7 @@ TESTS = {
     'conversation-account-sync-security': 'TestAccountSettingsHTTPSecurity',
     'conversation-account-sync-recovery': 'TestAccountSettingsHTTPRecovery',
     'conversation-account-sync-query-plan': 'TestAccountSettingsHTTPWide',
+    'message-event-check': 'TestMessageVisibilityProjection',
 }
 SDK_TESTS = {
     'conversation-account-sdk-check': 'tls_sqlite_conversation_account_sync',
@@ -102,7 +103,10 @@ def main():
             build(commands, ['go', 'build', '-o', str(directory / name), './server/cmd/' + name],
                   env, 'sync-http-' + name + '-build')
         with Database(commands, image, platform) as db:
-            db.sql(migration_sql(18 if account_sync or sdk_bridge else 17 if read_sync else 15 if read_suite else 14))
+            target = 21 if args.suite.startswith('message-event-') else (
+                18 if account_sync or sdk_bridge else 17 if read_sync else 15 if read_suite else 14
+            )
+            db.sql(migration_sql(target))
             for name in paths:
                 commands.run(['docker', 'cp', str(directory / name), db.name + ':/tmp/' + name],
                              label='copy-owned-' + name)

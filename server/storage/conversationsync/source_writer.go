@@ -98,6 +98,14 @@ func RecordSourceConversation(ctx context.Context, tx pgx.Tx, conversationID str
 	return recordSourceProjection(ctx, tx, includeReadState, accountSettings, sourceConversationTargets, conversationID, removed)
 }
 
+// RecordSourceSend projects a newly committed message while holding the conversation lock.
+func RecordSourceSend(ctx context.Context, tx pgx.Tx, conversationID string, includeReadState, accountSettings bool) error {
+	if ctx == nil || tx == nil || !identifier(conversationID) {
+		return app.Fail(app.StorageUnavailable)
+	}
+	return recordSourceProjectionWithSend(ctx, tx, includeReadState, accountSettings, true, sourceConversationTargets, conversationID, []string(nil))
+}
+
 // RecordSourceWatermark records an advanced watermark for the active account only.
 // The caller holds the conversation, membership and updated watermark row locks.
 func RecordSourceWatermark(ctx context.Context, tx pgx.Tx, userID, conversationID string, accountSettings bool) error {
@@ -108,6 +116,10 @@ func RecordSourceWatermark(ctx context.Context, tx pgx.Tx, userID, conversationI
 }
 
 func recordSourceProjection(ctx context.Context, tx pgx.Tx, includeReadState, accountSettings bool, targetSQL string, args ...any) error {
+	return recordSourceProjectionWithSend(ctx, tx, includeReadState, accountSettings, false, targetSQL, args...)
+}
+
+func recordSourceProjectionWithSend(ctx context.Context, tx pgx.Tx, includeReadState, accountSettings, freshSend bool, targetSQL string, args ...any) error {
 	// The conflict clause locks existing rows without issuing updates. Inserting
 	// new rows and locking existing rows in one sorted pass gives both the same order.
 	_, err := tx.Exec(ctx, `INSERT INTO newim.im_conversation_sync_accounts AS account(user_id)
@@ -123,14 +135,26 @@ func recordSourceProjection(ctx context.Context, tx pgx.Tx, includeReadState, ac
 	if err != nil {
 		return fixed(err)
 	}
-	return appendSourceProjection(ctx, tx, includeReadState, accountSettings, targetSQL, args...)
+	return appendSourceProjectionWithSend(ctx, tx, includeReadState, accountSettings, freshSend, targetSQL, args...)
 }
 
 // appendSourceProjection receives fixed package SQL yielding unique identifiers
 // for (user_id, conversation_id). Its caller holds the conversation and account locks.
 func appendSourceProjection(ctx context.Context, tx pgx.Tx, includeReadState, accountSettings bool, targetSQL string, args ...any) error {
+	return appendSourceProjectionWithSend(ctx, tx, includeReadState, accountSettings, false, targetSQL, args...)
+}
+
+func appendSourceProjectionWithSend(ctx context.Context, tx pgx.Tx, includeReadState, accountSettings, freshSend bool, targetSQL string, args ...any) error {
+	var visibility bool
+	if includeReadState && accountSettings {
+		var err error
+		visibility, err = VisibilityAvailable(ctx, tx)
+		if err != nil {
+			return err
+		}
+	}
 	var valid bool
-	err := tx.QueryRow(ctx, sourceProjectionQuery(includeReadState, accountSettings, targetSQL), args...).Scan(&valid)
+	err := tx.QueryRow(ctx, projectionQuery(includeReadState, accountSettings, visibility, freshSend, targetSQL), args...).Scan(&valid)
 	if err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "22003" {
@@ -148,6 +172,10 @@ func appendSourceProjection(ctx context.Context, tx pgx.Tx, includeReadState, ac
 const sourceSummaryPoint = "SELECT conversation_id,conversation_seq FROM newim.im_messages WHERE server_msg_id="
 
 func sourceProjectionQuery(includeReadState, accountSettings bool, targetSQL string) string {
+	return projectionQuery(includeReadState, accountSettings, false, false, targetSQL)
+}
+
+func projectionQuery(includeReadState, accountSettings, visibility, freshSend bool, targetSQL string) string {
 	// Keep the 014 path independent of the read-state columns and values.
 	var readCheck, readValue, readJoin string
 	active := "m.user_id IS NOT NULL"
@@ -186,6 +214,15 @@ func sourceProjectionQuery(includeReadState, accountSettings bool, targetSQL str
 		previousReadColumn = ", previous.last_read_seq"
 		allocatedReadColumn = ", a.last_read_seq"
 	}
+	var headVisibility, summaryVisibility, columnsVisibility, previousVisibility, pendingVisibility, allocatedVisibility string
+	messagePoint := sourceSummaryPoint
+	if visibility {
+		headVisibility = visibilityHead(active, floor)
+		summaryVisibility = visibilitySummary(freshSend)
+		columnsVisibility, previousVisibility = visibilityColumns, visibilityPreviousColumns
+		pendingVisibility, allocatedVisibility = visibilityHeadColumns, visibilityAllocatedColumns
+		messagePoint = "SELECT conversation_id,conversation_seq,sender_id FROM newim.im_messages WHERE server_msg_id="
+	}
 	return `WITH audience AS (` + targetSQL + `),
 		head AS MATERIALIZED (
 			SELECT a.user_id, a.conversation_id, ` + active + ` AS active` + hidden + `,
@@ -197,30 +234,30 @@ func sourceProjectionQuery(includeReadState, accountSettings bool, targetSQL str
 				CASE WHEN ` + active + ` THEN
 					CASE WHEN c.last_seq>` + floor + ` THEN c.last_seq ELSE 0 END
 				END AS latest_seq,
-				CASE WHEN (` + active + `) AND c.last_seq>` + floor + ` THEN c.latest_server_msg_id END AS latest_server_msg_id` + readValue + settingsValues + `
+				CASE WHEN (` + active + `) AND c.last_seq>` + floor + ` THEN c.latest_server_msg_id END AS latest_server_msg_id` + readValue + settingsValues + headVisibility + `
 			FROM audience a
 			LEFT JOIN newim.im_conversations c ON c.conversation_id=a.conversation_id
 			LEFT JOIN newim.im_conversation_members m ON m.conversation_id=a.conversation_id
 				AND m.user_id=a.user_id AND m.departed_at IS NULL
 			LEFT JOIN LATERAL (
-				` + sourceSummaryPoint + `c.latest_server_msg_id LIMIT 1
+				` + messagePoint + `c.latest_server_msg_id LIMIT 1
 			) msg ON msg.conversation_id=c.conversation_id` + readJoin + settingsJoin + `
 		),
 		healthy AS (
 			SELECT NOT EXISTS (SELECT 1 FROM head WHERE NOT valid) AS valid
 		),
 		pending AS (
-			SELECT h.user_id, h.conversation_id, h.latest_seq, h.latest_server_msg_id` + headReadColumn + headSettings + `,
+			SELECT h.user_id, h.conversation_id, h.latest_seq, h.latest_server_msg_id` + headReadColumn + headSettings + pendingVisibility + `,
 				CASE WHEN h.active THEN 'upsert' ELSE 'remove' END AS kind
 			FROM head h
 			LEFT JOIN LATERAL (
-				SELECT kind, latest_seq, latest_server_msg_id` + readColumn + settingsColumns + ` FROM newim.im_conversation_sync_changes
+				SELECT kind, latest_seq, latest_server_msg_id` + readColumn + settingsColumns + columnsVisibility + ` FROM newim.im_conversation_sync_changes
 				WHERE user_id=h.user_id AND conversation_id=h.conversation_id
 				ORDER BY change_seq DESC LIMIT 1
-			) previous ON true
+			) previous ON true` + summaryVisibility + `
 			WHERE (SELECT valid FROM healthy)
-				AND ((h.active AND (previous.kind, previous.latest_seq, previous.latest_server_msg_id` + previousReadColumn + previousSettings + `)
-					IS DISTINCT FROM ('upsert', h.latest_seq, h.latest_server_msg_id` + headReadColumn + headSettings + `))
+				AND ((h.active AND (previous.kind, previous.latest_seq, previous.latest_server_msg_id` + previousReadColumn + previousSettings + previousVisibility + `)
+					IS DISTINCT FROM ('upsert', h.latest_seq, h.latest_server_msg_id` + headReadColumn + headSettings + pendingVisibility + `))
 					OR (NOT h.active AND previous.kind='upsert')` + pendingHidden + `)
 		),
 		allocated AS MATERIALIZED (
@@ -245,8 +282,8 @@ func sourceProjectionQuery(includeReadState, accountSettings bool, targetSQL str
 		),
 		written AS (
 			INSERT INTO newim.im_conversation_sync_changes
-				(user_id, change_seq, conversation_id, kind, latest_seq, latest_server_msg_id` + readColumn + settingsColumns + `)
-			SELECT a.user_id, a.change_seq, a.conversation_id, a.kind, a.latest_seq, a.latest_server_msg_id` + allocatedReadColumn + allocatedSettings + `
+				(user_id, change_seq, conversation_id, kind, latest_seq, latest_server_msg_id` + readColumn + settingsColumns + columnsVisibility + `)
+			SELECT a.user_id, a.change_seq, a.conversation_id, a.kind, a.latest_seq, a.latest_server_msg_id` + allocatedReadColumn + allocatedSettings + allocatedVisibility + `
 			FROM allocated a
 			JOIN advanced USING (user_id)
 			LEFT JOIN keyed k USING (user_id, conversation_id)

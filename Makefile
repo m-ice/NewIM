@@ -442,6 +442,10 @@ message-sdk-sync-retries: toolchain
 message-sdk-sync-recovery: toolchain
 	python3 -B infra/db/sync_http_suite.py message-sdk-sync-recovery
 
+.PHONY: message-event-check
+message-event-check: toolchain
+	python3 -B infra/db/sync_http_suite.py message-event-check
+
 .PHONY: sdk-connection-check sdk-connection-integration
 sdk-connection-check: toolchain
 	cargo test -p newim-sdk-core --locked --offline --test connection

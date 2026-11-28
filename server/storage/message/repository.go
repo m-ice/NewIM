@@ -59,6 +59,7 @@ type Repository struct {
 	projectConversations bool
 	projectReadState     bool
 	accountSettings      bool
+	visibility           bool
 	actorTypes           bool
 }
 
@@ -148,6 +149,14 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 		pool.Close()
 		return nil, err
 	}
+	var visibility bool
+	if accountSettings && config.ProjectReadState {
+		visibility, err = conversationsync.VisibilityAvailable(ctx, pool)
+		if err != nil {
+			pool.Close()
+			return nil, app.Fail(app.SendStorageUnavailable)
+		}
+	}
 	repository := &Repository{
 		pool: pool, authorizer: conversationAuthorizer{},
 		privatePolicy: config.PrivatePolicy, strangerPolicy: config.StrangerPolicy,
@@ -155,6 +164,7 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 		projectConversations: config.ProjectConversations,
 		projectReadState:     config.ProjectReadState,
 		accountSettings:      accountSettings,
+		visibility:           visibility,
 		actorTypes:           actorTypes,
 	}
 	if repository.managedGroups {
@@ -283,7 +293,7 @@ func (r *Repository) Persist(ctx context.Context, principal conversation.Princip
 		}
 	}
 	if r.projectConversations && !persisted.Replayed {
-		if err = conversationsync.RecordSourceConversation(ctx, tx, request.ConversationID, nil, r.projectReadState, r.accountSettings); err != nil {
+		if err = conversationsync.RecordSourceSend(ctx, tx, request.ConversationID, r.projectReadState, r.accountSettings); err != nil {
 			return app.PersistedMessage{}, privateStorageError(err)
 		}
 	}

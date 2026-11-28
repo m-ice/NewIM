@@ -14,6 +14,7 @@ type readScope struct {
 	requireSourceReady bool
 	includeReadState   bool
 	accountSettings    bool
+	visibility         bool
 }
 
 // Read releases its consistent snapshot before returning any candidate.
@@ -50,7 +51,7 @@ func (r *Repository) Read(ctx context.Context, user string, request app.ReadRequ
 		return result, err
 	}
 	scope := readScope{
-		activeMembersOnly: activeMembersOnly, requireSourceReady: r.requireSourceReady, includeReadState: r.includeReadState, accountSettings: r.accountSettings,
+		activeMembersOnly: activeMembersOnly, requireSourceReady: r.requireSourceReady, includeReadState: r.includeReadState, accountSettings: r.accountSettings, visibility: r.visibility,
 	}
 	query := "SELECT epoch,last_change_seq,min_valid_seq FROM newim.im_conversation_sync_accounts WHERE user_id=$1"
 	if scope.requireSourceReady {
@@ -324,6 +325,9 @@ func itemColumns(scope readScope) string {
 	if scope.accountSettings {
 		columns += ",settings_version,settings_pinned,settings_muted,settings_draft,settings_clear_through_seq"
 	}
+	if scope.visibility {
+		columns += visibilityColumns
+	}
 	return columns
 }
 
@@ -350,6 +354,10 @@ func scanItem(row interface{ Scan(...any) error }, scope readScope) (*app.Item, 
 	if scope.accountSettings {
 		fields = append(fields, &settingsVersion, &pinned, &muted, &draft, &clearThrough)
 	}
+	var unreadCount, visibilityRevision *int64
+	if scope.visibility {
+		fields = append(fields, &unreadCount, &visibilityRevision)
+	}
 	err := row.Scan(fields...)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -368,6 +376,15 @@ func scanItem(row interface{ Scan(...any) error }, scope readScope) (*app.Item, 
 		}
 		item.Settings = &app.AccountSettings{Version: uint64(*settingsVersion), Pinned: *pinned, Muted: *muted,
 			Draft: string(draft), ClearThroughSeq: uint64(*clearThrough)}
+	}
+	if unreadCount != nil || visibilityRevision != nil {
+		if item.Kind != "upsert" || unreadCount == nil || visibilityRevision == nil ||
+			*unreadCount < 0 || *visibilityRevision < 0 {
+			return nil, app.Fail(app.StorageUnavailable)
+		}
+		count, visibility := uint64(*unreadCount), uint64(*visibilityRevision)
+		item.UnreadCount = &count
+		item.VisibilityRevision = &visibility
 	}
 	item.Revision = uint64(revision)
 	if item.Kind == "upsert" {

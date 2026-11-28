@@ -38,6 +38,7 @@ type Repository struct {
 	includeReadState      bool
 	accountSettings       bool
 	exposeAccountSettings bool
+	visibility            bool
 }
 
 // Open requires verified TLS for TCP, or explicitly enabled local sockets.
@@ -116,8 +117,16 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 		pool.Close()
 		return nil, app.Fail(app.StorageUnavailable)
 	}
+	var visibility bool
+	if config.IncludeReadState && accountSettings {
+		visibility, err = VisibilityAvailable(ctx, pool)
+		if err != nil {
+			pool.Close()
+			return nil, err
+		}
+	}
 	return &Repository{pool: pool, requireSourceReady: config.RequireSourceReady, includeReadState: config.IncludeReadState,
-		accountSettings: accountSettings, exposeAccountSettings: config.ExposeAccountSettings}, nil
+		accountSettings: accountSettings, exposeAccountSettings: config.ExposeAccountSettings, visibility: visibility}, nil
 }
 
 // Close releases all pool resources after callers finish their transactions.

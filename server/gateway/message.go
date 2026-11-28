@@ -14,9 +14,10 @@ import (
 // MessageRoutes applies the public HTTP budget before delegating to the
 // existing send and private relationship handlers.
 type MessageRoutes struct {
-	send    *messagehttp.Handler
-	private *messagehttp.PrivatePolicyHandler
-	budget  *ProfileBudget
+	send       *messagehttp.Handler
+	private    *messagehttp.PrivatePolicyHandler
+	visibility *messagehttp.VisibilityHandler
+	budget     *ProfileBudget
 }
 
 func NewMessageRoutes(auth messagehttp.Authenticator, sender messagehttp.Sender, store messagehttp.PrivatePolicyStore, budget *ProfileBudget) (*MessageRoutes, error) {
@@ -43,12 +44,19 @@ func newMessageRoutes(auth messagehttp.Authenticator, sender messagehttp.Sender,
 	if err != nil {
 		return nil, err
 	}
-	return &MessageRoutes{send: send, private: private, budget: budget}, nil
+	var visibility *messagehttp.VisibilityHandler
+	if operations, ok := store.(messagehttp.VisibilityStore); ok && operations.SupportsVisibility() {
+		visibility, err = messagehttp.NewVisibilityHandler(authenticator, operations)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return &MessageRoutes{send: send, private: private, visibility: visibility, budget: budget}, nil
 }
 
 func ContainsMessageRoute(path string) bool {
 	switch path {
-	case messagehttp.Route, messagehttp.DirectConversationRoute, messagehttp.BlockPeerRoute, messagehttp.UnblockPeerRoute:
+	case messagehttp.Route, messagehttp.DirectConversationRoute, messagehttp.BlockPeerRoute, messagehttp.UnblockPeerRoute, messagehttp.VisibilityRoute:
 		return true
 	default:
 		return false
@@ -65,11 +73,18 @@ func (m *MessageRoutes) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		messagehttp.WriteRateLimited(w)
 		return
 	}
-	if r.URL.EscapedPath() == messagehttp.Route {
+	switch r.URL.EscapedPath() {
+	case messagehttp.Route:
 		m.send.ServeHTTP(w, r)
-		return
+	case messagehttp.VisibilityRoute:
+		if m.visibility == nil {
+			reject(w, http.StatusNotFound)
+			return
+		}
+		m.visibility.ServeHTTP(w, r)
+	default:
+		m.private.ServeHTTP(w, r)
 	}
-	m.private.ServeHTTP(w, r)
 }
 
 type messageAuthenticator struct {
