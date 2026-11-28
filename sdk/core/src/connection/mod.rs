@@ -134,7 +134,7 @@ pub enum Effect {
         cause: AuthCause,
     },
     AdvanceFence(Fence),
-    StoreUnavailable(StoreError),
+    Unavailable(StoreError),
     LoadDirectory(Ticket),
     OpenSocket(Ticket),
     Subscribe {
@@ -297,14 +297,14 @@ impl Connection {
         match event {
             Event::NetworkAvailable => {
                 self.online = true;
-                self.start_if_due(now_ms, &mut effects)?;
+                self.start_if_due(now_ms, &mut effects);
             }
             Event::NetworkChanged => {
                 self.online = true;
                 if self.active.is_some() {
                     self.retry(now_ms, random, &mut effects);
                 } else {
-                    self.start_if_due(now_ms, &mut effects)?;
+                    self.start_if_due(now_ms, &mut effects);
                 }
             }
             Event::NetworkLost => {
@@ -314,18 +314,18 @@ impl Connection {
                     self.phase = Phase::Idle;
                 }
             }
-            Event::Tick => self.start_if_due(now_ms, &mut effects)?,
+            Event::Tick => self.start_if_due(now_ms, &mut effects),
             Event::Resume => {
                 if matches!(self.phase, Phase::Closed) {
                     self.phase = Phase::Idle;
                     self.auth_cause = AuthCause::Missing;
                 }
-                self.start_if_due(now_ms, &mut effects)?;
+                self.start_if_due(now_ms, &mut effects);
             }
             Event::RefreshDirectory if self.active.is_some() && self.expires_at_ms.is_some() => {
                 self.cancel(&mut effects);
                 self.phase = Phase::Idle;
-                self.start_if_due(now_ms, &mut effects)?;
+                self.start_if_due(now_ms, &mut effects);
             }
             Event::Logout
                 if !matches!(self.phase, Phase::Closed) || self.expires_at_ms.is_some() =>
@@ -345,7 +345,7 @@ impl Connection {
                     if let Some(cause) = resume {
                         self.auth_cause = cause;
                         self.phase = Phase::Idle;
-                        self.start_if_due(now_ms, &mut effects)?;
+                        self.start_if_due(now_ms, &mut effects);
                     }
                 }
             }
@@ -433,17 +433,18 @@ impl Connection {
         self.active.as_ref() == Some(ticket)
     }
 
-    fn start_if_due(&mut self, now_ms: u64, effects: &mut Vec<Effect>) -> Result<(), StoreError> {
+    fn start_if_due(&mut self, now_ms: u64, effects: &mut Vec<Effect>) {
         if !self.online
             || !matches!(self.phase, Phase::Idle | Phase::Backoff(_))
             || matches!(self.phase, Phase::Backoff(until_ms) if now_ms < until_ms)
         {
-            return Ok(());
+            return;
+        }
+        if self.last_generation == i64::MAX as u64 {
+            self.stop_at_capacity(effects);
+            return;
         }
         let next = self.last_generation + 1;
-        if next > i64::MAX as u64 {
-            return Err(StoreError::CapacityExceeded);
-        }
         self.last_generation = next;
         let ticket = Ticket {
             fence: self.fence.clone(),
@@ -460,7 +461,6 @@ impl Connection {
                 cause: self.auth_cause,
             });
         }
-        Ok(())
     }
 
     fn ready(&mut self, ticket: &Ticket, now_ms: u64, effects: &mut Vec<Effect>) {
@@ -496,11 +496,16 @@ impl Connection {
         self.cancel(effects);
         self.expires_at_ms = None;
         if self.fence.generation == i64::MAX as u64 {
-            self.phase = Phase::Faulted;
-            effects.push(Effect::StoreUnavailable(StoreError::CapacityExceeded));
+            self.stop_at_capacity(effects);
         } else {
             self.phase = Phase::AdvancingFence(resume);
             effects.push(Effect::AdvanceFence(self.fence.clone()));
         }
+    }
+
+    fn stop_at_capacity(&mut self, effects: &mut Vec<Effect>) {
+        self.expires_at_ms = None;
+        self.phase = Phase::Faulted;
+        effects.push(Effect::Unavailable(StoreError::CapacityExceeded));
     }
 }

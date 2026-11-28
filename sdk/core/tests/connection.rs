@@ -486,11 +486,31 @@ fn exhausted_store_fence_closes_the_active_connection() {
         event(&mut connection, Event::Logout, NOW),
         vec![
             Effect::Cancel(ticket.clone()),
-            Effect::StoreUnavailable(StoreError::CapacityExceeded)
+            Effect::Unavailable(StoreError::CapacityExceeded)
         ],
     );
     assert_eq!(connection.status(), Status::Closed);
     assert!(connection.send_context().is_none());
+    assert!(!connection.accepts(&ticket));
+    assert!(event(&mut connection, Event::Resume, NOW).is_empty());
+}
+
+#[test]
+fn exhausted_connection_generation_delivers_cancel_and_closes() {
+    let mut connection = Connection::new(fence(1), i64::MAX as u64 - 1).unwrap();
+    let ticket = online(&mut connection, NOW + 10_000);
+    assert_eq!(
+        ticket.connection_generation,
+        ConnectionGeneration(i64::MAX as u64)
+    );
+    assert_eq!(
+        event(&mut connection, Event::RefreshDirectory, NOW),
+        vec![
+            Effect::Cancel(ticket.clone()),
+            Effect::Unavailable(StoreError::CapacityExceeded)
+        ],
+    );
+    assert_eq!(connection.status(), Status::Closed);
     assert!(!connection.accepts(&ticket));
     assert!(event(&mut connection, Event::Resume, NOW).is_empty());
 }
