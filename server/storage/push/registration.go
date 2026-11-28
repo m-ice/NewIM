@@ -134,7 +134,7 @@ func (r *Repository) Unregister(ctx context.Context, bearer session.BearerSessio
 	if err = invalidate(ctx, tx, app.TokenBinding{
 		UserID: bearer.UserID(), DeviceID: bearer.DeviceID(), SessionID: bearer.SessionID(),
 		Channel: channel, Version: version,
-	}); err != nil {
+	}, nil); err != nil {
 		return err
 	}
 	if err = authsession.CheckLockedBearerExpiry(ctx, tx, expiry); err != nil {
@@ -146,12 +146,13 @@ func (r *Repository) Unregister(ctx context.Context, bearer session.BearerSessio
 	return nil
 }
 
-func invalidate(ctx context.Context, tx pgx.Tx, binding app.TokenBinding) error {
+func invalidate(ctx context.Context, tx pgx.Tx, binding app.TokenBinding, invalidAt *time.Time) error {
 	_, err := tx.Exec(ctx, `UPDATE newim.im_push_tokens
 		SET invalidated_at=GREATEST(registered_at,clock_timestamp())
 		WHERE user_id=$1 AND device_id=$2 AND session_id=$3 AND provider=$4
-		  AND registration_version=$5 AND invalidated_at IS NULL`,
-		binding.UserID, binding.DeviceID, binding.SessionID, binding.Channel, binding.Version)
+		  AND registration_version=$5 AND invalidated_at IS NULL
+		  AND ($6::timestamptz IS NULL OR date_trunc('milliseconds',registered_at)<=$6)`,
+		binding.UserID, binding.DeviceID, binding.SessionID, binding.Channel, binding.Version, invalidAt)
 	if err != nil {
 		return app.ErrStorage
 	}

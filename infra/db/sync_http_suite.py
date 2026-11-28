@@ -41,6 +41,7 @@ SDK_TESTS = {
     'message-sdk-sync-recovery': 'message_sync::tls_sqlite_message_recovery',
     'sdk-connection-integration': 'connection::tls_sdk_connection',
     'message-event-integration': 'connection::tls_sdk_message_visibility',
+    'push-sdk-check': 'connection::tls_sdk_push_click',
 }
 
 

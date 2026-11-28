@@ -173,6 +173,10 @@ func TestMessageVisibilitySDKBridge(t *testing.T) {
 	runConnectionSDKBridge(t, 21, 3)
 }
 
+func TestPushSDKBridge(t *testing.T) {
+	runConnectionSDKBridge(t, 22, 1)
+}
+
 func runConnectionSDKBridge(t *testing.T, migration, messages int) {
 	t.Helper()
 	phase := "database"
@@ -260,6 +264,12 @@ func runConnectionSDKBridge(t *testing.T, migration, messages int) {
 		case "CLOSE":
 			socket.close()
 			mustBridgeWrite(t, "CLOSE_OK")
+		case "PUSH_NEXT":
+			if migration != 22 {
+				t.Fatal("push click fixture requires migration 022")
+			}
+			send(t, f, gateway, peer.Token, bridgeRoom, "opened_from_notification", "new committed history")
+			mustBridgeWrite(t, "PUSH_COMMITTED")
 		case "BULK_HIDE":
 			if migration != 21 {
 				t.Fatal("visibility fixture requires migration 021")

@@ -532,6 +532,14 @@ message-delta-redaction:
 
 message-delta-check: toolchain message-delta-authz message-delta message-delta-query-plan message-delta-recovery message-delta-redaction
 
-.PHONY: push-delivery-check push-token-check push-recovery
-push-delivery-check push-token-check push-recovery: toolchain
+.PHONY: push-delivery-check push-token-check push-recovery push-sdk-check
+push-delivery-check push-recovery: toolchain
+	python3 -B infra/db/sync_http_suite.py $@
+
+push-token-check: toolchain
+	go test -race -count=1 ./server/push
+	python3 -B infra/db/sync_http_suite.py $@
+
+push-sdk-check: toolchain
+	cargo test --locked --offline -p newim-sdk-core --test push
 	python3 -B infra/db/sync_http_suite.py $@

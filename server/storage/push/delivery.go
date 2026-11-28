@@ -164,7 +164,11 @@ func (r *Repository) Finish(ctx context.Context, job app.Delivery, outcome app.O
 		return app.ErrStorage
 	}
 	if changed.RowsAffected() == 1 && outcome.Result == app.InvalidToken {
-		if err := invalidate(ctx, tx, job.TokenBinding); err != nil {
+		var invalidAt *time.Time
+		if !outcome.InvalidAt.IsZero() {
+			invalidAt = &outcome.InvalidAt
+		}
+		if err := invalidate(ctx, tx, job.TokenBinding, invalidAt); err != nil {
 			return err
 		}
 	}

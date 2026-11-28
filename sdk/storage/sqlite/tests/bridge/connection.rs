@@ -846,3 +846,133 @@ fn change_visibility(
         .call(device, "POST", "/api/v1/messages/visibility", &wire)
         .require_status(200, "change visibility");
 }
+
+#[test]
+#[ignore = "run with make push-sdk-check"]
+fn tls_sdk_push_click() {
+    use newim_sdk_core::push::open_notification;
+
+    let mut bridge = Bridge::start_fixture("TestPushSDKBridge");
+    let path = Directory::new();
+    let mut native = Native::open(&path.0, 1);
+    let mut connection = Connection::new(native.store.fence().clone(), 0).unwrap();
+    let original = credential_ticket(
+        event(&mut connection, Event::NetworkAvailable, NOW),
+        AuthCause::Missing,
+    );
+    authorize(&mut connection, &original, NOW);
+    let initial = bind(
+        &mut bridge,
+        &mut native,
+        &mut connection,
+        &original,
+        "phone",
+        (ROOM, 0),
+        NOW,
+    );
+    reconcile_push_target(
+        &mut bridge,
+        &mut native,
+        &mut connection,
+        &original,
+        initial,
+        1,
+        NOW,
+    );
+    let initial_messages = room_messages(&mut native);
+    assert_eq!(initial_messages.len(), 1);
+
+    // The host has not processed the new WSS frame when the notification is opened.
+    bridge.send("PUSH_NEXT");
+    assert_eq!(bridge.line(), "PUSH_COMMITTED");
+    assert!(
+        open_notification(&mut connection, "injected_room", NOW + 3, 0)
+            .unwrap()
+            .is_empty()
+    );
+    let [Effect::Cancel(old), Effect::LoadDirectory(current)]: [Effect; 2] =
+        open_notification(&mut connection, "sync", NOW + 3, 0)
+            .unwrap()
+            .try_into()
+            .unwrap()
+    else {
+        panic!("expected a normal authorized directory refresh");
+    };
+    assert_eq!(old, original);
+    assert!(!connection.accepts(&old));
+    assert!(connection.accepts(&current));
+    assert_eq!(old.fence, current.fence);
+    assert_eq!(room_messages(&mut native), initial_messages);
+    assert_eq!(progress(&mut native, ROOM).state.after_seq(), 1);
+    close(&mut bridge);
+
+    let resumed = bind(
+        &mut bridge,
+        &mut native,
+        &mut connection,
+        &current,
+        "phone",
+        (ROOM, 1),
+        NOW + 3,
+    );
+    reconcile_push_target(
+        &mut bridge,
+        &mut native,
+        &mut connection,
+        &current,
+        resumed,
+        2,
+        NOW + 3,
+    );
+
+    let next_op = native.next;
+    drop(native);
+    let mut native = Native::open(&path.0, next_op);
+    let messages = room_messages(&mut native);
+    assert_eq!(progress(&mut native, ROOM).state.after_seq(), 2);
+    assert_eq!(messages.len(), 2);
+    assert_eq!(messages[0], initial_messages[0]);
+    assert_eq!(messages[1].client_id, "opened_from_notification");
+    bridge.finish();
+}
+
+fn reconcile_push_target(
+    bridge: &mut Bridge,
+    native: &mut Native,
+    connection: &mut Connection,
+    ticket: &Ticket,
+    effects: Vec<Effect>,
+    through: i64,
+    now: u64,
+) {
+    let [
+        Effect::RecoverMessages {
+            ticket: callback,
+            target,
+        },
+    ]: [Effect; 1] = effects.try_into().unwrap()
+    else {
+        panic!("push refresh must use the normal message recovery worker");
+    };
+    assert_eq!(&callback, ticket);
+    assert_eq!(target.through_seq(), through);
+    let snapshot = progress(native, ROOM);
+    let action =
+        recovery::observe_target(&snapshot, now, target.published_round(), through).unwrap();
+    commit(&mut native.store, &mut native.next, action);
+    let flight = native.start(now + 1).unwrap();
+    let page = get_page_for(bridge, "phone", &flight);
+    native.receive(&flight, page, now + 2);
+    let snapshot = progress(native, ROOM);
+    assert_eq!(
+        event(
+            connection,
+            Event::MessageProgress {
+                ticket,
+                snapshot: &snapshot
+            },
+            now + 2
+        ),
+        vec![Effect::Ready(ticket.clone())]
+    );
+}

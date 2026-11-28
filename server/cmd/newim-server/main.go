@@ -73,6 +73,15 @@ func run(args []string, stdout, stderr io.Writer, read func() (buildinfo.Info, e
 	if runtime != nil {
 		defer runtime.Close()
 	}
+	pushRuntime, pushErr := newPushRuntimeFromEnv(ctx, authRuntime, logger)
+	if pushErr != nil {
+		closeRuntime()
+		fmt.Fprintln(stderr, pushErr.Error())
+		return 2
+	}
+	if pushRuntime != nil {
+		defer pushRuntime.repo.Close()
+	}
 	managementRoutes, err := newWebhookManagementRoutes(ctx, cfg, runtime)
 	if err != nil {
 		closeRuntime()
@@ -97,6 +106,17 @@ func run(args []string, stdout, stderr io.Writer, read func() (buildinfo.Info, e
 		server.AttachMetricsSource(webhookGaugeSource{store: runtime.repo})
 		runtimeDone = make(chan error, 1)
 		go func() { runtimeDone <- runtime.Run(workerCtx) }()
+	}
+	if pushRuntime != nil {
+		pushDone := make(chan struct{})
+		go func() {
+			defer close(pushDone)
+			pushRuntime.Run(workerCtx)
+		}()
+		defer func() {
+			cancelWorker()
+			<-pushDone
+		}()
 	}
 	if authRuntime != nil {
 		server.AttachMetricsSource(authRuntime.messageRepo)

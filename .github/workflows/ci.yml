@@ -122,6 +122,9 @@ jobs:
       - name: Exercise unread reconciliation and message visibility
         timeout-minutes: 12
         run: make message-event-check message-event-integration message-event-recovery
+      - name: Exercise offline push and notification reconciliation
+        timeout-minutes: 14
+        run: make push-delivery-check push-token-check push-recovery push-sdk-check
       - name: Exercise idempotent current-token revocation
         timeout-minutes: 12
         run: make auth-logout-check

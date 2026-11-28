@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"math/rand/v2"
+	"sync/atomic"
 	"time"
 )
 
@@ -29,6 +30,7 @@ const (
 type Outcome struct {
 	Result     Result
 	RetryAfter time.Duration
+	InvalidAt  time.Time
 }
 
 type Provider interface {
@@ -44,9 +46,23 @@ type Queue interface {
 	PrunePresence(context.Context) error
 }
 
+// Counts records completed dispatch decisions without installation or message identifiers.
+type Counts struct {
+	Accepted, Retry, Failed, Invalid, Cancelled uint64
+}
+
 type Worker struct {
 	queue     Queue
 	providers map[Channel]Provider
+	outcomes  [Cancelled + 1]atomic.Uint64
+}
+
+func (w *Worker) counts() Counts {
+	return Counts{
+		Accepted: w.outcomes[Accepted].Load(), Retry: w.outcomes[TemporaryFailure].Load(),
+		Failed: w.outcomes[PermanentFailure].Load(), Invalid: w.outcomes[InvalidToken].Load(),
+		Cancelled: w.outcomes[Cancelled].Load(),
+	}
 }
 
 func NewWorker(queue Queue, providers map[Channel]Provider) (*Worker, error) {
@@ -64,16 +80,21 @@ func NewWorker(queue Queue, providers map[Channel]Provider) (*Worker, error) {
 }
 
 // Run returns on shutdown. Claimed work can be reclaimed after the lease expires.
-func (w *Worker) Run(ctx context.Context, onStorageFailure func()) error {
+func (w *Worker) Run(ctx context.Context, onStorageFailure func(), report func(Counts)) error {
 	if err := w.queue.Enable(ctx); err != nil {
 		return err
 	}
-	var pruneAfter time.Time
+	var maintenance time.Time
+	var reported Counts
 	for ctx.Err() == nil {
 		var cycleErr error
-		if !time.Now().Before(pruneAfter) {
+		if !time.Now().Before(maintenance) {
 			cycleErr = w.queue.PrunePresence(ctx)
-			pruneAfter = time.Now().Add(time.Minute)
+			maintenance = time.Now().Add(time.Minute)
+			if current := w.counts(); report != nil && current != reported {
+				report(current)
+				reported = current
+			}
 		}
 		progress, err := w.Cycle(ctx)
 		if err != nil || cycleErr != nil {
@@ -108,6 +129,9 @@ func (w *Worker) Cycle(ctx context.Context) (bool, error) {
 		outcome.RetryAfter = backoff(job.Attempts, outcome.RetryAfter)
 	}
 	err = w.queue.Finish(ctx, job, outcome)
+	if err == nil {
+		w.outcomes[outcome.Result].Add(1)
+	}
 	return err == nil, errors.Join(scheduleErr, err)
 }
 

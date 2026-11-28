@@ -9,4 +9,5 @@ pub mod media;
 pub mod message;
 pub mod message_sync;
 pub mod outbox;
+pub mod push;
 pub mod store;

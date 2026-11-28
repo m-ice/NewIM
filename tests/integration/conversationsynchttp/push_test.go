@@ -4,12 +4,14 @@ package conversationsynchttp_test
 
 import (
 	"bytes"
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"net/http"
 	"os"
 	"path/filepath"
 	"strconv"
+	"syscall"
 	"testing"
 	"time"
 
@@ -50,10 +52,10 @@ func pushGateway(f *fixture, syncKey, pushKey string) *process {
 	})
 }
 
-func registerPushToken(t *testing.T, f *fixture, gateway *process, auth, token string) int64 {
+func registerPushToken(t *testing.T, f *fixture, gateway *process, auth string, provider push.Channel, token string) int64 {
 	t.Helper()
 	reply := f.call(gateway, http.MethodPut, push.RegistrationRoute, auth,
-		encode(t, map[string]string{"provider": "fcm", "token": token}), nil)
+		encode(t, map[string]string{"provider": string(provider), "token": token}), nil)
 	requireStatus(t, reply, http.StatusOK)
 	var result struct {
 		Version int64 `json:"version,string"`
@@ -124,8 +126,8 @@ func TestPushDelivery(t *testing.T) {
 	syncKeys := writeKeys(t, "push", "push")
 	left, right := pushGateway(f, syncKeys, keys), pushGateway(f, syncKeys, keys)
 	pair := accountPair(t, f, left, "push")
-	registerPushToken(t, f, left, pair.owner, phonePushToken)
-	registerPushToken(t, f, right, pair.tablet, tabletPushToken)
+	registerPushToken(t, f, left, pair.owner, push.FCM, phonePushToken)
+	registerPushToken(t, f, right, pair.tablet, push.FCM, tabletPushToken)
 
 	old := send(t, f, left, pair.peer, pair.conversation, "before_push_enable", "older history")
 	must(t, repo.Enable(f.ctx))
@@ -145,12 +147,24 @@ func TestPushDelivery(t *testing.T) {
 			t.Fatal("online device did not receive the committed message")
 		}
 	}
-	fanoutOne(t, f, repo)
+	var vendorCalls int
+	worker, err := push.NewWorker(repo, map[push.Channel]push.Provider{
+		push.FCM: testPushProvider(func(ctx context.Context, token []byte) push.Outcome {
+			if _, bounded := ctx.Deadline(); !bounded || !bytes.Equal(token, []byte(tabletPushToken)) {
+				t.Fatal("worker dispatched to the wrong installation or without a deadline")
+			}
+			vendorCalls++
+			return push.Outcome{Result: push.Accepted}
+		}),
+	})
+	must(t, err)
+	progress, err := worker.Cycle(f.ctx)
+	must(t, err)
+	if !progress || vendorCalls != 1 {
+		t.Fatal("worker did not dispatch a single offline notification")
+	}
 	pushJobs(t, f, old.ServerMsgID, 0)
 	pushJobs(t, f, online.ServerMsgID, 1)
-	tablet := claimPush(t, f, repo)
-	requirePushToken(t, f, repo, tablet, tabletPushToken)
-	must(t, repo.Finish(f.ctx, tablet, push.Outcome{Result: push.Accepted}))
 	again, err := repo.Fanout(f.ctx)
 	must(t, err)
 	if again != 0 {
@@ -195,8 +209,8 @@ func TestPushTokenRotation(t *testing.T) {
 	f, repo, keys := pushFixture(t)
 	gateway := pushGateway(f, writeKeys(t, "push", "push"), keys)
 	pair := accountPair(t, f, gateway, "push_rotate")
-	first := registerPushToken(t, f, gateway, pair.owner, phonePushToken)
-	if retry := registerPushToken(t, f, gateway, pair.owner, phonePushToken); retry != first {
+	first := registerPushToken(t, f, gateway, pair.owner, push.FCM, phonePushToken)
+	if retry := registerPushToken(t, f, gateway, pair.owner, push.FCM, phonePushToken); retry != first {
 		t.Fatal("identical retry rotated the registration")
 	}
 	must(t, repo.Enable(f.ctx))
@@ -205,7 +219,7 @@ func TestPushTokenRotation(t *testing.T) {
 	job := claimPush(t, f, repo)
 	requirePushToken(t, f, repo, job, phonePushToken)
 
-	newVersion := registerPushToken(t, f, gateway, pair.owner, tabletPushToken)
+	newVersion := registerPushToken(t, f, gateway, pair.owner, push.FCM, tabletPushToken)
 	if newVersion <= first {
 		t.Fatal("registration version did not advance")
 	}
@@ -226,16 +240,57 @@ func TestPushTokenRotation(t *testing.T) {
 	quiet := send(t, f, gateway, pair.peer, pair.conversation, "push_invalid", "removed vendor token")
 	fanoutOne(t, f, repo)
 	pushJobs(t, f, quiet.ServerMsgID, 0)
-	gateway.requireRedacted(t, phonePushToken, tabletPushToken)
+
+	const apnsToken = "01020304aabbccdd"
+	apnsVersion := registerPushToken(t, f, gateway, pair.owner, push.APNs, apnsToken)
+	send(t, f, gateway, pair.peer, pair.conversation, "push_apns_timestamp", "new APNs registration")
+	fanoutOne(t, f, repo)
+	apns := claimPush(t, f, repo)
+	requirePushToken(t, f, repo, apns, apnsToken)
+	must(t, repo.Finish(f.ctx, apns, push.Outcome{Result: push.InvalidToken, InvalidAt: time.Now().Add(-time.Hour)}))
+	send(t, f, gateway, pair.peer, pair.conversation, "push_apns_next", "APNs registration remains usable")
+	fanoutOne(t, f, repo)
+	apns = claimPush(t, f, repo)
+	if apns.Channel != push.APNs || apns.Version != apnsVersion {
+		t.Fatal("a stale APNs timestamp invalidated a newer registration")
+	}
+	requirePushToken(t, f, repo, apns, apnsToken)
+	must(t, repo.Finish(f.ctx, apns, push.Outcome{Result: push.Accepted}))
+	gateway.requireRedacted(t, phonePushToken, tabletPushToken, apnsToken)
+}
+
+type testPushProvider func(context.Context, []byte) push.Outcome
+
+func (provider testPushProvider) Send(ctx context.Context, token []byte) push.Outcome {
+	return provider(ctx, token)
 }
 
 func TestPushRecovery(t *testing.T) {
 	f, repo, keys := pushFixture(t)
 	switch os.Getenv("NEWIM_SYNC_HTTP_PHASE") {
 	case "prepare":
+		process := f.server("1", map[string]string{
+			"NEWIM_PUSH_WORKER": "1", "NEWIM_PUSH_ALLOW_LOCAL_SOCKET": "1",
+			"NEWIM_PUSH_KEYS_FILE": keys, "NEWIM_PUSH_APNS_KEY_FILE": f.tlsKey,
+			"NEWIM_PUSH_APNS_KEY_ID": "fixture", "NEWIM_PUSH_APNS_TEAM_ID": "fixture",
+			"NEWIM_PUSH_APNS_TOPIC": "im.fixture",
+		})
+		waitForStartup(t, process, func() bool {
+			var enabled bool
+			err := f.db.QueryRow(f.ctx, "SELECT EXISTS(SELECT 1 FROM newim.im_push_state WHERE singleton)").Scan(&enabled)
+			must(t, err)
+			return enabled
+		})
+		must(t, process.cmd.Process.Signal(syscall.SIGTERM))
+		select {
+		case <-process.done:
+			must(t, process.waitErr)
+		case <-f.ctx.Done():
+			t.Fatal("push worker did not stop with its server")
+		}
 		gateway := pushGateway(f, writeKeys(t, "push", "push"), keys)
 		pair := accountPair(t, f, gateway, "push_recovery")
-		registerPushToken(t, f, gateway, pair.owner, phonePushToken)
+		registerPushToken(t, f, gateway, pair.owner, push.FCM, phonePushToken)
 		must(t, repo.Enable(f.ctx))
 		send(t, f, gateway, pair.peer, pair.conversation, "push_before_restart", "persisted before dispatch")
 		fanoutOne(t, f, repo)
@@ -244,10 +299,15 @@ func TestPushRecovery(t *testing.T) {
 		f.sql(`UPDATE newim.im_push_deliveries SET lease_until=clock_timestamp()-interval '1 second' WHERE lease_id=$1`, job.LeaseID)
 	case "restart":
 		must(t, repo.Enable(f.ctx))
+		var expired string
+		must(t, f.db.QueryRow(f.ctx, "SELECT lease_id FROM newim.im_push_deliveries WHERE status='leased'").Scan(&expired))
 		job := claimPush(t, f, repo)
-		if job.Attempts != 2 {
-			t.Fatalf("expired lease recovered at attempt %d, want 2", job.Attempts)
+		if job.Attempts != 2 || job.LeaseID == expired {
+			t.Fatalf("expired lease recovery returned attempt %d or reused its old lease", job.Attempts)
 		}
+		stale := job
+		stale.LeaseID = expired
+		must(t, repo.Finish(f.ctx, stale, push.Outcome{Result: push.InvalidToken}))
 		requirePushToken(t, f, repo, job, phonePushToken)
 		must(t, repo.Finish(f.ctx, job, push.Outcome{Result: push.TemporaryFailure}))
 		job = claimPush(t, f, repo)
