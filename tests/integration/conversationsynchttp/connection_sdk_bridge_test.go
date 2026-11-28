@@ -9,6 +9,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"os"
 	"strings"
@@ -166,18 +168,22 @@ func (s *connectionSocket) poll(t *testing.T) {
 }
 
 func TestConnectionSDKBridge(t *testing.T) {
-	runConnectionSDKBridge(t, 18, messageSDKHistory)
+	runConnectionSDKBridge(t, 18, messageSDKHistory, false)
 }
 
 func TestMessageVisibilitySDKBridge(t *testing.T) {
-	runConnectionSDKBridge(t, 21, 3)
+	runConnectionSDKBridge(t, 21, 3, false)
 }
 
 func TestPushSDKBridge(t *testing.T) {
-	runConnectionSDKBridge(t, 22, 1)
+	runConnectionSDKBridge(t, 22, 1, false)
 }
 
-func runConnectionSDKBridge(t *testing.T, migration, messages int) {
+func TestSDKObservabilityBridge(t *testing.T) {
+	runConnectionSDKBridge(t, 22, 1, true)
+}
+
+func runConnectionSDKBridge(t *testing.T, migration, messages int, observed bool) {
 	t.Helper()
 	phase := "database"
 	defer func() {
@@ -192,7 +198,7 @@ func runConnectionSDKBridge(t *testing.T, migration, messages int) {
 	f.ctx = ctx
 
 	phase = "gateway"
-	gateway := f.syncGateway(writeKeys(t, "sdk", "sdk"), map[string]string{
+	gatewayConfig := map[string]string{
 		"NEWIM_CONVERSATION_READ_SYNC":                        "1",
 		"NEWIM_CONVERSATION_ACCOUNT_SETTINGS":                 "1",
 		"NEWIM_TLS_MESSAGE_IP_ATTEMPTS_PER_MINUTE":            "512",
@@ -200,7 +206,11 @@ func runConnectionSDKBridge(t *testing.T, migration, messages int) {
 		"NEWIM_TLS_MESSAGE_DEVICE_ATTEMPTS_PER_MINUTE":        "256",
 		"NEWIM_CONVERSATION_SYNC_IP_ATTEMPTS_PER_MINUTE":      "512",
 		"NEWIM_CONVERSATION_SYNC_ACCOUNT_ATTEMPTS_PER_MINUTE": "256",
-	})
+	}
+	if observed {
+		gatewayConfig["NEWIM_GATEWAY_METRICS_ADDR"] = "127.0.0.1:0"
+	}
+	gateway := f.syncGateway(writeKeys(t, "sdk", "sdk"), gatewayConfig)
 	phase = "accounts"
 	server := f.server("1", map[string]string{
 		"NEWIM_CONVERSATION_READ_SYNC": "1", "NEWIM_AUTH_MAX_DEVICES": "2", "NEWIM_AUTH_MAX_DEVICES_PER_PLATFORM": "1",
@@ -264,6 +274,33 @@ func runConnectionSDKBridge(t *testing.T, migration, messages int) {
 		case "CLOSE":
 			socket.close()
 			mustBridgeWrite(t, "CLOSE_OK")
+		case "OBS_SEND":
+			if !observed {
+				t.Fatal("send trace fixture is disabled")
+			}
+			reply := f.call(gateway, http.MethodPost, sendPath, phone.Token,
+				textBody(t, "observed_outbound", bridgeRoom, "observable message"), nil)
+			_ = expectACK(t, reply)
+			mustBridgeWrite(t, "OBS_ACK\t"+traceValue(t, reply)+"\t"+hex.EncodeToString(reply.body))
+		case "OBS_NEXT":
+			if !observed {
+				t.Fatal("receive metrics fixture is disabled")
+			}
+			send(t, f, gateway, peer.Token, bridgeRoom, "observed_inbound", "received content")
+			mustBridgeWrite(t, "OBS_COMMITTED")
+		case "OBS_REPORT":
+			if !observed {
+				t.Fatal("metrics report fixture is disabled")
+			}
+			report, err := hex.DecodeString(value)
+			must(t, err)
+			checkSDKReport(t, f, gateway, phone.Token, report)
+			mustBridgeWrite(t, "OBS_RECORDED")
+		case "OBS_SCRAPE":
+			if !observed {
+				t.Fatal("metrics scrape fixture is disabled")
+			}
+			scrapeBridgeMetrics(t, f, gateway)
 		case "PUSH_NEXT":
 			if migration != 22 {
 				t.Fatal("push click fixture requires migration 022")
@@ -302,4 +339,33 @@ func runConnectionSDKBridge(t *testing.T, migration, messages int) {
 		}
 	}
 	t.Fatal("SDK connection fixture exceeded its command bound")
+}
+
+func scrapeBridgeMetrics(t *testing.T, f *fixture, gateway *process) {
+	t.Helper()
+	public := f.call(gateway, http.MethodGet, "/metrics", "", nil, nil)
+	if public.err != nil || public.status != http.StatusNotFound {
+		t.Fatal("gateway exposed metrics on the public listener")
+	}
+	for _, line := range strings.Split(gateway.log.String(), "\n") {
+		if address, ok := strings.CutPrefix(line, "newim-gateway metrics listening on "); ok {
+			host, _, err := net.SplitHostPort(address)
+			if err != nil || host != "127.0.0.1" {
+				t.Fatal("invalid fixture scrape address")
+			}
+			req, err := http.NewRequestWithContext(f.ctx, http.MethodGet, "http://"+address+"/metrics", nil)
+			must(t, err)
+			resp, err := f.client.Do(req)
+			must(t, err)
+			defer resp.Body.Close()
+			body, err := io.ReadAll(io.LimitReader(resp.Body, 65536))
+			must(t, err)
+			if resp.StatusCode != http.StatusOK || len(body) == 65536 {
+				t.Fatal("gateway metrics were unavailable")
+			}
+			mustBridgeWrite(t, "OBS_METRICS\t"+hex.EncodeToString(body))
+			return
+		}
+	}
+	t.Fatal("gateway scrape listener missing")
 }

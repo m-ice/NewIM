@@ -12,6 +12,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/m-ice/NewIM/server/api"
 	"github.com/m-ice/NewIM/server/auth/session"
 	"github.com/m-ice/NewIM/server/friend"
 	"github.com/m-ice/NewIM/server/friendhttp"
@@ -23,6 +24,7 @@ import (
 	"github.com/m-ice/NewIM/server/media/s3store"
 	"github.com/m-ice/NewIM/server/mediahttp"
 	messageservice "github.com/m-ice/NewIM/server/message"
+	"github.com/m-ice/NewIM/server/observability"
 	"github.com/m-ice/NewIM/server/push"
 	"github.com/m-ice/NewIM/server/read"
 	"github.com/m-ice/NewIM/server/readhttp"
@@ -99,6 +101,17 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 	if err != nil {
 		return errConfig
 	}
+	var registry *api.MetricsRegistry
+	var metrics api.MetricsSink
+	var sdkTelemetry http.Handler
+	if cfg.metricsAddr != "" {
+		registry = api.NewMetricsRegistry()
+		sink := api.NewBoundedMetricsSink(registry, 4096)
+		defer sink.Close()
+		metrics = sink
+		cfg.gateway.Metrics = metrics
+		sdkTelemetry = observability.NewSDKHandler(auth, gateway.NewProfileBudget(120, 24), metrics)
+	}
 	handler, err := gateway.New(auth, messages, authRepo, cfg.gateway)
 	if err != nil {
 		return errConfig
@@ -128,6 +141,7 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 	var friends *friendhttp.Handler
 	var groups *grouphttp.Handler
 	var messageRoutes *gateway.MessageRoutes
+	metricsSources := []api.MetricsSource{handler}
 	var conversationRoutes *conversationhttp.Handler
 	var readRoutes *readhttp.Handler
 	var mediaRoutes *mediahttp.Handler
@@ -212,14 +226,18 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 			return errors.New("newim-gateway send storage unavailable")
 		}
 		defer sendRepo.Close()
+		if registry != nil {
+			metricsSources = append(metricsSources, sendRepo)
+		}
 		sender, err := messageservice.NewService(sendRepo, messageservice.Config{
 			IDs:   messageservice.NewCSPRNGIDGenerator(),
 			Clock: messageservice.ClockFunc(time.Now), Observer: sendObserver{},
-			MediaValidator: mediaValidator,
+			MediaValidator: mediaValidator, Metrics: metrics,
 		})
 		if err != nil {
 			return errConfig
 		}
+		defer sender.Close()
 		newMessageRoutes := gateway.NewMessageRoutes
 		if mediaRoutes != nil {
 			newMessageRoutes = gateway.NewMessageRoutesWithMedia
@@ -301,9 +319,14 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 			return errConfig
 		}
 	}
+	if conversationRoutes != nil {
+		conversationRoutes.SetMetrics(metrics)
+	}
 	routes := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		path := r.URL.EscapedPath()
 		switch {
+		case sdkTelemetry != nil && path == observability.SDKRoute:
+			sdkTelemetry.ServeHTTP(w, r)
 		case pushRegistration != nil && path == push.RegistrationRoute:
 			pushRegistration.ServeHTTP(w, r)
 		case profiles != nil && userhttp.ContainsRoute(path):
@@ -331,6 +354,11 @@ func run(ctx context.Context, cfg config, logger *log.Logger) error {
 		return errors.New("newim-gateway listener unavailable")
 	}
 	defer listener.Close()
+	closeMetrics, err := startMetrics(ctx, cfg.metricsAddr, registry, logger, metricsSources...)
+	if err != nil {
+		return err
+	}
+	defer closeMetrics()
 	tlsListener := tls.NewListener(limitListener(listener, cfg.gateway.MaxConnections+32), &tls.Config{
 		MinVersion: tls.VersionTLS12, Certificates: []tls.Certificate{cert},
 		NextProtos: []string{"http/1.1"},

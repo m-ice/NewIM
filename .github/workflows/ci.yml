@@ -161,6 +161,9 @@ jobs:
       - name: Exercise server observability contracts
         timeout-minutes: 15
         run: make message-observability-check message-observability-metrics message-observability-security
+      - name: Exercise message trace, SDK metrics and dashboard
+        timeout-minutes: 20
+        run: make message-trace-check sdk-observability-check message-observability-dashboard
       - name: Exercise server observability recovery gauges
         timeout-minutes: 15
         run: make message-observability-recovery

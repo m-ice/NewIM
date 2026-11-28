@@ -543,3 +543,15 @@ push-token-check: toolchain
 push-sdk-check: toolchain
 	cargo test --locked --offline -p newim-sdk-core --test push
 	python3 -B infra/db/sync_http_suite.py $@
+
+.PHONY: message-trace-check sdk-observability-check
+message-trace-check: toolchain
+	python3 -B infra/db/sync_http_suite.py $@
+
+sdk-observability-check: toolchain
+	go test -count=1 -run '^TestPushDispatchMetrics$$' ./server/cmd/newim-server
+	python3 -B infra/db/sync_http_suite.py $@
+
+.PHONY: message-observability-dashboard
+message-observability-dashboard: toolchain
+	go test -count=1 -run '^TestMessagingDashboard$$' ./server/api

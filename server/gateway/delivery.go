@@ -12,6 +12,7 @@ import (
 
 	"github.com/coder/websocket"
 	protocol "github.com/m-ice/NewIM/core/protocol/go"
+	"github.com/m-ice/NewIM/server/api"
 	"github.com/m-ice/NewIM/server/auth/bearerhttp"
 	"github.com/m-ice/NewIM/server/auth/session"
 	syncmessage "github.com/m-ice/NewIM/server/sync/message"
@@ -50,11 +51,12 @@ type peer struct {
 	auth     session.AuthenticateRequest
 	stopped  chan end
 	active   bool
+	started  time.Time
 }
 
-func (g *Gateway) serveConnection(ctx context.Context, ws *websocket.Conn, raw string, identity session.ConnectionIdentity) end {
+func (g *Gateway) serveConnection(ctx context.Context, ws *websocket.Conn, raw string, identity session.ConnectionIdentity) (result end) {
 	p := peer{
-		ws: ws, identity: identity, stopped: make(chan end, 1),
+		ws: ws, identity: identity, stopped: make(chan end, 1), started: time.Now(),
 		auth: session.AuthenticateRequest{
 			Token: raw, ConnectionID: identity.ConnectionID(),
 			Binding: session.SessionBinding{
@@ -62,6 +64,17 @@ func (g *Gateway) serveConnection(ctx context.Context, ws *websocket.Conn, raw s
 			},
 		},
 	}
+	defer func() {
+		if p.active {
+			g.active.Add(-1)
+		} else {
+			outcome := "rejected"
+			if result == draining || result == unavailable || result == socketGone {
+				outcome = "temporary"
+			}
+			api.ObserveGatewayOperation(g.config.Metrics, "subscribe", outcome, time.Since(p.started))
+		}
+	}()
 	ws.SetReadLimit(maxSubscriptionBytes)
 	subscriptions := make(chan subscription, 1)
 	go p.read(ctx, subscriptions)
@@ -297,6 +310,8 @@ func (g *Gateway) sendPage(ctx context.Context, p *peer, request *subscription) 
 			return result
 		}
 		p.active = true
+		g.active.Add(1)
+		api.ObserveGatewayOperation(g.config.Metrics, "subscribe", "success", time.Since(p.started))
 	}
 	notice := request.afterVisibilityRevision != nil && page.VisibilityRevision > *request.afterVisibilityRevision
 	if len(page.Items) == 0 && !notice {
@@ -315,7 +330,7 @@ func (g *Gateway) sendPage(ctx context.Context, p *peer, request *subscription) 
 		if err != nil {
 			return unavailable
 		}
-		if err = p.ws.Write(write, websocket.MessageText, wire); err != nil {
+		if err = g.writeObserved(write, p, "visibility_notice", wire); err != nil {
 			return socketGone
 		}
 		*request.afterVisibilityRevision = page.VisibilityRevision
@@ -328,7 +343,7 @@ func (g *Gateway) sendPage(ctx context.Context, p *peer, request *subscription) 
 		if err != nil {
 			return unavailable
 		}
-		if err = p.ws.Write(write, websocket.MessageText, wire); err != nil {
+		if err = g.writeObserved(write, p, "delivery", wire); err != nil {
 			return socketGone
 		}
 		request.afterSeq = item.ConversationSeq

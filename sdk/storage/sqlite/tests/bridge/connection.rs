@@ -976,3 +976,321 @@ fn reconcile_push_target(
         vec![Effect::Ready(ticket.clone())]
     );
 }
+
+#[test]
+#[ignore = "run with make sdk-observability-check"]
+fn tls_sdk_observability() {
+    use newim_sdk_core::message::{PersistedAck, SendIntent};
+    use newim_sdk_core::observability::AckFlight;
+    use newim_sdk_core::outbox::OutboxRecord;
+
+    let mut bridge = Bridge::start_fixture("TestSDKObservabilityBridge");
+    let path = Directory::new();
+    let mut native = Native::open(&path.0, 1);
+    let mut connection = Connection::new(native.store.fence().clone(), 0).unwrap();
+    let first = credential_ticket(
+        event(&mut connection, Event::NetworkAvailable, NOW),
+        AuthCause::Missing,
+    );
+    authorize(&mut connection, &first, NOW);
+    let effects = bind(
+        &mut bridge,
+        &mut native,
+        &mut connection,
+        &first,
+        "phone",
+        (ROOM, 0),
+        NOW,
+    );
+    let [Effect::RecoverMessages { target, .. }]: [Effect; 1] = effects.try_into().unwrap() else {
+        panic!("expected bootstrap gap");
+    };
+    let before = progress(&mut native, ROOM);
+    let action =
+        recovery::observe_target(&before, NOW, target.published_round(), target.through_seq())
+            .unwrap();
+    observed_store_action(&mut native, &mut connection, &first, action);
+    let gap = progress(&mut native, ROOM);
+    assert!(gap.state.job.is_some());
+    assert!(
+        event(
+            &mut connection,
+            Event::MessageProgress {
+                ticket: &first,
+                snapshot: &gap
+            },
+            NOW
+        )
+        .is_empty()
+    );
+
+    let flight = native.start(NOW + 1).unwrap();
+    let page = get_page_for(&mut bridge, "phone", &flight);
+    let query = recovery::snapshot_query(ROOM, &page.messages).unwrap();
+    let Response::MessageSyncSnapshot(snapshot) = run(&mut native.store, 1, query).unwrap() else {
+        panic!("expected current page snapshot");
+    };
+    let action = flight
+        .apply(
+            native.store.fence(),
+            &snapshot,
+            page,
+            NOW + 2,
+            compare_observed_payload,
+        )
+        .unwrap();
+    observed_store_action(&mut native, &mut connection, &first, action);
+    let caught = progress(&mut native, ROOM);
+    assert_eq!(
+        event(
+            &mut connection,
+            Event::MessageProgress {
+                ticket: &first,
+                snapshot: &caught
+            },
+            NOW + 2
+        ),
+        vec![Effect::Ready(first.clone())]
+    );
+
+    let context = connection.send_context().unwrap();
+    let payload = Blob(br#"{"text":"observable message"}"#.to_vec());
+    let record = OutboxRecord::new(
+        SendIntent {
+            protocol_version: 1,
+            client_id: "observed_outbound".into(),
+            conversation_id: ROOM.into(),
+            schema_version: 1,
+            message_type: "text".into(),
+            payload: payload.clone(),
+        },
+        &context,
+        NOW + 3,
+    )
+    .unwrap();
+    let pending = Pending {
+        sender_id: ACCOUNT.into(),
+        client_id: "observed_outbound".into(),
+        conversation_id: ROOM.into(),
+        payload: record.encode().unwrap(),
+    };
+    observed_store_action(
+        &mut native,
+        &mut connection,
+        &first,
+        Action::Enqueue(pending.clone()),
+    );
+    observed_store_action(&mut native, &mut connection, &first, Action::Metrics);
+
+    bridge.send("OBS_SEND");
+    let line = bridge.line();
+    let parts: Vec<_> = line.splitn(3, '\t').collect();
+    let ["OBS_ACK", header, raw] = parts.as_slice() else {
+        panic!("trace must originate from the same verified response");
+    };
+    let ServerFrame::Ack(ack) = decode_server_frame(&decode_hex(raw)).unwrap() else {
+        panic!("expected a persisted ACK frame");
+    };
+    let persisted = PersistedAck {
+        sender_id: ack.sender_id,
+        client_id: ack.client_msg_id,
+        conversation_id: ack.conversation_id,
+        server_id: ack.server_msg_id,
+        sequence: ack.conversation_seq.parse().unwrap(),
+        server_time: ack.server_time.parse().unwrap(),
+        protocol_version: 1,
+        schema_version: 1,
+        message_type: "text".into(),
+        payload,
+    };
+    let revision = progress(&mut native, ROOM).revision;
+    let operation_id = native.next;
+    native.next += 1;
+    let (_, Some(trace)) = connection
+        .resolve_http_ack(
+            &mut native.store,
+            AckFlight {
+                context: &context,
+                pending: &pending,
+                expected_revision: revision,
+                operation_id,
+                attempted_at_ms: NOW + 3,
+            },
+            &persisted,
+            &[header],
+            NOW + 13,
+        )
+        .unwrap()
+    else {
+        panic!("the committed receipt did not retain diagnostic metadata");
+    };
+    assert_eq!(trace.trace_id, *header);
+    assert_eq!(trace.client_msg_id, "observed_outbound");
+    assert_eq!(trace.server_msg_id, persisted.server_id);
+    assert!(!format!("{trace:?}").contains(*header));
+    observed_store_action(&mut native, &mut connection, &first, Action::Metrics);
+
+    bridge.send("OBS_NEXT");
+    assert_eq!(bridge.line(), "OBS_COMMITTED");
+    let incoming = observed_message(&mut bridge);
+    let query = recovery::snapshot_query(ROOM, std::slice::from_ref(&incoming)).unwrap();
+    let Response::MessageSyncSnapshot(snapshot) = run(&mut native.store, 1, query).unwrap() else {
+        panic!("expected WSS message position");
+    };
+    let action = recovery::observe(
+        native.store.fence(),
+        &snapshot,
+        incoming,
+        NOW + 14,
+        compare_observed_payload,
+    )
+    .unwrap();
+    observed_store_action(&mut native, &mut connection, &first, action);
+    assert_eq!(room_messages(&mut native).len(), 3);
+
+    assert_eq!(
+        event(&mut connection, Event::NetworkLost, NOW + 15),
+        vec![Effect::Cancel(first)]
+    );
+    close(&mut bridge);
+    let current = directory_ticket(event(&mut connection, Event::NetworkAvailable, NOW + 16));
+    assert_eq!(
+        bind(
+            &mut bridge,
+            &mut native,
+            &mut connection,
+            &current,
+            "phone",
+            (ROOM, 3),
+            NOW + 16
+        ),
+        vec![Effect::Ready(current.clone())]
+    );
+
+    let report = connection.take_metrics_report().unwrap().encode();
+    let aggregate: Value = serde_json::from_str(&report).unwrap();
+    for (field, count) in [
+        ("socket_attempt", 2),
+        ("reconnect", 1),
+        ("ready", 2),
+        ("ack_committed", 1),
+        ("ack_millis", 10),
+        ("gap_detected", 1),
+        ("page_committed", 1),
+        ("message_committed", 1),
+        ("outbox_samples", 2),
+        ("outbox_pending", 1),
+    ] {
+        assert_eq!(aggregate[field], count, "{field}");
+    }
+    assert!(connection.take_metrics_report().is_none());
+    for private in [
+        ACCOUNT,
+        ROOM,
+        header,
+        &persisted.server_id,
+        "observed_outbound",
+        "observable message",
+    ] {
+        assert!(!report.contains(private));
+    }
+
+    bridge.send(&format!("OBS_REPORT\t{}", encode_hex(report.as_bytes())));
+    assert_eq!(bridge.line(), "OBS_RECORDED");
+    let mut observed = None;
+    for _ in 0..20 {
+        bridge.send("OBS_SCRAPE");
+        let line = bridge.line();
+        let metrics =
+            String::from_utf8(decode_hex(line.strip_prefix("OBS_METRICS\t").unwrap())).unwrap();
+        if metrics.contains("newim_sdk_events_total{event=\"ack_committed\"} 1")
+            && metrics.contains("newim_gateway_active_subscriptions 1")
+        {
+            observed = Some(metrics);
+            break;
+        }
+        std::thread::sleep(std::time::Duration::from_millis(25));
+    }
+    let metrics = observed.expect("SDK report was not published");
+    for sample in [
+        "newim_gateway_active_subscriptions 1",
+        "newim_gateway_operations_total{operation=\"delivery\",result=\"success\"}",
+        "newim_gateway_operations_total{operation=\"directory_bootstrap\",result=\"success\"}",
+        "newim_gateway_operations_total{operation=\"message_page\",result=\"success\"}",
+        "newim_message_lifecycle_duration_seconds_count{component=\"send\",stage=\"persisted\"}",
+        "newim_sdk_events_total{event=\"gap_detected\"} 1",
+        "newim_sdk_events_total{event=\"reconnect\"} 1",
+        "newim_sdk_ack_duration_seconds_sum 0.01",
+        "newim_sdk_outbox_depth_count 2",
+        "newim_sdk_outbox_depth_sum 1",
+    ] {
+        assert!(metrics.contains(sample), "absent sample {sample}");
+    }
+    for private in [
+        ACCOUNT,
+        ROOM,
+        header,
+        &persisted.server_id,
+        "observed_outbound",
+        "observable message",
+    ] {
+        assert!(!metrics.contains(private));
+    }
+    bridge.finish();
+}
+
+fn observed_store_action(
+    native: &mut Native,
+    connection: &mut Connection,
+    ticket: &Ticket,
+    action: Action,
+) {
+    let request = Request {
+        fence: native.store.fence().clone(),
+        operation_id: native.next,
+        action,
+    };
+    native.next += 1;
+    let completion = native.store.execute(request.clone());
+    assert!(
+        completion.result.is_ok(),
+        "observation fixture store action failed"
+    );
+    connection.observe_store_completion(ticket, &request, &completion);
+}
+
+fn compare_observed_payload(left: &Blob, right: &Blob) -> Result<bool, StoreError> {
+    newim_protocol::send::same_message_payload(&left.0, &right.0)
+        .map_err(|_| StoreError::InvalidInput)
+}
+
+fn observed_message(bridge: &mut Bridge) -> recovery::IncomingMessage {
+    for _ in 0..40 {
+        bridge.send("POLL");
+        let line = bridge.line();
+        if line == "EMPTY" {
+            continue;
+        }
+        let raw = decode_hex(line.strip_prefix("FRAME\t").unwrap());
+        let GatewayFrame::Message(wire) = decode_gateway_frame(&raw).unwrap() else {
+            continue;
+        };
+        if wire.client_msg_id == "observed_inbound" {
+            return recovery::IncomingMessage {
+                protocol_version: wire.protocol_version,
+                message: Message {
+                    server_id: wire.server_msg_id,
+                    sender_id: wire.sender_id,
+                    client_id: wire.client_msg_id,
+                    conversation_id: wire.conversation_id,
+                    sequence: wire.conversation_seq.parse().unwrap(),
+                    server_time: wire.server_time.parse().unwrap(),
+                    schema_version: wire.version,
+                    message_type: wire.message_type,
+                    payload: Some(Blob(wire.payload.get().as_bytes().to_vec())),
+                },
+            };
+        }
+    }
+    panic!("no live message reached the SDK socket");
+}

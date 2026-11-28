@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"net/netip"
 	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/m-ice/NewIM/server/api"
 	"github.com/m-ice/NewIM/server/auth/session"
 	syncmessage "github.com/m-ice/NewIM/server/sync/message"
 )
@@ -47,6 +49,7 @@ type subscriptionStore interface {
 }
 
 type Config struct {
+	Metrics            api.MetricsSink
 	TrackSubscriptions bool
 	MaxConnections     int
 	IPAttempts         int
@@ -69,6 +72,7 @@ type Gateway struct {
 	store    HandshakeStore
 	presence subscriptionStore
 	config   Config
+	active   atomic.Int64
 
 	mu        sync.Mutex
 	window    time.Time

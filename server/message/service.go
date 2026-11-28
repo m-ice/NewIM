@@ -94,10 +94,16 @@ func (s *Service) Close() {
 
 // Send returns a SERVER_PERSISTED ACK only after the storage transaction commits.
 // Send 仅在存储事务提交后返回 SERVER_PERSISTED ACK；提交不确定时绝不返回成功。
-func (s *Service) Send(ctx context.Context, identity session.ConnectionIdentity, request protocol.Send) (frame protocol.ServerFrame, err error) {
+func (s *Service) Send(ctx context.Context, identity session.ConnectionIdentity, request protocol.Send) (protocol.ServerFrame, error) {
+	frame, _, err := s.SendWithTrace(ctx, identity, request)
+	return frame, err
+}
+
+// SendWithTrace pairs the encoded, committed receipt with its trusted attempt trace.
+func (s *Service) SendWithTrace(ctx context.Context, identity session.ConnectionIdentity, request protocol.Send) (frame protocol.ServerFrame, receiptTrace string, err error) {
 	started := time.Now()
 	if s == nil || s.store == nil || s.ids == nil || s.clock == nil || ctx == nil {
-		return protocol.ServerFrame{}, Fail(SendInvalidInput)
+		return protocol.ServerFrame{}, "", Fail(SendInvalidInput)
 	}
 	traceID := s.newTraceID()
 	s.emitLifecycle(traceID, LifecycleAccepted, LifecycleResultSuccess, LifecycleCodeAccepted, false, started)
@@ -108,10 +114,10 @@ func (s *Service) Send(ctx context.Context, identity session.ConnectionIdentity,
 		s.observeLegacy(started, err)
 	}()
 	if !validIdentity(identity) {
-		return protocol.ServerFrame{}, Fail(SendInvalidInput)
+		return protocol.ServerFrame{}, "", Fail(SendInvalidInput)
 	}
 	if _, encodeErr := protocol.EncodeSend(request); encodeErr != nil {
-		return protocol.ServerFrame{}, Fail(SendInvalidInput)
+		return protocol.ServerFrame{}, "", Fail(SendInvalidInput)
 	}
 	principal := conversation.Principal{UserID: identity.UserID()}
 	validationObserved := false
@@ -152,12 +158,12 @@ func (s *Service) Send(ctx context.Context, identity session.ConnectionIdentity,
 	defer cancel()
 	persisted, persistErr := s.store.Persist(attemptCtx, principal, request, validate, generate)
 	if persistErr != nil {
-		return protocol.ServerFrame{}, redactedError(persistErr)
+		return protocol.ServerFrame{}, "", redactedError(persistErr)
 	}
 	if persisted.ClientMsgID != request.ClientMsgID || persisted.ConversationID != request.ConversationID ||
 		persisted.SenderID != identity.UserID() || persisted.ConversationSeq < 0 || persisted.ServerTime < 0 ||
 		(!persisted.SenderType.IsZero() && !persisted.SenderType.Valid()) {
-		return protocol.ServerFrame{}, Fail(SendStorageUnavailable)
+		return protocol.ServerFrame{}, "", Fail(SendStorageUnavailable)
 	}
 	s.emitLifecycle(traceID, LifecyclePersisted, LifecycleResultSuccess, LifecycleCodePersisted, persisted.Replayed, started)
 	if !persisted.Replayed {
@@ -174,10 +180,10 @@ func (s *Service) Send(ctx context.Context, identity session.ConnectionIdentity,
 	}
 	frame = protocol.ServerFrame{Ack: &ack}
 	if _, encodeErr := protocol.EncodeServerFrame(frame); encodeErr != nil {
-		return protocol.ServerFrame{}, Fail(SendStorageUnavailable)
+		return protocol.ServerFrame{}, "", Fail(SendStorageUnavailable)
 	}
 	s.emitLifecycle(traceID, LifecycleACKReady, LifecycleResultSuccess, LifecycleCodeACKReady, persisted.Replayed, started)
-	return frame, nil
+	return frame, traceID, nil
 }
 
 func (s *Service) newTraceID() string {
@@ -191,14 +197,15 @@ func (s *Service) newTraceID() string {
 		return ""
 	}
 	traceID, err := s.traceIDs.NewID()
-	if err != nil || !validTraceID(traceID) {
+	if err != nil || !ValidTraceID(traceID) {
 		s.drop("trace_id_failure")
 		return ""
 	}
 	return traceID
 }
 
-func validTraceID(value string) bool {
+// ValidTraceID accepts the fixed format of a service-generated attempt identifier.
+func ValidTraceID(value string) bool {
 	if len(value) != 32 {
 		return false
 	}

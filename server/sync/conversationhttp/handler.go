@@ -13,7 +13,9 @@ import (
 	"net/http"
 	"net/netip"
 	"strings"
+	"time"
 
+	"github.com/m-ice/NewIM/server/api"
 	"github.com/m-ice/NewIM/server/auth/bearerhttp"
 	"github.com/m-ice/NewIM/server/auth/session"
 	"github.com/m-ice/NewIM/server/sync/conversation"
@@ -35,6 +37,7 @@ type Handler struct {
 	settings AccountSettingsStore
 	auth     userhttp.Authenticator
 	budget   userhttp.Budget
+	metrics  api.MetricsSink
 }
 
 func New(service *conversation.Service, auth userhttp.Authenticator, budget userhttp.Budget) (*Handler, error) {
@@ -65,7 +68,67 @@ func isSyncRoute(path string) bool {
 	return path == bootstrapRoute || path == deltaRoute || path == messagesRoute || path == syncmessage.VisibilityRoute
 }
 
+// SetMetrics attaches the gateway registry during route composition.
+func (h *Handler) SetMetrics(sink api.MetricsSink) {
+	h.metrics = sink
+}
+
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	if operation := syncOperation(r.URL.EscapedPath()); operation != "" && h.metrics != nil {
+		started := time.Now()
+		response := &syncStatusWriter{ResponseWriter: w}
+		h.serveHTTP(response, r)
+		result := "rejected"
+		switch {
+		case response.status >= 200 && response.status < 300 && !response.writeFailed:
+			result = "success"
+		case response.status == http.StatusTooManyRequests || response.status >= 500 || response.writeFailed:
+			result = "temporary"
+		}
+		api.ObserveGatewayOperation(h.metrics, operation, result, time.Since(started))
+		return
+	}
+	h.serveHTTP(w, r)
+}
+
+type syncStatusWriter struct {
+	http.ResponseWriter
+	status      int
+	writeFailed bool
+}
+
+func (w *syncStatusWriter) WriteHeader(code int) {
+	if w.status == 0 {
+		w.status = code
+	}
+	w.ResponseWriter.WriteHeader(code)
+}
+
+func (w *syncStatusWriter) Write(body []byte) (int, error) {
+	if w.status == 0 {
+		w.status = http.StatusOK
+	}
+	n, err := w.ResponseWriter.Write(body)
+	w.writeFailed = w.writeFailed || err != nil || n != len(body)
+	return n, err
+}
+
+func syncOperation(path string) string {
+	switch path {
+	case bootstrapRoute:
+		return "directory_bootstrap"
+	case deltaRoute:
+		return "directory_delta"
+	case messagesRoute:
+		return "message_page"
+	case syncmessage.VisibilityRoute:
+		return "visibility_page"
+	default:
+		return ""
+	}
+}
+
+func (h *Handler) serveHTTP(w http.ResponseWriter, r *http.Request) {
 	path := r.URL.EscapedPath()
 	id, action, settings := accountSettingsRoute(path)
 	methods := http.MethodPost

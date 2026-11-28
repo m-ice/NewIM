@@ -122,7 +122,7 @@ func TestMessageLifecycleCommitACKOrderingAndTrace(t *testing.T) {
 		if observation.Stage == "" {
 			continue
 		}
-		if len(observation.TraceID) != 32 || !validTraceID(observation.TraceID) {
+		if len(observation.TraceID) != 32 || !ValidTraceID(observation.TraceID) {
 			t.Fatalf("invalid trace id: %+v", observation)
 		}
 		if strings.Contains(observation.TraceID, "client_a") || observation.TraceID == "" {

@@ -108,6 +108,7 @@ func run(args []string, stdout, stderr io.Writer, read func() (buildinfo.Info, e
 		go func() { runtimeDone <- runtime.Run(workerCtx) }()
 	}
 	if pushRuntime != nil {
+		server.AttachMetricsSource(pushRuntime)
 		pushDone := make(chan struct{})
 		go func() {
 			defer close(pushDone)

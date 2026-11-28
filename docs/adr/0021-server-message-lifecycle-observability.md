@@ -20,10 +20,12 @@ sink best-effort. `server/cmd/newim-server` composes the sink and the two
 independent PostgreSQL gauge sources before the server starts.
 
 Each send attempt has a server-generated 128-bit lowercase-hex `traceId`. The
-value is request-local, non-client-controlled, never placed on the wire, ACK,
-database, Webhook envelope, log/metric label or error. A failure to generate it
-does not fail the send; it only increments
-`newim_observability_dropped_total{reason="trace_id_failure"}`.
+service generates the value without client input. The authorized TLS send
+response can carry it in a response header after commit and successful ACK
+encoding. ACK frames, database rows, Webhook envelopes, logs, metric labels and
+errors omit the identifier. A generation failure increments
+`newim_observability_dropped_total{reason="trace_id_failure"}` and the send
+continues. [TLS receipt trace](0046-message-lifecycle-observability.md)
 
 The send lifecycle is `accepted -> validated -> persisting -> persisted ->
 ack_ready`. `persisted` is emitted only after the storage port returns following

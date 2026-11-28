@@ -39,6 +39,7 @@ type config struct {
 	mediaS3              *s3store.Config
 	pushRegistration     *httpLimits
 	pushKeysFile         string
+	metricsAddr          string
 }
 
 type httpLimits struct {
@@ -53,6 +54,13 @@ func readConfig(getenv func(string) string) (config, error) {
 	if _, _, err := net.SplitHostPort(cfg.addr); err != nil || cfg.dsn == "" ||
 		!filepath.IsAbs(cfg.certFile) || !filepath.IsAbs(cfg.keyFile) || getenv("NEWIM_AUTH_DEVICE_ADMISSION") != "1" {
 		return config{}, errConfig
+	}
+	cfg.metricsAddr = getenv("NEWIM_GATEWAY_METRICS_ADDR")
+	if cfg.metricsAddr != "" {
+		host, port, err := net.SplitHostPort(cfg.metricsAddr)
+		if err != nil || port == "" || !net.ParseIP(host).IsLoopback() {
+			return config{}, errConfig
+		}
 	}
 	switch getenv("NEWIM_AUTH_ALLOW_LOCAL_SOCKET") {
 	case "", "0":

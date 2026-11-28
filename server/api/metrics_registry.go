@@ -66,6 +66,25 @@ type MetricsSource interface {
 }
 
 var metricSpecs = map[string]metricSpec{
+	MetricGatewayActive:        {kind: metricGauge},
+	MetricGatewayOperations:    gatewayMetricSpec(true),
+	MetricGatewayDurationSum:   gatewayMetricSpec(false),
+	MetricGatewayDurationCount: gatewayMetricSpec(false),
+	MetricSDKEvents: {
+		kind: metricCounter, labelKeys: []string{"event"},
+		labelRules: map[string]map[string]struct{}{"event": values(
+			"socket_attempt", "ready", "reconnect", "ack_committed", "ack_failed",
+			"gap_detected", "page_committed", "page_failed", "message_committed",
+		)},
+	},
+	MetricSDKAckDurationSum:   {kind: metricCounter},
+	MetricSDKAckDurationCount: {kind: metricCounter},
+	MetricSDKOutboxDepthSum:   {kind: metricCounter},
+	MetricSDKOutboxDepthCount: {kind: metricCounter},
+	MetricPushDispatch: {
+		kind: metricCounter, labelKeys: []string{"result"},
+		labelRules: map[string]map[string]struct{}{"result": values("accepted", "retry", "failed", "invalid", "cancelled")},
+	},
 	MetricMessageLifecycleEvents: {
 		kind:      metricCounter,
 		labelKeys: []string{"component", "stage", "result"},

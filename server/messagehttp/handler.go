@@ -11,6 +11,7 @@ import (
 	"net/http"
 	"reflect"
 	"strings"
+	"time"
 
 	protocol "github.com/m-ice/NewIM/core/protocol/go"
 	"github.com/m-ice/NewIM/server/auth/bearerhttp"
@@ -68,6 +69,13 @@ type Sender interface {
 	Send(context.Context, app.ConnectionIdentity, protocol.Send) (protocol.ServerFrame, error)
 }
 
+type traceSender interface {
+	SendWithTrace(context.Context, app.ConnectionIdentity, protocol.Send) (protocol.ServerFrame, string, error)
+}
+
+const TraceHeader = "X-NewIM-Trace-Id"
+const traceVerificationTimeout = 100 * time.Millisecond
+
 var _ Authenticator = (*app.Service)(nil)
 var _ Sender = (*messageservice.Service)(nil)
 
@@ -76,6 +84,8 @@ var _ Sender = (*messageservice.Service)(nil)
 type Handler struct {
 	authenticator Authenticator
 	sender        Sender
+	traceSender   traceSender
+	traceVerifier Authenticator
 	maxBodyBytes  int64
 	allowMedia    bool
 }
@@ -97,6 +107,13 @@ func NewHandlerWithMedia(authenticator Authenticator, sender Sender, maxBodyByte
 	}
 	handler.allowMedia = true
 	return handler, nil
+}
+
+// EnableTLSReceiptTrace is used by the TLS gateway composer before serving.
+func (h *Handler) EnableTLSReceiptTrace(verifier Authenticator) {
+	if sender, ok := h.sender.(traceSender); ok && !isNil(verifier) {
+		h.traceSender, h.traceVerifier = sender, verifier
+	}
 }
 
 // ServeHTTP applies the frozen route, transport, authentication, protocol and send order.
@@ -179,7 +196,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(recorder, http.StatusBadRequest, CodeInvalidInput, false)
 		return
 	}
-	frame, err := h.sender.Send(ctx, identity, request)
+	var frame protocol.ServerFrame
+	var traceID string
+	if r.TLS != nil && r.TLS.HandshakeComplete && h.traceSender != nil {
+		frame, traceID, err = h.traceSender.SendWithTrace(ctx, identity, request)
+	} else {
+		frame, err = h.sender.Send(ctx, identity, request)
+	}
 	if err != nil {
 		status, code, retry := mapSendError(err)
 		writeError(recorder, status, code, retry)
@@ -193,7 +216,31 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		writeError(recorder, http.StatusInternalServerError, CodeSendUnknown, false)
 		return
 	}
-	writeACK(recorder, frame)
+	writeACK(recorder, frame, func() string {
+		if messageservice.ValidTraceID(traceID) && h.stillAuthorized(ctx, r.Header, session) {
+			return traceID
+		}
+		return ""
+	})
+}
+
+func (h *Handler) stillAuthorized(ctx context.Context, header http.Header, before app.BearerSession) (allowed bool) {
+	defer func() {
+		if recover() != nil {
+			allowed = false
+		}
+	}()
+	raw, ok := bearerhttp.ParseBearerHeader(header.Values("Authorization"))
+	if !ok {
+		return false
+	}
+	check, cancel := context.WithTimeout(ctx, traceVerificationTimeout)
+	defer cancel()
+	current, err := h.traceVerifier.AuthenticateBearer(check, raw)
+	return err == nil && check.Err() == nil && current.UserID() == before.UserID() &&
+		current.DeviceID() == before.DeviceID() && current.SessionID() == before.SessionID() &&
+		current.TokenID() == before.TokenID() && current.ExpiresAt().Equal(before.ExpiresAt()) &&
+		time.Now().Before(current.ExpiresAt())
 }
 
 func authenticateSession(w http.ResponseWriter, ctx context.Context, header http.Header, authenticator Authenticator) (app.BearerSession, bool) {
@@ -299,13 +346,16 @@ func mapSendError(err error) (int, Code, bool) {
 	}
 }
 
-func writeACK(w http.ResponseWriter, frame protocol.ServerFrame) {
+func writeACK(w http.ResponseWriter, frame protocol.ServerFrame, trace func() string) {
 	body, err := protocol.EncodeServerFrame(frame)
 	if err != nil {
 		writeError(w, http.StatusInternalServerError, CodeSendUnknown, false)
 		return
 	}
 	setCommonHeaders(w)
+	if value := trace(); value != "" {
+		w.Header().Set(TraceHeader, value)
+	}
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(body)
 }

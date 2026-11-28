@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/coder/websocket"
+	"github.com/m-ice/NewIM/server/api"
 	"github.com/m-ice/NewIM/server/auth/bearerhttp"
 	"github.com/m-ice/NewIM/server/auth/session"
 )
@@ -22,6 +23,13 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		reject(w, http.StatusNotFound)
 		return
 	}
+	started := time.Now()
+	outcome := "rejected"
+	defer func() {
+		if outcome != "success" {
+			api.ObserveGatewayOperation(g.config.Metrics, "handshake", outcome, time.Since(started))
+		}
+	}()
 	if r.Method != http.MethodGet {
 		w.Header().Set("Allow", http.MethodGet)
 		reject(w, http.StatusMethodNotAllowed)
@@ -36,6 +44,7 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	conn, _ := r.Context().Value(socketContextKey{}).(net.Conn)
 	entry, status := g.enter(conn, addr.Addr().Unmap())
 	if status != 0 {
+		outcome = handshakeOutcome(status)
 		reject(w, status)
 		return
 	}
@@ -45,10 +54,12 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	rawToken, identity, status := g.authorizeUpgrade(ctx, r, nonce)
 	cancel()
 	if status != 0 {
+		outcome = handshakeOutcome(status)
 		reject(w, status)
 		return
 	}
 	if g.isDraining() {
+		outcome = "temporary"
 		reject(w, http.StatusServiceUnavailable)
 		return
 	}
@@ -62,9 +73,18 @@ func (g *Gateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	defer stop()
 	result := invalid
 	if ws.Subprotocol() == Subprotocol {
+		outcome = "success"
+		api.ObserveGatewayOperation(g.config.Metrics, "handshake", outcome, time.Since(started))
 		result = g.serveConnection(connectionCtx, ws, rawToken, identity)
 	}
 	g.finishConnection(ws, entry.conn, result)
+}
+
+func handshakeOutcome(status int) string {
+	if status == http.StatusTooManyRequests || status >= 500 {
+		return "temporary"
+	}
+	return "rejected"
 }
 
 func (g *Gateway) finishConnection(ws *websocket.Conn, transport net.Conn, result end) {

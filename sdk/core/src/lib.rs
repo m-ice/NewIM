@@ -8,6 +8,7 @@ pub mod conversation_sync;
 pub mod media;
 pub mod message;
 pub mod message_sync;
+pub mod observability;
 pub mod outbox;
 pub mod push;
 pub mod store;

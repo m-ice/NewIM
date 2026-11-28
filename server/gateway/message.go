@@ -40,6 +40,7 @@ func newMessageRoutes(auth messagehttp.Authenticator, sender messagehttp.Sender,
 	if err != nil {
 		return nil, err
 	}
+	send.EnableTLSReceiptTrace(auth)
 	private, err := messagehttp.NewPrivatePolicyHandler(authenticator, store)
 	if err != nil {
 		return nil, err

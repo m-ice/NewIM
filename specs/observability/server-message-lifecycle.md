@@ -10,8 +10,10 @@ media, gateway, sync or delivery semantics.
 ## Send lifecycle
 
 Every service send attempt generates a trusted 128-bit lowercase-hex `traceId`.
-It is not accepted from the request and is not emitted to protocol, ACK, SQL,
-Webhook payload, metric labels, production errors or raw logs.
+The service generates this value without client input. The authorized TLS send
+response can carry the value in its response header. ACK frames, SQL, Webhook
+payloads, metric labels, production errors and logs omit it.
+[TLS receipt trace](../http/tls-message-send.md)
 
 The bounded sequence is:
 

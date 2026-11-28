@@ -31,6 +31,7 @@ TESTS = {
     'message-event-check': 'TestMessageVisibilityProjection',
     'message-event-recovery': 'TestMessageVisibilityUpgrade',
     'push-delivery-check': 'TestPushDelivery',
+    'message-trace-check': 'TestMessageTrace',
     'push-token-check': 'TestPushTokenRotation',
     'push-recovery': 'TestPushRecovery',
 }
@@ -42,6 +43,7 @@ SDK_TESTS = {
     'sdk-connection-integration': 'connection::tls_sdk_connection',
     'message-event-integration': 'connection::tls_sdk_message_visibility',
     'push-sdk-check': 'connection::tls_sdk_push_click',
+    'sdk-observability-check': 'connection::tls_sdk_observability',
 }
 
 
@@ -109,7 +111,8 @@ def main():
             build(commands, ['go', 'build', '-o', str(directory / name), './server/cmd/' + name],
                   env, 'sync-http-' + name + '-build')
         with Database(commands, image, platform) as db:
-            target = 22 if args.suite.startswith('push-') else 21 if args.suite.startswith('message-event-') else (
+            head_suite = args.suite.startswith('push-') or args.suite in ('message-trace-check', 'sdk-observability-check')
+            target = 22 if head_suite else 21 if args.suite.startswith('message-event-') else (
                 18 if account_sync or sdk_bridge else 17 if read_sync else 15 if read_suite else 14
             )
             upgrades_visibility = args.suite == 'message-event-recovery'

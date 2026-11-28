@@ -283,6 +283,7 @@ pub struct Connection {
     expires_at_ms: Option<u64>,
     auth_cause: AuthCause,
     failures: u8,
+    pub(crate) metrics: crate::observability::Metrics,
 }
 
 impl Connection {
@@ -304,6 +305,7 @@ impl Connection {
             expires_at_ms: None,
             auth_cause: AuthCause::Missing,
             failures: 0,
+            metrics: Default::default(),
         })
     }
 
@@ -469,6 +471,7 @@ impl Connection {
                 }
             }
             Event::MessageProgress { ticket, snapshot } if self.accepts(ticket) => {
+                self.metrics.observe_gap(snapshot);
                 if let Phase::Recovering(target) = &self.phase
                     && snapshot.visible
                     && snapshot.conversation_id == target.conversation_id
@@ -523,6 +526,7 @@ impl Connection {
             },
             _ => {}
         }
+        self.metrics.connection_effects(&effects);
         Ok(effects)
     }
 

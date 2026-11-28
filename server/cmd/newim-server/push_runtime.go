@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/m-ice/NewIM/server/api"
 	"github.com/m-ice/NewIM/server/push"
 	"github.com/m-ice/NewIM/server/storage/postgresidentity"
 	pushstore "github.com/m-ice/NewIM/server/storage/push"
@@ -85,6 +86,25 @@ func pushProviders() (map[push.Channel]push.Provider, error) {
 		return nil, push.ErrConfig
 	}
 	return providers, nil
+}
+
+func (r *pushRuntime) SnapshotMetrics(context.Context) ([]api.MetricSample, error) {
+	counts := r.worker.Counts()
+	results := [...]struct {
+		result string
+		value  uint64
+	}{
+		{"accepted", counts.Accepted}, {"retry", counts.Retry}, {"failed", counts.Failed},
+		{"invalid", counts.Invalid}, {"cancelled", counts.Cancelled},
+	}
+	samples := make([]api.MetricSample, 0, len(results))
+	for _, outcome := range results {
+		samples = append(samples, api.MetricSample{
+			Name: api.MetricPushDispatch, Value: float64(outcome.value),
+			Labels: map[string]string{"result": outcome.result},
+		})
+	}
+	return samples, nil
 }
 
 func (r *pushRuntime) Run(ctx context.Context) {

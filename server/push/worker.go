@@ -57,7 +57,7 @@ type Worker struct {
 	outcomes  [Cancelled + 1]atomic.Uint64
 }
 
-func (w *Worker) counts() Counts {
+func (w *Worker) Counts() Counts {
 	return Counts{
 		Accepted: w.outcomes[Accepted].Load(), Retry: w.outcomes[TemporaryFailure].Load(),
 		Failed: w.outcomes[PermanentFailure].Load(), Invalid: w.outcomes[InvalidToken].Load(),
@@ -91,7 +91,7 @@ func (w *Worker) Run(ctx context.Context, onStorageFailure func(), report func(C
 		if !time.Now().Before(maintenance) {
 			cycleErr = w.queue.PrunePresence(ctx)
 			maintenance = time.Now().Add(time.Minute)
-			if current := w.counts(); report != nil && current != reported {
+			if current := w.Counts(); report != nil && current != reported {
 				report(current)
 				reported = current
 			}
