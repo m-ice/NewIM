@@ -563,3 +563,7 @@ reliability-transport: toolchain
 reliability-notifications: toolchain
 	python3 -B infra/db/sync_http_suite.py reliability-push-timeout
 	python3 -B infra/db/webhook_suite.py receiver-timeout
+
+.PHONY: performance-baseline
+performance-baseline: toolchain
+	python3 -B infra/db/sync_http_suite.py performance-baseline

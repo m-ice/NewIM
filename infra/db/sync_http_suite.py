@@ -2,7 +2,12 @@
 from __future__ import annotations
 
 import argparse
+import hashlib
+import json
 import os
+from pathlib import Path
+import platform as host_platform
+import sys
 import uuid
 
 from auth_suite import restart_database, result_errors
@@ -36,6 +41,7 @@ TESTS = {
     'push-recovery': 'TestPushRecovery',
     'reliability-transport': 'TestTransportReliability',
     'reliability-push-timeout': 'TestPushReceiverTimeout',
+    'performance-baseline': 'TestPerformanceBaseline',
 }
 SDK_TESTS = {
     'conversation-account-sdk-check': 'tls_sqlite_conversation_account_sync',
@@ -82,6 +88,72 @@ def run_sdk_bridge(db, name, label):
         raise Failure('native SQLite sync bridge did not pass its exact test')
 
 
+def performance_source(commands):
+    modified = commands.run(['git', 'status', '--porcelain', '--untracked-files=no'],
+                            label='baseline-tracked-state').stdout
+    untracked = commands.run(['git', 'ls-files', '--others', '--exclude-standard', '--',
+                              'core', 'server', 'tests', 'infra'], label='baseline-source-state').stdout
+    if modified or untracked:
+        raise Failure('performance baseline requires an unchanged committed source tree')
+    revision, tree = commands.run(['git', 'rev-parse', 'HEAD', 'HEAD^{tree}'],
+                                  label='baseline-source-revision').stdout.decode().splitlines()
+    return {'revision': revision, 'tree': tree}
+
+
+def performance_host(commands):
+    system = host_platform.system()
+    if system == 'Darwin':
+        cpu, memory = commands.run(['/usr/sbin/sysctl', '-n', 'machdep.cpu.brand_string', 'hw.memsize'],
+                                   label='baseline-host-hardware').stdout.decode().splitlines()
+    elif system == 'Linux':
+        cpu_info = Path('/proc/cpuinfo').read_text(encoding='utf-8')
+        fields = dict(line.split(':', 1) for line in cpu_info.splitlines() if ':' in line)
+        fields = {key.strip(): value.strip() for key, value in fields.items()}
+        cpu = fields.get('model name') or fields.get('Hardware') or host_platform.machine()
+        memory = os.sysconf('SC_PHYS_PAGES') * os.sysconf('SC_PAGE_SIZE')
+    else:
+        raise Failure('no hardware metadata recorder for this baseline host platform')
+    return {'os': system, 'arch': host_platform.machine(), 'kernel': host_platform.release(),
+            'cpu_model': cpu.strip(), 'memory_bytes': int(memory), 'logical_cpus': os.cpu_count()}
+
+
+def save_performance_report(db, source, binaries):
+    commands, directory = db.commands, db.commands.directory
+    if performance_source(commands) != source:
+        raise Failure('source changed during the performance run')
+    network, cpu, memory, pids = commands.run([
+        'docker', 'inspect', '--type', 'container', '--format',
+        '{{.HostConfig.NetworkMode}} {{.HostConfig.NanoCpus}} {{.HostConfig.Memory}} {{.HostConfig.PidsLimit}}',
+        db.container_id,
+    ], label='baseline-executed-container-config').stdout.decode().split()
+    versions = commands.run(['go', 'version', '-m', str(directory / 'newim-gateway')],
+                            label='baseline-binary-dependencies').stdout.decode()
+    dependencies = {
+        fields[1]: fields[2] for line in versions.splitlines() if len(fields := line.split()) >= 3
+        and fields[0] == 'dep' and fields[1] in ('github.com/coder/websocket', 'github.com/jackc/pgx/v5')
+    }
+    docker_version = commands.run(['docker', 'version', '--format', '{{.Server.Version}}'],
+                                  label='baseline-docker-version').stdout.decode().strip()
+    metadata = {
+        **source, 'host': performance_host(commands), 'docker_version': docker_version,
+        'container': {'network': network, 'nano_cpus': int(cpu), 'memory_bytes': int(memory), 'pids': int(pids)},
+        'image': json.loads((directory / 'image.json').read_text()),
+        'binary_sha256': {name: hashlib.sha256((directory / name).read_bytes()).hexdigest() for name in binaries},
+        'dependencies': dependencies,
+    }
+    context = directory / 'performance-context.json'
+    context.write_text(json.dumps(metadata, indent=2) + '\n')
+    result = commands.run([
+        sys.executable, '-B', 'tests/performance/report.py', '--context', str(context),
+        '--log', str(directory / 'test-single.log'), '--output', str(directory / 'performance-report.json'),
+    ], label='baseline-report', check=False)
+    print((result.stdout + result.stderr).decode(errors='replace'), end='', flush=True)
+    if result.returncode:
+        raise Failure('performance report is incomplete or inconsistent')
+    digest = hashlib.sha256((directory / 'performance-report.json').read_bytes()).hexdigest()
+    print(f'performance report sha256: {digest}', flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('suite', choices=(*TESTS, *SDK_TESTS))
@@ -89,6 +161,8 @@ def main():
     directory = ROOT / 'build' / 'sync-http' / (args.suite + '-' + uuid.uuid4().hex)
     commands = Commands(directory)
     try:
+        measuring = args.suite == 'performance-baseline'
+        source = performance_source(commands) if measuring else None
         image, platform = image_identity(commands)
         env = os.environ.copy()
         env.update(CGO_ENABLED='0', GOOS='linux', GOARCH=platform.split('/')[1], GOTOOLCHAIN='local')
@@ -99,7 +173,7 @@ def main():
         sdk_bridge = SDK_TESTS.get(args.suite)
         query_plan = args.suite.endswith('query-plan') or args.suite == 'message-event-check'
         servers = ('newim-gateway', 'newim-server')
-        if not read_suite or read_sync:
+        if not measuring and (not read_suite or read_sync):
             servers += ('newim-sync-backfill',)
         build(commands, ['go', 'test', '-c', '-tags=integration', '-o', str(binary),
                          './tests/integration/conversationsynchttp'], env, 'sync-http-cross-compile')
@@ -113,7 +187,7 @@ def main():
             build(commands, ['go', 'build', '-o', str(directory / name), './server/cmd/' + name],
                   env, 'sync-http-' + name + '-build')
         with Database(commands, image, platform) as db:
-            head_suite = args.suite.startswith(('push-', 'reliability-')) or args.suite in (
+            head_suite = measuring or args.suite.startswith(('push-', 'reliability-')) or args.suite in (
                 'message-trace-check', 'sdk-observability-check'
             )
             target = 22 if head_suite else 21 if args.suite.startswith('message-event-') else (
@@ -137,6 +211,8 @@ def main():
                 run_test(db, TESTS[args.suite], 'restart')
             else:
                 run_test(db, TESTS[args.suite])
+                if measuring:
+                    save_performance_report(db, source, paths)
                 if query_plan:
                     if args.suite == 'message-event-check':
                         test = 'TestMessageVisibilityQueryPlan'

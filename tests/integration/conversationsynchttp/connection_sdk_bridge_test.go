@@ -343,6 +343,11 @@ func runConnectionSDKBridge(t *testing.T, migration, messages int, observed bool
 
 func scrapeBridgeMetrics(t *testing.T, f *fixture, gateway *process) {
 	t.Helper()
+	mustBridgeWrite(t, "OBS_METRICS\t"+hex.EncodeToString(readGatewayMetrics(t, f, gateway)))
+}
+
+func readGatewayMetrics(t *testing.T, f *fixture, gateway *process) []byte {
+	t.Helper()
 	public := f.call(gateway, http.MethodGet, "/metrics", "", nil, nil)
 	if public.err != nil || public.status != http.StatusNotFound {
 		t.Fatal("gateway exposed metrics on the public listener")
@@ -363,9 +368,9 @@ func scrapeBridgeMetrics(t *testing.T, f *fixture, gateway *process) {
 			if resp.StatusCode != http.StatusOK || len(body) == 65536 {
 				t.Fatal("gateway metrics were unavailable")
 			}
-			mustBridgeWrite(t, "OBS_METRICS\t"+hex.EncodeToString(body))
-			return
+			return body
 		}
 	}
 	t.Fatal("gateway scrape listener missing")
+	return nil
 }

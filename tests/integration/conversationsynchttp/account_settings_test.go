@@ -5,6 +5,7 @@ package conversationsynchttp_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"os"
@@ -242,16 +243,29 @@ func accountHistorySocketFrom(t *testing.T, f *fixture, gateway *process, token,
 	t.Helper()
 	ctx, cancel := context.WithTimeout(f.ctx, 5*time.Second)
 	defer cancel()
-	conn, reply, err := websocket.Dial(ctx, "wss://"+strings.TrimPrefix(gateway.url, "https://")+"/api/v1/gateway",
-		&websocket.DialOptions{HTTPClient: f.client, HTTPHeader: http.Header{"Authorization": {"Bearer " + token}}, Subprotocols: []string{"newim.v1"}})
+	payload := encode(t, map[string]string{"conversationId": id, "afterSeq": afterSeq})
+	conn, err := dialHistorySocket(ctx, f.client, gateway.url, token, payload)
 	must(t, err)
 	t.Cleanup(func() { _ = conn.CloseNow() })
+	return conn
+}
+
+func dialHistorySocket(ctx context.Context, client *http.Client, gatewayURL, token string, payload []byte) (*websocket.Conn, error) {
+	conn, reply, err := websocket.Dial(ctx, "wss://"+strings.TrimPrefix(gatewayURL, "https://")+"/api/v1/gateway",
+		&websocket.DialOptions{HTTPClient: client, HTTPHeader: http.Header{"Authorization": {"Bearer " + token}}, Subprotocols: []string{"newim.v1"}})
+	if err != nil {
+		return nil, err
+	}
 	if reply == nil || reply.StatusCode != http.StatusSwitchingProtocols || reply.TLS == nil ||
 		len(reply.TLS.VerifiedChains) == 0 || conn.Subprotocol() != "newim.v1" {
-		t.Fatal("account history subscription did not use verified native WSS")
+		_ = conn.CloseNow()
+		return nil, errors.New("account history subscription did not use verified native WSS")
 	}
-	must(t, conn.Write(ctx, websocket.MessageText, encode(t, map[string]string{"conversationId": id, "afterSeq": afterSeq})))
-	return conn
+	if err := conn.Write(ctx, websocket.MessageText, payload); err != nil {
+		_ = conn.CloseNow()
+		return nil, err
+	}
+	return conn, nil
 }
 
 func testAccountDraftPages(t *testing.T) {
