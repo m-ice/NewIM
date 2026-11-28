@@ -555,3 +555,11 @@ sdk-observability-check: toolchain
 .PHONY: message-observability-dashboard
 message-observability-dashboard: toolchain
 	go test -count=1 -run '^TestMessagingDashboard$$' ./server/api
+
+.PHONY: reliability-transport reliability-notifications
+reliability-transport: toolchain
+	python3 -B infra/db/sync_http_suite.py reliability-transport
+
+reliability-notifications: toolchain
+	python3 -B infra/db/sync_http_suite.py reliability-push-timeout
+	python3 -B infra/db/webhook_suite.py receiver-timeout

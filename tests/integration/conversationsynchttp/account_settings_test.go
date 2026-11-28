@@ -235,6 +235,11 @@ func accountMessageHistory(t *testing.T, f *fixture, gateway *process, token, id
 
 func accountHistorySocket(t *testing.T, f *fixture, gateway *process, token, id string) *websocket.Conn {
 	t.Helper()
+	return accountHistorySocketFrom(t, f, gateway, token, id, "0")
+}
+
+func accountHistorySocketFrom(t *testing.T, f *fixture, gateway *process, token, id, afterSeq string) *websocket.Conn {
+	t.Helper()
 	ctx, cancel := context.WithTimeout(f.ctx, 5*time.Second)
 	defer cancel()
 	conn, reply, err := websocket.Dial(ctx, "wss://"+strings.TrimPrefix(gateway.url, "https://")+"/api/v1/gateway",
@@ -245,7 +250,7 @@ func accountHistorySocket(t *testing.T, f *fixture, gateway *process, token, id 
 		len(reply.TLS.VerifiedChains) == 0 || conn.Subprotocol() != "newim.v1" {
 		t.Fatal("account history subscription did not use verified native WSS")
 	}
-	must(t, conn.Write(ctx, websocket.MessageText, encode(t, map[string]string{"conversationId": id, "afterSeq": "0"})))
+	must(t, conn.Write(ctx, websocket.MessageText, encode(t, map[string]string{"conversationId": id, "afterSeq": afterSeq})))
 	return conn
 }
 

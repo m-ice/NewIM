@@ -34,6 +34,8 @@ TESTS = {
     'message-trace-check': 'TestMessageTrace',
     'push-token-check': 'TestPushTokenRotation',
     'push-recovery': 'TestPushRecovery',
+    'reliability-transport': 'TestTransportReliability',
+    'reliability-push-timeout': 'TestPushReceiverTimeout',
 }
 SDK_TESTS = {
     'conversation-account-sdk-check': 'tls_sqlite_conversation_account_sync',
@@ -111,7 +113,9 @@ def main():
             build(commands, ['go', 'build', '-o', str(directory / name), './server/cmd/' + name],
                   env, 'sync-http-' + name + '-build')
         with Database(commands, image, platform) as db:
-            head_suite = args.suite.startswith('push-') or args.suite in ('message-trace-check', 'sdk-observability-check')
+            head_suite = args.suite.startswith(('push-', 'reliability-')) or args.suite in (
+                'message-trace-check', 'sdk-observability-check'
+            )
             target = 22 if head_suite else 21 if args.suite.startswith('message-event-') else (
                 18 if account_sync or sdk_bridge else 17 if read_sync else 15 if read_suite else 14
             )

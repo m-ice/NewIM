@@ -24,6 +24,7 @@ SUITES = {
         'tests': ('TestWebhookRecovery', 'TestWebhookConcurrentRecovery', 'TestWebhookReceiverAmbiguity', 'TestWebhookRetryAndBacklog'),
     },
     'protocol': {'package': './tests/integration/webhook', 'tests': ('TestWebhookProtocol',)},
+    'receiver-timeout': {'package': './tests/integration/webhook', 'tests': ('TestWebhookReceiverTimeout',)},
     'security': {'package': './tests/integration/webhook', 'tests': ('TestWebhookSecurity',)},
     'redaction': {'package': './tests/integration/webhook', 'tests': ('TestWebhookRedaction',)},
     'lifecycle': {'package': './server/cmd/newim-server', 'tests': ('TestWebhookRuntimeLifecycle',)},

@@ -6,6 +6,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -309,28 +310,58 @@ func TestWebhookConcurrentRecovery(t *testing.T) {
 }
 
 func TestWebhookReceiverAmbiguity(t *testing.T) {
+	testWebhookReceiverRecovery(t, false)
+}
+
+func TestWebhookReceiverTimeout(t *testing.T) {
+	testWebhookReceiverRecovery(t, true)
+}
+
+func testWebhookReceiverRecovery(t *testing.T, timeout bool) {
+	t.Helper()
 	f := openFixture(t)
-	eventID := f.seedEvent(f.id("webhook_ambiguous_room"))
+	eventID := f.seedEvent(f.id("webhook_receiver_recovery_room"))
+	originalMessage := f.scalarString("SELECT server_msg_id FROM newim.im_outbox_events WHERE event_id=$1", eventID)
 	var mu sync.Mutex
 	var records []struct {
 		deliveryID string
 		nonce      string
 	}
+	cancelled := make(chan struct{})
+	release := make(chan struct{})
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if _, err := io.Copy(io.Discard, r.Body); err != nil {
+			w.WriteHeader(http.StatusBadRequest)
+			return
+		}
 		mu.Lock()
 		records = append(records, struct {
 			deliveryID string
 			nonce      string
 		}{deliveryID: r.Header.Get(protocol.WebhookHeaderDeliveryID), nonce: r.Header.Get(protocol.WebhookHeaderNonce)})
+		first := len(records) == 1
 		mu.Unlock()
+		if timeout && first {
+			select {
+			case <-r.Context().Done():
+				close(cancelled)
+			case <-release:
+			}
+			return
+		}
 		w.WriteHeader(http.StatusNoContent)
 	}))
 	defer server.Close()
+	defer close(release)
 	_, master := f.insertEndpoint(1, server.URL, []byte("0123456789abcdef0123456789abcdef"))
 	client, err := app.NewSecureClient(nil, app.Policy{AllowHTTP: true, AllowLoopback: true}, time.Second, 64*1024)
 	must(t, err)
 
-	first := newFixtureWorker(t, f, f.repo, &lostResponseDoer{next: client}, master, 3, 1000, 100, 10*time.Millisecond)
+	var firstClient app.Doer = client
+	if !timeout {
+		firstClient = &lostResponseDoer{next: client}
+	}
+	first := newFixtureWorker(t, f, f.repo, firstClient, master, 3, 1000, 100, 10*time.Millisecond)
 	runWorkerUntil(t, first, 3*time.Second, func() bool {
 		return f.optionalString("SELECT status FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID) == "retry" &&
 			f.scalarInt64("SELECT attempts FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID) == 1
@@ -340,6 +371,13 @@ func TestWebhookReceiverAmbiguity(t *testing.T) {
 	}
 	if got := f.scalarInt64("SELECT attempts FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID); got != 1 {
 		t.Fatalf("attempts after lost response = %d", got)
+	}
+	if timeout {
+		select {
+		case <-cancelled:
+		case <-time.After(2 * time.Second):
+			t.Fatal("the webhook receiver did not observe the request cancellation")
+		}
 	}
 	f.sql("UPDATE newim.im_webhook_deliveries SET next_attempt_at=clock_timestamp()-interval '1 second' WHERE event_id=$1", eventID)
 
@@ -355,6 +393,13 @@ func TestWebhookReceiverAmbiguity(t *testing.T) {
 	})
 	if got := f.scalarString("SELECT status FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID); got != "delivered" {
 		t.Fatalf("delivery status after retry = %s", got)
+	}
+	if got := f.scalarInt64("SELECT attempts FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID); got != 2 {
+		t.Fatalf("persisted attempts after retry = %d", got)
+	}
+	if f.scalarInt64(`SELECT count(*) FROM newim.im_messages m JOIN newim.im_outbox_events o USING(server_msg_id)
+		WHERE o.event_id=$1 AND m.server_msg_id=$2 AND m.conversation_seq=1`, eventID, originalMessage) != 1 {
+		t.Fatal("webhook recovery changed the committed message")
 	}
 	mu.Lock()
 	defer mu.Unlock()
