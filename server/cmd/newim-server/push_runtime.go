@@ -59,7 +59,7 @@ func newPushRuntimeFromEnv(ctx context.Context, auth *authRuntime, logger *slog.
 }
 
 func pushProviders() (map[push.Channel]push.Provider, error) {
-	providers := make(map[push.Channel]push.Provider, 2)
+	providers := make(map[push.Channel]push.Provider, 3)
 	if path := os.Getenv("NEWIM_PUSH_FCM_CREDENTIALS_FILE"); path != "" {
 		provider, err := push.NewFCM(path)
 		if err != nil {
@@ -81,6 +81,13 @@ func pushProviders() (map[push.Channel]push.Provider, error) {
 			return nil, err
 		}
 		providers[push.APNs] = provider
+	}
+	if path := os.Getenv("NEWIM_PUSH_KIT_CREDENTIALS_FILE"); path != "" {
+		provider, err := push.NewPushKit(path)
+		if err != nil {
+			return nil, err
+		}
+		providers[push.PushKit] = provider
 	}
 	if len(providers) == 0 {
 		return nil, push.ErrConfig

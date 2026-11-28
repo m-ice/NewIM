@@ -40,3 +40,8 @@ outbox 事件。轮换密钥时保留旧 key，直到相应设备重新登记。
 
 `make push-delivery-check push-token-check push-recovery push-sdk-check` 验证真实 PostgreSQL、
 网关、SDK 与本地 TLS 供应商端点。供应商控制台配置和真机收取由各客户端适配验证。
+
+## 鸿蒙通知
+
+鸿蒙安装使用 `pushkit` 通道走现有版本化登记。通知只携带通用提示和点击后的同步标记。
+服务端部署和设备验收见 [HarmonyOS 离线推送决策](../../docs/adr/0051-harmony-push-service.md)。

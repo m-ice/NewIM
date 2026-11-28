@@ -75,7 +75,7 @@ func (w *Worker) Counts() Counts {
 }
 
 func NewWorker(queue Queue, providers map[Channel]Provider) (*Worker, error) {
-	if queue == nil || len(providers) == 0 || len(providers) > 2 {
+	if queue == nil || len(providers) == 0 {
 		return nil, ErrConfig
 	}
 	worker := &Worker{queue: queue, providers: make(map[Channel]Provider, len(providers))}

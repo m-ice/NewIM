@@ -16,12 +16,13 @@ import (
 type Channel string
 
 const (
-	APNs Channel = "apns"
-	FCM  Channel = "fcm"
+	APNs    Channel = "apns"
+	FCM     Channel = "fcm"
+	PushKit Channel = "pushkit"
 )
 
 func (c Channel) Valid() bool {
-	return c == APNs || c == FCM
+	return c == APNs || c == FCM || c == PushKit
 }
 
 var (
