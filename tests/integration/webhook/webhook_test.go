@@ -92,6 +92,51 @@ func TestWebhookProtocol(t *testing.T) {
 	if got := f.scalarString("SELECT status FROM newim.im_webhook_deliveries WHERE event_id=$1", eventID); got != "delivered" {
 		t.Fatalf("delivery status = %s observer=%q", got, observer.text())
 	}
+
+	t.Run("recall-before-queued-attempt", func(t *testing.T) {
+		room := f.id("webhook_recalled_room")
+		recalled := f.seedEvent(room)
+		n, err := f.repo.Fanout(ctx, f.now, 10, 1000, 10000)
+		must(t, err)
+		if n != 1 {
+			t.Fatalf("wanted one queued event, got %d", n)
+		}
+		claimed, err := f.repo.Claim(ctx, f.now, "before_recall", time.Second, 10)
+		must(t, err)
+		if len(claimed) != 1 || !strings.Contains(string(claimed[0].Event.Payload), "integration payload") {
+			t.Fatal("fixture did not capture the original committed message")
+		}
+		f.sql(`INSERT INTO newim.im_message_visibility_events
+			(conversation_id,visibility_revision,target_seq,actor_user_id,request_id,action)
+			SELECT conversation_id,1,conversation_seq,sender_id,'webhook_recall','recall'
+			FROM newim.im_messages WHERE conversation_id=$1`, room)
+		action, err := f.repo.MessageVisibility(ctx, recalled)
+		must(t, err)
+		if action != protocol.Recall {
+			t.Fatal("an attempt that claimed before recall did not see the committed recall")
+		}
+		f.sql(`UPDATE newim.im_webhook_deliveries
+			SET lease_expires_at=clock_timestamp()-interval '1 second' WHERE event_id=$1`, recalled)
+		secondWorker := f.worker(master, client)
+		defer secondWorker.Close()
+		runWorkerUntil(t, secondWorker, 4*time.Second, func() bool {
+			return f.scalarString("SELECT status FROM newim.im_webhook_deliveries WHERE event_id=$1", recalled) == "delivered"
+		}, func() string { return "recalled event did not deliver" })
+		select {
+		case <-received:
+		default:
+			t.Fatal("the recalled delivery did not reach the local receiver")
+		}
+		signed, err := protocol.ParseWebhookHeaders(map[string][]string(headers))
+		must(t, err)
+		must(t, protocol.VerifyWebhookSignature(ctx, secret, signed, body, f.now, guard))
+		envelope, err := protocol.DecodeWebhookEnvelope(body)
+		must(t, err)
+		if envelope.EventID != recalled || !strings.Contains(string(body), protocol.HiddenMessageType) ||
+			!strings.Contains(string(body), `"countAsUnread":false`) || strings.Contains(string(body), "integration payload") {
+			t.Fatal("signed retry did not preserve identity and omit the recalled body")
+		}
+	})
 }
 
 func TestWebhookRecovery(t *testing.T) {

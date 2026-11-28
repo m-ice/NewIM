@@ -207,6 +207,21 @@ func (w *Worker) deliver(ctx context.Context, delivery Delivery) {
 		w.observe(OperationSecret, CodeSecretInvalid, time.Since(started))
 		return
 	}
+	if store, ok := w.store.(VisibilityStore); ok {
+		action, err := store.MessageVisibility(attemptCtx, delivery.Event.ID)
+		if err != nil {
+			w.finish(ctx, delivery, now, retryOutcome(CodeStorageUnavailable, attempts, w.cfg, delivery.ID, now, 0))
+			w.observe(OperationEnvelope, CodeStorageUnavailable, time.Since(started))
+			return
+		}
+		if action != "" {
+			if err := delivery.Event.HideMessage(action); err != nil {
+				w.finish(ctx, delivery, now, terminalOutcome(CodeProtocolInvalid, now))
+				w.observe(OperationEnvelope, CodeProtocolInvalid, time.Since(started))
+				return
+			}
+		}
+	}
 	body, err := buildEnvelope(delivery.Event)
 	if err != nil {
 		w.finish(ctx, delivery, now, terminalOutcome(CodeProtocolInvalid, now))

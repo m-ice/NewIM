@@ -15,6 +15,9 @@ import (
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
+	protocol "github.com/m-ice/NewIM/core/protocol/go"
+	"github.com/m-ice/NewIM/server/storage/conversationsync"
+	messagestore "github.com/m-ice/NewIM/server/storage/message"
 	app "github.com/m-ice/NewIM/server/webhook"
 )
 
@@ -38,6 +41,7 @@ type Config struct {
 type Repository struct {
 	pool       *pgxpool.Pool
 	actorTypes bool
+	visibility bool
 }
 
 // AcquireWorkerLock enforces one webhook worker process per database.
@@ -208,7 +212,12 @@ func Open(ctx context.Context, config Config) (*Repository, error) {
 			return nil, app.Fail(app.CodeStorageUnavailable)
 		}
 	}
-	return &Repository{pool: pool, actorTypes: actorTypes}, nil
+	visibility, err := conversationsync.VisibilityAvailable(poolCtx, pool)
+	if err != nil {
+		pool.Close()
+		return nil, app.Fail(app.CodeStorageUnavailable)
+	}
+	return &Repository{pool: pool, actorTypes: actorTypes, visibility: visibility}, nil
 }
 
 // Close releases all pool resources after callers finish their transactions.
@@ -428,15 +437,22 @@ WHERE status='leased' AND lease_expires_at <= clock_timestamp()`); err != nil {
 	if r.actorTypes {
 		senderType = `COALESCE((SELECT a.actor_type FROM newim.im_user_actor_types a WHERE a.user_id=m.sender_id),'')`
 	}
+	payloadColumn, actionColumn, visibilityJoin := "m.payload_bytes", "NULL::text", ""
+	if r.visibility {
+		payloadColumn = "CASE WHEN v.action IS NULL THEN m.payload_bytes END"
+		actionColumn = "v.action"
+		visibilityJoin = ` LEFT JOIN newim.im_message_visibility_events v
+			ON v.conversation_id=m.conversation_id AND v.target_seq=m.conversation_seq AND v.audience_user_id IS NULL`
+	}
 	rows, err := tx.Query(ctx, `SELECT d.delivery_id,d.attempts,d.destination_id,d.endpoint_revision,
 	r.url,r.key_id,r.secret_nonce,r.secret_ciphertext,
 o.event_id,m.server_msg_id,m.client_msg_id,m.sender_id,m.conversation_id,m.conversation_seq,
-m.server_time_ms,m.protocol_version,m.schema_version,m.message_type,m.payload_bytes,`+senderType+`
+m.server_time_ms,m.protocol_version,m.schema_version,m.message_type,`+payloadColumn+`,`+senderType+`,`+actionColumn+`
 FROM newim.im_webhook_deliveries d
 JOIN newim.im_webhook_endpoint_revisions r ON r.destination_id=d.destination_id AND r.revision=d.endpoint_revision
 JOIN newim.im_webhook_endpoints e ON e.destination_id=d.destination_id
 JOIN newim.im_outbox_events o ON o.event_id=d.event_id
-JOIN newim.im_messages m ON m.server_msg_id=o.server_msg_id
+JOIN newim.im_messages m ON m.server_msg_id=o.server_msg_id`+visibilityJoin+`
 WHERE d.status IN ('pending','retry') AND d.next_attempt_at <= clock_timestamp()
   AND d.endpoint_revision IS NOT NULL AND e.status='active' AND e.revoked_at IS NULL
 ORDER BY d.next_attempt_at,d.delivery_id
@@ -448,16 +464,22 @@ LIMIT $1 FOR UPDATE OF d SKIP LOCKED`, limit)
 	for rows.Next() {
 		var delivery app.Delivery
 		var payload []byte
+		var action *string
 		if err = rows.Scan(&delivery.ID, &delivery.Attempts, &delivery.DestinationID, &delivery.EndpointRevision,
 			&delivery.URL, &delivery.KeyID, &delivery.Secret.Nonce, &delivery.Secret.Ciphertext,
 			&delivery.Event.ID, &delivery.Event.ServerMsgID, &delivery.Event.ClientMsgID,
 			&delivery.Event.SenderID, &delivery.Event.ConversationID, &delivery.Event.ConversationSeq,
 			&delivery.Event.ServerTime, &delivery.Event.ProtocolVersion, &delivery.Event.SchemaVersion,
-			&delivery.Event.MessageType, &payload, &delivery.Event.SenderType); err != nil {
+			&delivery.Event.MessageType, &payload, &delivery.Event.SenderType, &action); err != nil {
 			rows.Close()
 			return nil, mapStorageError(err)
 		}
-		delivery.Event.Payload = append([]byte(nil), payload...)
+		if action == nil {
+			delivery.Event.Payload = append([]byte(nil), payload...)
+		} else if err := delivery.Event.HideMessage(messagestore.VisibilityAction(*action)); err != nil {
+			rows.Close()
+			return nil, app.Fail(app.CodeStorageUnavailable)
+		}
 		delivery.Secret.DestinationID = delivery.DestinationID
 		delivery.Secret.Revision = delivery.EndpointRevision
 		delivery.Secret.URL = delivery.URL
@@ -491,6 +513,29 @@ WHERE delivery_id=$4`, owner, delivery.LeaseToken, leaseTTL.Seconds(), delivery.
 
 // BeginAttempt increments the HTTP-attempt counter only while the caller still owns a live lease.
 // BeginAttempt 仅在调用方仍持有有效租约时递增 HTTP attempt 计数器。
+func (r *Repository) MessageVisibility(ctx context.Context, eventID string) (protocol.VisibilityAction, error) {
+	if !r.visibility {
+		return "", nil
+	}
+	var action *string
+	err := r.pool.QueryRow(ctx, `SELECT v.action FROM newim.im_outbox_events o
+		JOIN newim.im_messages m USING (server_msg_id)
+		LEFT JOIN newim.im_message_visibility_events v
+		  ON v.conversation_id=m.conversation_id AND v.target_seq=m.conversation_seq AND v.audience_user_id IS NULL
+		WHERE o.event_id=$1`, eventID).Scan(&action)
+	if err != nil {
+		return "", mapStorageError(err)
+	}
+	if action == nil {
+		return "", nil
+	}
+	value := messagestore.VisibilityAction(*action)
+	if !value.Valid() {
+		return "", app.Fail(app.CodeStorageUnavailable)
+	}
+	return value, nil
+}
+
 func (r *Repository) BeginAttempt(ctx context.Context, deliveryID, leaseToken string, now time.Time, maxAttempts int, required time.Duration) (bool, error) {
 	if r == nil || r.pool == nil || ctx == nil || deliveryID == "" || leaseToken == "" || now.IsZero() || maxAttempts < 1 || maxAttempts > 8 || required <= 0 || required > 2*time.Minute {
 		return false, app.Fail(app.CodeInvalidConfig)

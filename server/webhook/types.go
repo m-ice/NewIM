@@ -120,6 +120,21 @@ type Event struct {
 	Payload         json.RawMessage
 }
 
+func (event *Event) HideMessage(action protocol.VisibilityAction) error {
+	payload, err := protocol.EncodeHiddenPayload(action)
+	if err != nil {
+		return Fail(CodeProtocolInvalid)
+	}
+	event.MessageType = protocol.HiddenMessageType
+	event.SchemaVersion = 1
+	event.Payload = payload
+	return nil
+}
+
+type VisibilityStore interface {
+	MessageVisibility(context.Context, string) (protocol.VisibilityAction, error)
+}
+
 // SecretMaterial is the encrypted material resolved for one endpoint revision.
 // SecretMaterial 是一个 endpoint revision 的加密 secret 材料。
 type SecretMaterial struct {
