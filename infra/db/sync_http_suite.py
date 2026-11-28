@@ -88,6 +88,17 @@ def run_sdk_bridge(db, name, label):
         raise Failure('native SQLite sync bridge did not pass its exact test')
 
 
+def run_native_bridge(db):
+    result = db.commands.run([
+        sys.executable, '-B', 'sdk/native/tests/tls_host.py', db.name,
+    ], label='native-c-abi-tls-bridge', timeout=210, check=False)
+    output = result.stdout + result.stderr
+    (db.commands.directory / 'test-sdk.log').write_bytes(output)
+    print(output.decode(errors='replace'), end='', flush=True)
+    if result.returncode or b'native C ABI, SQLite and TLS recovery passed' not in result.stdout:
+        raise Failure('native C SDK bridge did not complete its TLS fixture')
+
+
 def performance_source(commands):
     modified = commands.run(['git', 'status', '--porcelain', '--untracked-files=no'],
                             label='baseline-tracked-state').stdout
@@ -156,11 +167,12 @@ def save_performance_report(db, source, binaries):
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('suite', choices=(*TESTS, *SDK_TESTS))
+    parser.add_argument('suite', choices=(*TESTS, *SDK_TESTS, 'native-sdk-bridge-integration'))
     args = parser.parse_args()
     directory = ROOT / 'build' / 'sync-http' / (args.suite + '-' + uuid.uuid4().hex)
     commands = Commands(directory)
     try:
+        native = args.suite == 'native-sdk-bridge-integration'
         measuring = args.suite == 'performance-baseline'
         source = performance_source(commands) if measuring else None
         image, platform = image_identity(commands)
@@ -187,7 +199,7 @@ def main():
             build(commands, ['go', 'build', '-o', str(directory / name), './server/cmd/' + name],
                   env, 'sync-http-' + name + '-build')
         with Database(commands, image, platform) as db:
-            head_suite = measuring or args.suite.startswith(('push-', 'reliability-')) or args.suite in (
+            head_suite = native or measuring or args.suite.startswith(('push-', 'reliability-')) or args.suite in (
                 'message-trace-check', 'sdk-observability-check'
             )
             target = 22 if head_suite else 21 if args.suite.startswith('message-event-') else (
@@ -200,7 +212,9 @@ def main():
                              label='copy-owned-' + name)
             commands.run(['docker', 'exec', db.name, 'chmod', '0755', *('/tmp/' + name for name in paths)],
                          label='make-sync-http-executable')
-            if sdk_bridge:
+            if native:
+                run_native_bridge(db)
+            elif sdk_bridge:
                 label = 'conversation-account-sdk-bridge' if account_sync else args.suite + '-bridge'
                 run_sdk_bridge(db, sdk_bridge, label)
             elif args.suite.endswith('recovery'):

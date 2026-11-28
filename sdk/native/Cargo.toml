@@ -1,0 +1,17 @@
+[package]
+name = "newim-sdk-native"
+version = "0.1.0-dev"
+edition = "2024"
+rust-version = "1.98.1"
+publish = false
+
+[lib]
+name = "newim_native"
+crate-type = ["rlib", "staticlib"]
+
+[dependencies]
+newim-sdk-core = { path = "../core" }
+newim-store-sqlite = { path = "../storage/sqlite" }
+newim-protocol = { path = "../../core/protocol/rust" }
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = { version = "=1.0.151", features = ["raw_value"] }

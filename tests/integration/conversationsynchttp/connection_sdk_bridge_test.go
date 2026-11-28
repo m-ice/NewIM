@@ -274,6 +274,21 @@ func runConnectionSDKBridge(t *testing.T, migration, messages int, observed bool
 		case "CLOSE":
 			socket.close()
 			mustBridgeWrite(t, "CLOSE_OK")
+		case "NATIVE_CREDENTIAL":
+			if !observed {
+				t.Fatal("native credential fixture is disabled")
+			}
+			credential := f.call(gateway, http.MethodPost, bootstrapPath, phone.Token, []byte(`{"limit":1}`), nil)
+			requireStatus(t, credential, http.StatusOK)
+			if !credential.verified {
+				t.Fatal("native credential probe did not use verified TLS")
+			}
+			session, err := f.auth.AuthenticateBearer(ctx, phone.Token)
+			must(t, err)
+			if session.UserID() != phone.UserID || time.Until(phone.ExpiresAt) <= 0 {
+				t.Fatal("native credential fixture identity expired or changed")
+			}
+			mustBridgeWrite(t, fmt.Sprintf("CREDENTIAL\t%s\t%d", session.UserID(), time.Until(phone.ExpiresAt).Milliseconds()))
 		case "OBS_SEND":
 			if !observed {
 				t.Fatal("send trace fixture is disabled")

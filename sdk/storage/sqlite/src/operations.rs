@@ -193,6 +193,20 @@ pub(crate) fn pending_page(
     Ok(PendingPage { items, next })
 }
 impl SqliteStore {
+    /// Read the mutation high-water mark for the current open store generation.
+    pub fn last_operation_id(&self) -> Result<u64, StoreError> {
+        if self.requires_reopen {
+            return Err(StoreError::RecoveryRequired);
+        }
+        self.conn
+            .query_row(
+                "SELECT last_operation FROM store_metadata WHERE id=1",
+                [],
+                |row| unsigned(row, 0),
+            )
+            .map_err(db)
+    }
+
     pub(crate) fn perform(&mut self, r: &Request) -> Result<Response, StoreError> {
         match &r.action {
             Action::Lookup { server_id } => Ok(Response::Found(lookup(&self.conn, server_id)?)),

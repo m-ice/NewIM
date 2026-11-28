@@ -567,3 +567,11 @@ reliability-notifications: toolchain
 .PHONY: performance-baseline
 performance-baseline: toolchain
 	python3 -B infra/db/sync_http_suite.py performance-baseline
+
+.PHONY: native-sdk-abi-check
+native-sdk-abi-check: toolchain
+	python3 -B sdk/native/tests/build_host.py
+
+.PHONY: native-sdk-bridge-integration
+native-sdk-bridge-integration: toolchain
+	python3 -B infra/db/sync_http_suite.py native-sdk-bridge-integration
