@@ -36,15 +36,16 @@ def rate(count, window_ns):
     return count * NANOSECONDS_PER_SECOND / window_ns
 
 
-def stage(value, expected, sequential=False):
+def stage(value, expected, batch_size=1):
     require(isinstance(value, dict), "missing operation sample")
     window = value.get("window_ns")
     durations = value.get("latencies_ns")
     require(positive_integer(window), "invalid measurement window")
     require(isinstance(durations, list) and len(durations) == expected, "incomplete sample population")
     require(all(positive_integer(item) and item <= window for item in durations), "invalid latency sample")
-    if sequential:
-        require(sum(durations) <= window, "serial latencies exceed the measured window")
+    batch_floor = sum(max(durations[offset:offset + batch_size])
+                      for offset in range(0, len(durations), batch_size))
+    require(batch_floor <= window, "operation batches exceed the measured window")
     ordered = sorted(durations)
     percentiles = {}
     for p in (50, 95, 99):
@@ -119,7 +120,7 @@ def build_report(raw, context, log_digest):
     require(isinstance(sample_groups, dict) and set(sample_groups) == set(expected_counts),
             "missing or unexpected operation population")
     operations = {
-        name: stage(sample_groups[name], count, sequential=name in ("login", "send", "sync_page"))
+        name: stage(sample_groups[name], count, PROFILE["connection_batch"] if name in ("connect", "reconnect") else 1)
         for name, count in expected_counts.items()
     }
     read_window = operations["sync_page"]["window_ns"]
@@ -137,7 +138,7 @@ def build_report(raw, context, log_digest):
 
 
 def self_test():
-    require(stage({"window_ns": 300, "latencies_ns": [5, 10, 100]}, 3, True)["latency_ms"] ==
+    require(stage({"window_ns": 300, "latencies_ns": [5, 10, 100]}, 3)["latency_ms"] ==
             {"p50": 0.00001, "p95": 0.0001, "p99": 0.0001}, "nearest-rank regression")
     require(rate(5, 2 * NANOSECONDS_PER_SECOND) == 2.5, "rate conversion regression")
     require(read_raw(b"=== RUN\nNEWIM_PERF_RAW {\"result\":1}\nPASS\n") == {"result": 1}, "record parse regression")
@@ -145,7 +146,7 @@ def self_test():
     bad = [
         (stage, ({"window_ns": 15, "latencies_ns": [5]}, 2)),
         (stage, ({"window_ns": 5, "latencies_ns": [6]}, 1)),
-        (stage, ({"window_ns": 8, "latencies_ns": [5, 5]}, 2, True)),
+        (stage, ({"window_ns": 8, "latencies_ns": [5, 5]}, 2)),
         (stage, ({"window_ns": True, "latencies_ns": [1]}, 1)),
         (read_raw, (b"PASS\n",)),
         (read_raw, (b"NEWIM_PERF_RAW {}\nNEWIM_PERF_RAW {}\n",)),
@@ -174,7 +175,11 @@ def self_test():
     report = build_report(sample, metadata, digest)
     require(report["operations"]["send"]["count"] == 48 and
             report["read_messages_per_second"] == rate(196, 1000), "complete report regression")
+    overlapping = {"window_ns": 30, "latencies_ns": [5, 14, 10, 11, 8, 4, 5, 10]}
+    require(stage(overlapping, 8, 4)["count"] == 8, "parallel batch regression")
+    impossible = {**sample["samples"], "reconnect": {"window_ns": 1000, "latencies_ns": [1000] * 16}}
     bad.extend([
+        (build_report, ({**sample, "samples": impossible}, metadata, digest)),
         (build_report, ({**sample, "read_messages": 195}, metadata, digest)),
         (build_report, (sample, {**metadata, "revision": "a" * 41}, digest)),
         (build_report, (sample, {**metadata, "container": {}}, digest)),
