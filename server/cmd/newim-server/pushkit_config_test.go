@@ -6,24 +6,21 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"os"
 	"path/filepath"
 	"testing"
-
-	"github.com/m-ice/NewIM/server/push"
 )
 
 func TestPushKitRuntimeConfig(t *testing.T) {
 	t.Setenv("NEWIM_PUSH_APNS_KEY_FILE", "")
 	t.Setenv("NEWIM_PUSH_FCM_CREDENTIALS_FILE", "")
 	t.Setenv("NEWIM_PUSH_KIT_CREDENTIALS_FILE", "")
-	if _, err := pushProviders(); !errors.Is(err, push.ErrConfig) {
+	if _, err := pushProviders(); err == nil || err.Error() != "PUSH_CONFIG_INVALID" {
 		t.Fatal("an empty configuration enabled a push provider")
 	}
 	path := filepath.Join(t.TempDir(), "pushkit-credentials")
 	t.Setenv("NEWIM_PUSH_KIT_CREDENTIALS_FILE", path)
-	if _, err := pushProviders(); !errors.Is(err, push.ErrConfig) {
+	if _, err := pushProviders(); err == nil || err.Error() != "PUSH_CONFIG_INVALID" {
 		t.Fatal("the runtime accepted a missing Push Kit credential file")
 	}
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
@@ -46,7 +43,7 @@ func TestPushKitRuntimeConfig(t *testing.T) {
 		t.Fatal(err)
 	}
 	configured, err := pushProviders()
-	if err != nil || len(configured) != 1 || configured[push.PushKit] == nil {
+	if err != nil || len(configured) != 1 || configured["pushkit"] == nil {
 		t.Fatal("the runtime did not select the configured Push Kit provider")
 	}
 }
