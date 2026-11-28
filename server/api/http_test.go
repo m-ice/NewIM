@@ -655,7 +655,10 @@ func TestImportBoundary(t *testing.T) {
 					value == "github.com/jackc/pgx/v5"
 				pushComposer := dir == "../cmd/newim-server" && entry.Name() == "push_runtime.go" &&
 					(value == "github.com/m-ice/NewIM/server/push" || value == "github.com/m-ice/NewIM/server/storage/push")
-				if strings.Contains(value, ".") && !allowedModule[value] && !authComposer && !webhookComposer && !webhookIntegration && !pushComposer {
+				pushMetricsTest := dir == "../cmd/newim-server" && entry.Name() == "push_metrics_test.go" &&
+					value == "github.com/m-ice/NewIM/server/push"
+				if strings.Contains(value, ".") && !allowedModule[value] && !authComposer && !webhookComposer &&
+					!webhookIntegration && !pushComposer && !pushMetricsTest {
 					t.Fatalf("%s imports forbidden module %q", path, value)
 				}
 			}
